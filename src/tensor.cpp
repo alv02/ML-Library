@@ -183,18 +183,10 @@ void _tensor_mat_mul_nn(Tensor *out, const Tensor *a, const Tensor *b) {
     u32 N = mat_cols(a);
     u32 P = mat_cols(b);
 
-    u64 a_r = a->stride[ROW_DIM(a)];
-    u64 a_c = a->stride[COL_DIM(a)];
-    u64 b_r = b->stride[ROW_DIM(b)];
-    u64 b_c = b->stride[COL_DIM(b)];
-    u64 o_r = out->stride[ROW_DIM(out)];
-    u64 o_c = out->stride[COL_DIM(out)];
-
     for (u32 i = 0; i < M; i++) {
         for (u32 k = 0; k < N; k++) {
             for (u32 j = 0; j < P; j++) {
-                out->data[i * o_r + j * o_c] +=
-                    a->data[i * a_r + k * a_c] * b->data[k * b_r + j * b_c];
+                (*out)(i, j) += (*a)(i, k) * (*b)(k, j);
             }
         }
     }
@@ -205,18 +197,10 @@ void _tensor_mat_mul_nt(Tensor *out, const Tensor *a, const Tensor *b) {
     u32 N = mat_cols(a);
     u32 P = mat_cols(b);
 
-    u64 a_r = a->stride[ROW_DIM(a)];
-    u64 a_c = a->stride[COL_DIM(a)];
-    u64 b_r = b->stride[ROW_DIM(b)];
-    u64 b_c = b->stride[COL_DIM(b)];
-    u64 o_r = out->stride[ROW_DIM(out)];
-    u64 o_c = out->stride[COL_DIM(out)];
-
     for (u32 i = 0; i < M; i++) {
         for (u32 j = 0; j < P; j++) {
             for (u32 k = 0; k < N; k++) {
-                out->data[i * o_r + j * o_c] +=
-                    a->data[i * a_r + k * a_c] * b->data[k * b_r + j * b_c];
+                (*out)(i, j) += (*a)(i, k) * (*b)(k, j);
             }
         }
     }
@@ -226,19 +210,10 @@ void _tensor_mat_mul_tn(Tensor *out, const Tensor *a, const Tensor *b) {
     u32 M = mat_rows(a);
     u32 N = mat_cols(a);
     u32 P = mat_cols(b);
-
-    u64 a_r = a->stride[ROW_DIM(a)];
-    u64 a_c = a->stride[COL_DIM(a)];
-    u64 b_r = b->stride[ROW_DIM(b)];
-    u64 b_c = b->stride[COL_DIM(b)];
-    u64 o_r = out->stride[ROW_DIM(out)];
-    u64 o_c = out->stride[COL_DIM(out)];
-
     for (u32 k = 0; k < N; k++) {
         for (u32 i = 0; i < M; i++) {
             for (u32 j = 0; j < P; j++) {
-                out->data[i * o_r + j * o_c] +=
-                    a->data[i * a_r + k * a_c] * b->data[k * b_r + j * b_c];
+                (*out)(i, j) += (*a)(i, k) * (*b)(k, j);
             }
         }
     }
@@ -249,18 +224,10 @@ void _tensor_mat_mul_tt(Tensor *out, const Tensor *a, const Tensor *b) {
     u32 N = mat_cols(a);
     u32 P = mat_cols(b);
 
-    u64 a_r = a->stride[ROW_DIM(a)];
-    u64 a_c = a->stride[COL_DIM(a)];
-    u64 b_r = b->stride[ROW_DIM(b)];
-    u64 b_c = b->stride[COL_DIM(b)];
-    u64 o_r = out->stride[ROW_DIM(out)];
-    u64 o_c = out->stride[COL_DIM(out)];
-
     for (u32 j = 0; j < P; j++) {
         for (u32 k = 0; k < N; k++) {
             for (u32 i = 0; i < M; i++) {
-                out->data[i * o_r + j * o_c] +=
-                    a->data[i * a_r + k * a_c] * b->data[k * b_r + j * b_c];
+                (*out)(i, j) += (*a)(i, k) * (*b)(k, j);
             }
         }
     }

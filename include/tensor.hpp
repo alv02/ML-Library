@@ -17,7 +17,14 @@ struct Tensor {
     u64 size; // total elements — saves recomputing
     b32 on_gpu;
 
-    template <typename... Dims> f32 &operator[](Dims... dims) {
+    template <typename... Dims> f32 &operator()(Dims... dims) {
+        u64 offset = 0;
+        u32 indices[] = {(u32)dims...};
+        for (u32 i = 0; i < sizeof...(dims); i++)
+            offset += indices[i] * stride[i];
+        return data[offset];
+    }
+    template <typename... Dims> const f32 &operator()(Dims... dims) const {
         u64 offset = 0;
         u32 indices[] = {(u32)dims...};
         for (u32 i = 0; i < sizeof...(dims); i++)
