@@ -1,3 +1,10 @@
-gcc -c util/arena.c -o arena.o
-g++ -c math/tensor.cpp -o tensor.o
-g++ main.cpp arena.o tensor.o -o ./build/main
+#!/bin/bash
+set -e
+
+mkdir -p build
+
+gcc -c util/arena.c -o build/arena.o
+g++  -I include -c src/tensor.cpp -o build/tensor.o
+g++  -I include main.cpp build/arena.o build/tensor.o -o build/main
+
+./build/main

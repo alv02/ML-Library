@@ -11,8 +11,8 @@ print("A shape:", a.shape)
 
 print("B shape:", b.shape)
 
-np.save("a.npy", a)
-np.save("b.npy", b)
+np.save("data/a.npy", a)
+np.save("data/b.npy", b)
 
 a = np.transpose(a)
 b = np.transpose(b)

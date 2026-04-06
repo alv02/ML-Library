@@ -1,11 +1,11 @@
-#include "math/tensor.hpp"
+#include "include/tensor.hpp"
 #include "util/arena.h"
 
 int main() {
     mem_arena *perm_arena = arena_create(GiB(1), MiB(1));
 
-    Tensor *a = tensor_load(perm_arena, "a.npy", false);
-    Tensor *b = tensor_load(perm_arena, "b.npy", false);
+    Tensor *a = tensor_load(perm_arena, "data/a.npy", false);
+    Tensor *b = tensor_load(perm_arena, "data/b.npy", false);
 
     tensor_transpose(a, 0, 1);
     tensor_transpose(b, 0, 1);
