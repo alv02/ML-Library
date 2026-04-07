@@ -1,50 +1,134 @@
 #include "../include/ops.hpp"
 
-void MatMulOp::forward(mem_arena *arena) {
-    tensor_mat_mul(output->val, inputs[0]->val, inputs[1]->val);
+function_var *MatMulOp::forward() {
+    Tensor *out = tensor_mat_mul(inputs[0]->val, inputs[1]->val);
+
+    // If either of the inputs requires grad, then the output needs to require
+    // grad
+    u32 flags = FV_FLAG_NONE;
+    if ((inputs[0]->flags | inputs[1]->flags) & FV_FLAG_REQUIERES_GRAD) {
+        flags |= FV_FLAG_REQUIERES_GRAD;
+    }
+
+    function_var *fv = fv_create(out, flags);
+
+    fv->grad_fn = this;
+
+    return fv;
 }
 
-void MatMulOp::backward(mem_arena *arena) {
+void MatMulOp::backward(Tensor *grad_output) {
     // dA = grad @ B.T  — view of B, transpose it, matmul, done
     if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
-        Tensor *Bt = tensor_view(arena, inputs[1]->val);
+        // If the grad is not allocated yet, allocate it
+        if (!inputs[0]->grad) {
+            inputs[0]->grad = tensor_create_like(inputs[0]->val);
+        }
+
+        Tensor *Bt = tensor_view(inputs[1]->val);
+
         tensor_transpose(Bt, 0, 1);
-        tensor_mat_mul(inputs[0]->grad, output->grad, Bt);
+        // Dont clear out so it accumulates gradients if there are multiple
+        // paths to the same variable
+        tensor_mat_mul(inputs[0]->grad, grad_output, Bt, false);
+
+        tensor_free(Bt);
     }
 
     // dB = A.T @ grad
     if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
-        Tensor *At = tensor_view(arena, inputs[0]->val);
+        // If the grad is not allocated yet, allocate it
+        if (!inputs[1]->grad) {
+            inputs[1]->grad = tensor_create_like(inputs[1]->val);
+        }
+
+        Tensor *At = tensor_view(inputs[0]->val);
+
         tensor_transpose(At, 0, 1);
-        tensor_mat_mul(inputs[1]->grad, At, output->grad);
+        // Dont clear out so it accumulates gradients if there are multiple
+        // paths to the same variable
+        tensor_mat_mul(inputs[1]->grad, At, grad_output, false);
+
+        tensor_free(At);
     }
 }
 
-void MeanSquareErrorOp::forward(mem_arena *arena) {
-    Tensor *e = tensor_create_like(arena, inputs[0]->val);
-    tensor_sub(e, inputs[0]->val, inputs[1]->val);
+function_var *AddOp::forward() {
+    Tensor *out = tensor_add(inputs[0]->val, inputs[1]->val);
 
-    Tensor *e_2 = tensor_create_like(arena, e);
-    tensor_mul(e_2, e, e);
+    u32 flags = FV_FLAG_NONE;
+    if ((inputs[0]->flags | inputs[1]->flags) & FV_FLAG_REQUIERES_GRAD) {
+        flags |= FV_FLAG_REQUIERES_GRAD;
+    }
 
-    f32 sum = tensor_sum(e_2);
-    u32 N = e->shape[ROW_DIM(e)];
+    function_var *fv = fv_create(out, flags);
 
-    output->val->data[0] = sum / N;
+    fv->grad_fn = this;
+
+    return fv;
 }
 
-void MeanSquareErrorOp::backward(mem_arena *arena) {
-    u32 N = inputs[0]->val->shape[ROW_DIM(inputs[0]->val)];
-
-    // dA = a-b
+void AddOp::backward(Tensor *grad_output) {
+    // dA = grad
     if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
-        tensor_sub(inputs[0]->grad, inputs[0]->val, inputs[1]->val);
-        tensor_scale(inputs[0]->grad, 2.0f / (f32)N);
+        if (!inputs[0]->grad)
+            inputs[0]->grad = tensor_create_like(inputs[0]->val);
+        tensor_add(inputs[0]->grad, inputs[0]->grad, grad_output); // accumulate
+    }
+    // dB = grad
+    if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
+        if (!inputs[1]->grad)
+            inputs[1]->grad = tensor_create_like(inputs[1]->val);
+        tensor_add(inputs[1]->grad, inputs[1]->grad, grad_output); // accumulate
+    }
+}
+
+function_var *MeanSquareErrorOp::forward() {
+    Tensor *diff = tensor_create_like(inputs[0]->val);
+    u32 shape[1] = {1};
+    Tensor *out = tensor_create(1, shape, false);
+    // out = (a-b)^2
+    tensor_sub(diff, inputs[0]->val, inputs[1]->val);
+    tensor_mul(diff, diff, diff);
+
+    // out = sum(out) / N
+    f32 sum = tensor_sum(diff);
+    u32 N = inputs[0]->val->shape[ROW_DIM(inputs[0]->val)];
+    out->data[0] = sum / (f32)N;
+
+    function_var *fv = fv_create(out, FV_FLAG_NONE);
+
+    if ((inputs[0]->flags | inputs[1]->flags) & FV_FLAG_REQUIERES_GRAD) {
+        fv->flags |= FV_FLAG_REQUIERES_GRAD;
     }
 
-    // dB = -(a-b) = b-a
+    fv->grad_fn = this;
+
+    tensor_free(diff);
+
+    return fv;
+}
+
+void MeanSquareErrorOp::backward(Tensor *grad_output) {
+    u32 N = inputs[0]->val->shape[ROW_DIM(inputs[0]->val)];
+    f32 scale = grad_output->data[0];
+
+    if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
+        if (!inputs[0]->grad)
+            inputs[0]->grad = tensor_create_like(inputs[0]->val);
+        Tensor *tmp = tensor_create_like(inputs[0]->val);
+        tensor_sub(tmp, inputs[0]->val, inputs[1]->val);
+        tensor_scale(tmp, tmp, scale * 2.0f / (f32)N);
+        tensor_add(inputs[0]->grad, inputs[0]->grad, tmp); // accumulate
+        tensor_free(tmp);
+    }
     if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
-        tensor_sub(inputs[1]->grad, inputs[1]->val, inputs[0]->val);
-        tensor_scale(inputs[1]->grad, 2.0f / (f32)N);
+        if (!inputs[1]->grad)
+            inputs[1]->grad = tensor_create_like(inputs[1]->val);
+        Tensor *tmp = tensor_create_like(inputs[1]->val);
+        tensor_sub(tmp, inputs[1]->val, inputs[0]->val);
+        tensor_scale(tmp, tmp, scale * 2.0f / (f32)N);
+        tensor_add(inputs[1]->grad, inputs[1]->grad, tmp); // accumulate
+        tensor_free(tmp);
     }
 }

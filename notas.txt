@@ -1,0 +1,3 @@
+- Mirar const en funciones
+- Mirar de una vez si hacer funciones tensor_free o tensor.free quiza para las structs base como tensores la primera
+- Decidir de una vez si usar malloc/free new/delete.

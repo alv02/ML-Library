@@ -1,22 +1,26 @@
+#include "include/models.hpp"
+#include "include/optimizers.hpp"
 #include "include/tensor.hpp"
-#include "util/arena.h"
 
 int main() {
-    mem_arena *perm_arena = arena_create(GiB(1), MiB(1));
+    Tensor *val_X = tensor_load("data/X.npy", false);
+    Tensor *val_y = tensor_load("data/y.npy", false);
 
-    Tensor *a = tensor_load(perm_arena, "data/a.npy", false);
-    Tensor *b = tensor_load(perm_arena, "data/b.npy", false);
+    gd_optimizer optim = gd_optimizer(0.1f);
+    linear_model model = linear_model(val_X, val_y);
+    for (int epoch = 0; epoch < 1000; epoch++) {
 
-    tensor_transpose(a, 0, 1);
-    tensor_transpose(b, 0, 1);
+        model.forward();
+        Graph *graph = graph_create(model.fv_loss);
+        optim.set_graph(graph);
 
-    u32 shape[2] = {a->shape[ROW_DIM(a)], b->shape[COL_DIM(b)]};
+        graph_backward(graph);
+        optim.step();
 
-    Tensor *c = tensor_create(perm_arena, a->ndim, shape, false);
+        optim.zero_grad();
 
-    tensor_print(c);
-    tensor_mat_mul(c, a, b);
-    tensor_print(c);
-
-    arena_destroy(perm_arena);
+        if (epoch % 100 == 0) {
+            printf("Epoch %d loss: %f\n", epoch, model.fv_loss->val->data[0]);
+        }
+    }
 }

@@ -4,29 +4,53 @@
 #include <cstdlib>
 
 using namespace std;
-Tensor *tensor_create(mem_arena *arena, u32 ndim, u32 *shape, b32 on_gpu) {
-    Tensor *tensor = PUSH_STRUCT(arena, Tensor);
+Tensor *tensor_create(u32 ndim, u32 *shape, b32 on_gpu) {
+    Tensor *tensor = (Tensor *)malloc(sizeof(Tensor));
     tensor->ndim = ndim;
     tensor->on_gpu = on_gpu;
     tensor->size = 1;
-    tensor->shape = PUSH_ARRAY(arena, u32, ndim);
+    tensor->owns_data = true;
+
+    tensor->shape = (u32 *)malloc(ndim * sizeof(u32));
     for (u32 i = 0; i < ndim; i++) {
         tensor->shape[i] = shape[i];
     }
 
-    tensor->stride = PUSH_ARRAY(arena, u64, ndim);
-    // Compute size and stride
+    tensor->stride = (u64 *)malloc(ndim * sizeof(u64));
     for (u32 i = ndim; i-- > 0;) {
         tensor->stride[i] = tensor->size;
         tensor->size *= tensor->shape[i];
     }
 
-    tensor->data = PUSH_ARRAY(arena, f32, tensor->size);
+    if (on_gpu) {
+        // cudaMalloc(&tensor->data, tensor->size * sizeof(f32));
+    } else {
+        tensor->data = (f32 *)malloc(tensor->size * sizeof(f32));
+        memset(tensor->data, 0, tensor->size * sizeof(f32));
+    }
 
     return tensor;
 }
-Tensor *tensor_load(mem_arena *arena, const char *filename, b32 on_gpu) {
+
+void tensor_free(Tensor *tensor) {
+    free(tensor->shape);
+    free(tensor->stride);
+    if (tensor->owns_data) {
+        if (tensor->on_gpu) {
+            // cudaFree(tensor->data);
+
+        } else {
+            free(tensor->data);
+        }
+    }
+    free(tensor);
+}
+Tensor *tensor_load(const char *filename, b32 on_gpu) {
     FILE *file = fopen(filename, "rb");
+    if (!file) {
+        printf("Failed to open file: %s\n", filename);
+        return nullptr;
+    }
 
     u8 magic[6];
     u8 version[2];
@@ -74,13 +98,19 @@ Tensor *tensor_load(mem_arena *arena, const char *filename, b32 on_gpu) {
         }
     }
 
-    Tensor *tensor = tensor_create(arena, ndim, shape, on_gpu);
+    Tensor *tensor = tensor_create(ndim, shape, on_gpu);
 
     fread(tensor->data, sizeof(f32), tensor->size, file);
 
     fclose(file);
 
     return tensor;
+}
+
+void tensor_fill(Tensor *tensor, f32 value) {
+    for (u64 i = 0; i < tensor->size; i++) {
+        tensor->data[i] = value;
+    }
 }
 
 b32 tensor_shape_eq(const Tensor *a, const Tensor *b) {
@@ -116,12 +146,29 @@ void tensor_clear(Tensor *tensor) {
     memset(tensor->data, 0, sizeof(f32) * tensor->size);
 }
 
+// TODO: Maybe try to do broadcasting, look how pytorch do its without affecting
+// performace
 b32 tensor_add(Tensor *out, const Tensor *a, const Tensor *b) {
-    if (!tensor_shape_eq(a, b)) {
-        return false;
+    // if (!tensor_shape_eq(a, b)) {
+    //     return false;
+    // }
+    // if (!tensor_shape_eq(a, out)) {
+    //     return false;
+    // }
+
+    // TODO: Hardcoded
+    if (a->size == 1) {
+        for (u64 i = 0; i < out->size; i++) {
+            out->data[i] = a->data[0] + b->data[i];
+        }
+        return true;
     }
-    if (!tensor_shape_eq(a, out)) {
-        return false;
+
+    if (b->size == 1) {
+        for (u64 i = 0; i < out->size; i++) {
+            out->data[i] = a->data[i] + b->data[0];
+        }
+        return true;
     }
 
     for (u64 i = 0; i < out->size; i++) {
@@ -129,6 +176,23 @@ b32 tensor_add(Tensor *out, const Tensor *a, const Tensor *b) {
     }
 
     return true;
+}
+
+Tensor *tensor_add(const Tensor *a, const Tensor *b) {
+    Tensor *out = tensor_create_like(a);
+    if (!tensor_add(out, a, b)) {
+        printf("Failed to add tensors\n");
+        tensor_free(out);
+        return nullptr;
+    }
+    return out;
+}
+Tensor *tensor_add(const Tensor *a, f32 scalar) {
+    Tensor *out = tensor_create_like(a);
+    for (u64 i = 0; i < out->size; i++) {
+        out->data[i] = a->data[i] + scalar;
+    }
+    return out;
 }
 
 b32 tensor_sub(Tensor *out, const Tensor *a, const Tensor *b) {
@@ -233,8 +297,6 @@ void _tensor_mat_mul_tt(Tensor *out, const Tensor *a, const Tensor *b) {
     }
 }
 
-// TODO: Maximize performance loops so it uses sequential data, see the strides
-// and decide how to loop with that
 void _tensor_mat_mul(Tensor *out, const Tensor *a, const Tensor *b) {
 
     u64 a_r = a->stride[ROW_DIM(a)];
@@ -263,7 +325,8 @@ void _tensor_mat_mul(Tensor *out, const Tensor *a, const Tensor *b) {
 }
 
 // m*n @ n*p = m*p
-b32 tensor_mat_mul(Tensor *out, const Tensor *a, const Tensor *b) {
+b32 tensor_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
+                   b32 clear_out) {
     // TODO: Right now only handle 2 dims, if ndim > 2 should batch
     if (a->ndim != 2 || b->ndim != 2) {
         printf("Not supported mat_mul");
@@ -282,19 +345,34 @@ b32 tensor_mat_mul(Tensor *out, const Tensor *a, const Tensor *b) {
         return false;
     }
 
-    // The out tensor must be 0, TODO: Maybe just always assume its 0 i dont
-    // know if this affects performace significally
-    tensor_clear(out);
+    if (clear_out) {
+        tensor_clear(out);
+    }
     _tensor_mat_mul(out, a, b);
     return true;
 }
 
-void tensor_scale(Tensor *tensor, f32 scale) {
+Tensor *tensor_mat_mul(const Tensor *a, const Tensor *b) {
+    // Create the tensor and call the above function
+    u32 M = mat_rows(a);
+    u32 P = mat_cols(b);
+    u32 shape[2] = {M, P};
+    Tensor *out = tensor_create(2, shape, a->on_gpu);
+    if (!tensor_mat_mul(out, a, b, false)) {
+        printf("Matrix multiplication failed due to shape mismatch\n");
+        printf("Shape of A: [%d, %d]\n", mat_rows(a), mat_cols(a));
+        printf("Shape of B: [%d, %d]\n", mat_rows(b), mat_cols(b));
+        printf("Shape of Output: [%d, %d]\n", mat_rows(out), mat_cols(out));
+    }
+    return out;
+}
+
+void tensor_scale(Tensor *out, const Tensor *tensor, f32 scale) {
     for (u64 i = 0; i < tensor->size; i++) {
-        tensor->data[i] *= scale;
+        out->data[i] = tensor->data[i] * scale;
     }
 }
-f32 tensor_sum(Tensor *tensor) {
+f32 tensor_sum(const Tensor *tensor) {
     f32 sum = 0;
     for (u64 i = 0; i < tensor->size; i++) {
         sum += tensor->data[i];
@@ -303,37 +381,24 @@ f32 tensor_sum(Tensor *tensor) {
     return sum;
 }
 
-b32 tensor_sum(Tensor *out, const Tensor *a, u32 dim) {
-    if (dim >= a->ndim) {
-        return false;
-    }
-    if (out->ndim != a->ndim) {
-        return false;
-    }
-    for (u32 i = 0; i < a->ndim; i++) {
-        u32 expected = (i == dim) ? 1 : a->shape[i];
-        if (out->shape[i] != expected) {
-            return false;
-        }
-    }
-    return true;
-}
-Tensor *tensor_view(mem_arena *arena, Tensor *src) {
-    Tensor *tensor = PUSH_STRUCT(arena, Tensor);
+Tensor *tensor_view(const Tensor *src) {
+    Tensor *tensor = (Tensor *)malloc(sizeof(Tensor));
     tensor->data = src->data;
     tensor->size = src->size;
     tensor->ndim = src->ndim;
     tensor->on_gpu = src->on_gpu;
+    tensor->owns_data = false;
 
-    tensor->shape = PUSH_ARRAY(arena, u32, tensor->ndim);
-    tensor->stride = PUSH_ARRAY(arena, u64, tensor->ndim);
+    tensor->shape = (u32 *)malloc(tensor->ndim * sizeof(u32));
+
+    tensor->stride = (u64 *)malloc(tensor->ndim * sizeof(u64));
     memcpy(tensor->shape, src->shape, src->ndim * sizeof(u32));
     memcpy(tensor->stride, src->stride, src->ndim * sizeof(u64));
 
     return tensor;
 }
-Tensor *tensor_create_like(mem_arena *arena, const Tensor *src) {
-    Tensor *t = tensor_create(arena, src->ndim, src->shape, src->on_gpu);
+Tensor *tensor_create_like(const Tensor *src) {
+    Tensor *t = tensor_create(src->ndim, src->shape, src->on_gpu);
     return t;
 }
 
@@ -351,11 +416,5 @@ void tensor_print(const Tensor *tensor) {
         if (i < tensor->ndim - 1)
             printf(", ");
     }
-    printf("], data=\n");
-
-    // print data — only makes sense for 1D/2D really
-    for (u64 i = 0; i < tensor->size; i++) {
-        printf("%.4f ", tensor->data[i]);
-    }
-    printf(")\n");
+    printf("])\n");
 }

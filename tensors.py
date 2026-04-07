@@ -1,20 +1,24 @@
 import numpy as np
+from sklearn.datasets import fetch_california_housing
 
-# Matrix A (2x3)
-a = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+# Load dataset
+data = fetch_california_housing()
 
-# Matrix B (3x2)
-b = np.array([[7, 8], [9, 10], [11, 12]], dtype=np.float32)
+X = data.data.astype(np.float32)
+y = data.target.reshape(-1, 1).astype(np.float32)
 
+# Optional: normalize (VERY recommended for training stability)
+X_mean = X.mean(axis=0, keepdims=True)
+X_std = X.std(axis=0, keepdims=True) + 1e-8
+X = (X - X_mean) / X_std
 
-print("A shape:", a.shape)
+y_mean = y.mean()
+y_std = y.std() + 1e-8
+y = (y - y_mean) / y_std
 
-print("B shape:", b.shape)
+# Save
+np.save("data/X.npy", X)
+np.save("data/y.npy", y)
 
-np.save("data/a.npy", a)
-np.save("data/b.npy", b)
-
-a = np.transpose(a)
-b = np.transpose(b)
-c = a @ b
-print(c)
+print("Saved X:", X.shape)
+print("Saved y:", y.shape)
