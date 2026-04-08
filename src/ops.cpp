@@ -69,20 +69,24 @@ function_var *AddOp::forward() {
 }
 
 void AddOp::backward(Tensor *grad_output) {
-    // dA = grad
     if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
         if (!inputs[0]->grad)
             inputs[0]->grad = tensor_create_like(inputs[0]->val);
-        tensor_add(inputs[0]->grad, inputs[0]->grad, grad_output); // accumulate
+        tensor_add(inputs[0]->grad, inputs[0]->grad, grad_output);
     }
-    // dB = grad
     if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
         if (!inputs[1]->grad)
             inputs[1]->grad = tensor_create_like(inputs[1]->val);
-        tensor_add(inputs[1]->grad, inputs[1]->grad, grad_output); // accumulate
+
+        // b is (1,1) but grad_output is (N,1) — must sum over batch
+        if (inputs[1]->val->size != grad_output->size) {
+            f32 sum = tensor_sum(grad_output);
+            inputs[1]->grad->data[0] += sum;
+        } else {
+            tensor_add(inputs[1]->grad, inputs[1]->grad, grad_output);
+        }
     }
 }
-
 function_var *MeanSquareErrorOp::forward() {
     Tensor *diff = tensor_create_like(inputs[0]->val);
     u32 shape[1] = {1};
@@ -112,6 +116,11 @@ function_var *MeanSquareErrorOp::forward() {
 void MeanSquareErrorOp::backward(Tensor *grad_output) {
     u32 N = inputs[0]->val->shape[ROW_DIM(inputs[0]->val)];
     f32 scale = grad_output->data[0];
+    Tensor *tmp2 = tensor_create_like(inputs[0]->val);
+    tensor_sub(tmp2, inputs[0]->val, inputs[1]->val);
+    printf("residual[0]: %f, pred[0]: %f, y[0]: %f\n", tmp2->data[0],
+           inputs[0]->val->data[0], inputs[1]->val->data[0]);
+    tensor_free(tmp2);
 
     if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
         if (!inputs[0]->grad)

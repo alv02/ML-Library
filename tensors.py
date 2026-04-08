@@ -15,10 +15,12 @@ X = (X - X_mean) / X_std
 y_mean = y.mean()
 y_std = y.std() + 1e-8
 y = (y - y_mean) / y_std
-
+W = np.linalg.lstsq(X, y, rcond=None)[0]
+print("Optimal W:", W.flatten())
+print("Optimal loss:", np.mean((X @ W - y) ** 2))
 # Save
-np.save("data/X.npy", X)
-np.save("data/y.npy", y)
+np.save("data/X.npy", np.ascontiguousarray(X))
+np.save("data/y.npy", np.ascontiguousarray(y))
 
 print("Saved X:", X.shape)
 print("Saved y:", y.shape)
