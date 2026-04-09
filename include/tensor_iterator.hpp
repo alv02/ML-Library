@@ -1,6 +1,6 @@
 #ifndef TENSOR_ITERATOR_HPP
 #define TENSOR_ITERATOR_HPP
-#include "../util/base.h"
+#include "tensor.hpp"
 struct tensorIterator {
     u32 ndim;
     u64 remaining;

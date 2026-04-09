@@ -1,7 +1,8 @@
-#ifndef TENSOR_H
-#define TENSOR_H
+#ifndef TENSOR_HPP
+#define TENSOR_HPP
 
-#include "../util/base.h"
+#define MAX_NDIM 8
+#include "base.hpp"
 
 #define ROW_DIM(t) ((t)->ndim - 2)
 #define COL_DIM(t) ((t)->ndim - 1)
@@ -66,7 +67,8 @@ b32 tensor_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
 Tensor *tensor_mat_mul(const Tensor *a, const Tensor *b);
 
 b32 tensor_sum(Tensor *out, const Tensor *tensor, b32 clear_out = true);
-b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim = true, b32 clear_out = true);
+b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim = true,
+               b32 clear_out = true);
 Tensor *tensor_sum(const Tensor *tensor);
 Tensor *tensor_sum(const Tensor *tensor, u32 dim, b32 keep_dim = true);
 
