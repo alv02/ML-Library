@@ -1,49 +1,50 @@
 #include "../include/tensor.hpp"
+#include "../include/tensor_iterator.hpp"
 #include "string.h"
 #include <bits/stdc++.h>
 #include <cstdlib>
-
 using namespace std;
-Tensor *tensor_create(u32 ndim, u32 *shape, b32 on_gpu) {
-    Tensor *tensor = (Tensor *)malloc(sizeof(Tensor));
-    tensor->ndim = ndim;
-    tensor->on_gpu = on_gpu;
-    tensor->size = 1;
-    tensor->owns_data = true;
+Tensor::Tensor(u32 ndim, const u32 *shape, b32 on_gpu) {
+    this->ndim = ndim;
+    this->on_gpu = on_gpu;
+    this->size = 1;
+    this->owns_data = true;
 
-    tensor->shape = (u32 *)malloc(ndim * sizeof(u32));
-    for (u32 i = 0; i < ndim; i++) {
-        tensor->shape[i] = shape[i];
-    }
+    for (u32 i = 0; i < ndim; i++)
+        this->shape[i] = shape[i];
 
-    tensor->stride = (u64 *)malloc(ndim * sizeof(u64));
     for (u32 i = ndim; i-- > 0;) {
-        tensor->stride[i] = tensor->size;
-        tensor->size *= tensor->shape[i];
+        this->stride[i] = this->size;
+        this->size *= this->shape[i];
     }
 
     if (on_gpu) {
-        // cudaMalloc(&tensor->data, tensor->size * sizeof(f32));
+        // cudaMalloc(&this->data, this->size * sizeof(f32));
     } else {
-        tensor->data = (f32 *)malloc(tensor->size * sizeof(f32));
-        memset(tensor->data, 0, tensor->size * sizeof(f32));
+        this->data = (f32 *)malloc(this->size * sizeof(f32));
+        memset(this->data, 0, this->size * sizeof(f32));
     }
-
-    return tensor;
 }
 
-void tensor_free(Tensor *tensor) {
-    free(tensor->shape);
-    free(tensor->stride);
-    if (tensor->owns_data) {
-        if (tensor->on_gpu) {
-            // cudaFree(tensor->data);
+Tensor::Tensor(const Tensor *src) {
+    data = src->data;
+    size = src->size;
+    ndim = src->ndim;
+    on_gpu = src->on_gpu;
+    owns_data = false;
 
+    memcpy(shape, src->shape, MAX_NDIM * sizeof(u32));
+    memcpy(stride, src->stride, MAX_NDIM * sizeof(u64));
+}
+
+Tensor::~Tensor() {
+    if (owns_data) {
+        if (on_gpu) {
+            // cudaFree(data);
         } else {
-            free(tensor->data);
+            free(data);
         }
     }
-    free(tensor);
 }
 Tensor *tensor_load(const char *filename, b32 on_gpu) {
     FILE *file = fopen(filename, "rb");
@@ -69,6 +70,16 @@ Tensor *tensor_load(const char *filename, b32 on_gpu) {
     char header[header_len + 1];
     fread(header, sizeof(char), header_len, file);
     header[header_len] = '\0';
+    char *fortran_ptr = strstr(header, "fortran_order");
+    if (fortran_ptr) {
+        char *true_ptr = strstr(fortran_ptr, "True");
+        char *false_ptr = strstr(fortran_ptr, "False");
+        if (true_ptr && (!false_ptr || true_ptr < false_ptr)) {
+            printf("WARNING: %s has fortran_order=True, loading will be "
+                   "incorrect\n",
+                   filename);
+        }
+    }
     // TODO: Handle header other than shape
     char *shape_ptr = strstr(header, "shape");
     char *end_ptr;
@@ -98,7 +109,7 @@ Tensor *tensor_load(const char *filename, b32 on_gpu) {
         }
     }
 
-    Tensor *tensor = tensor_create(ndim, shape, on_gpu);
+    Tensor *tensor = new Tensor(ndim, shape, on_gpu);
 
     fread(tensor->data, sizeof(f32), tensor->size, file);
 
@@ -113,14 +124,21 @@ void tensor_fill(Tensor *tensor, f32 value) {
     }
 }
 
-b32 tensor_shape_eq(const Tensor *a, const Tensor *b) {
-    if (a->ndim != b->ndim)
+b32 shape_eq(u32 ndim_a, const u32 *shape_a, u32 ndim_b, const u32 *shape_b) {
+    if (ndim_a != ndim_b) {
         return false;
-    for (u32 i = 0; i < a->ndim; i++) {
-        if (a->shape[i] != b->shape[i])
+    }
+
+    for (u32 i = 0; i < ndim_a; i++) {
+        if (shape_a[i] != shape_b[i]) {
             return false;
+        }
     }
     return true;
+}
+
+b32 tensor_shape_eq(const Tensor *a, const Tensor *b) {
+    return shape_eq(a->ndim, a->shape, b->ndim, b->shape);
 }
 
 b32 tensor_transpose(Tensor *tensor, u32 dim0, u32 dim1) {
@@ -146,47 +164,115 @@ void tensor_clear(Tensor *tensor) {
     memset(tensor->data, 0, sizeof(f32) * tensor->size);
 }
 
-// TODO: Maybe try to do broadcasting, look how pytorch do its without affecting
-// performace
-b32 tensor_add(Tensor *out, const Tensor *a, const Tensor *b) {
-    // if (!tensor_shape_eq(a, b)) {
-    //     return false;
-    // }
-    // if (!tensor_shape_eq(a, out)) {
-    //     return false;
-    // }
+u32 broadcast_shape(const Tensor *a, const Tensor *b, u32 *out_shape) {
+    u32 expanded_ndim = max(a->ndim, b->ndim);
 
-    // TODO: Hardcoded
-    if (a->size == 1) {
+    for (u32 i = 0; i < expanded_ndim; i++) {
+        // align from the right (numpy semantics)
+        i32 ai = (i32)i - (i32)(expanded_ndim - a->ndim);
+        i32 bi = (i32)i - (i32)(expanded_ndim - b->ndim);
+        u32 da = (ai >= 0) ? a->shape[ai] : 1;
+        u32 db = (bi >= 0) ? b->shape[bi] : 1;
+        if (da != db) {
+            if (min(da, db) != 1)
+                return 0;
+        }
+        out_shape[i] = max(da, db);
+    }
+    return expanded_ndim;
+}
+
+void expanded_shape(const Tensor *t, const u32 *expanded_shape,
+                    u32 expanded_ndim, u32 *t_expanded_shape) {
+
+    u32 n_prepend = expanded_ndim - t->ndim;
+    u32 i = 0;
+
+    // prepend
+    for (; i < n_prepend; i++)
+        t_expanded_shape[i] = 1;
+
+    for (; i < expanded_ndim; i++) {
+        u32 ti = i - n_prepend;
+        t_expanded_shape[i] = t->shape[ti];
+    }
+}
+
+void expanded_stride(const Tensor *t, const u32 *expanded_shape,
+                     u32 expanded_ndim, u64 *t_expanded_stride) {
+    u32 n_prepend = expanded_ndim - t->ndim;
+    u32 i = 0;
+
+    // prepend
+    for (; i < n_prepend; i++)
+        t_expanded_stride[i] = 0;
+
+    for (; i < expanded_ndim; i++) {
+        u32 ti = i - n_prepend;
+        t_expanded_stride[i] = (t->shape[ti] != 1) ? t->stride[ti] : 0;
+    }
+}
+
+template <typename Fn>
+b32 elementwise_binary(Tensor *out, const Tensor *a, const Tensor *b, Fn fn) {
+    u32 out_shape[MAX_NDIM];
+    u32 out_dim = broadcast_shape(a, b, out_shape);
+    if (out_dim == 0) {
+        printf("Tensors are not broadcastable. \n");
+        return false;
+    }
+
+    if (!shape_eq(out_dim, out_shape, out->ndim, out->shape)) {
+        printf("Tensor out is not in broadcastable shape. \n");
+        printf("Out: ");
+        tensor_print(out);
+        printf("a: ");
+        tensor_print(a);
+        printf("b: ");
+        tensor_print(b);
+        return false;
+    }
+
+    // Use flat index for speed up if not need to broadcast
+    if (tensor_shape_eq(a, b)) {
         for (u64 i = 0; i < out->size; i++) {
-            out->data[i] = a->data[0] + b->data[i];
+            out->data[i] = fn(a->data[i], b->data[i]);
         }
         return true;
     }
 
-    if (b->size == 1) {
-        for (u64 i = 0; i < out->size; i++) {
-            out->data[i] = a->data[i] + b->data[0];
-        }
-        return true;
-    }
+    u64 a_strides[MAX_NDIM];
+    u64 b_strides[MAX_NDIM];
+    expanded_stride(a, out_shape, out->ndim, a_strides);
+    expanded_stride(b, out_shape, out->ndim, b_strides);
 
-    for (u64 i = 0; i < out->size; i++) {
-        out->data[i] = a->data[i] + b->data[i];
-    }
+    tensorIterator a_iter(out->ndim, out_shape, a_strides);
+    tensorIterator b_iter(out->ndim, out_shape, b_strides);
+
+    for (u64 i = 0; i < out->size; i++)
+        out->data[i] = fn(a->data[a_iter.next()], b->data[b_iter.next()]);
 
     return true;
 }
+b32 tensor_add(Tensor *out, const Tensor *a, const Tensor *b) {
+    return elementwise_binary(out, a, b, [](f32 x, f32 y) { return x + y; });
+}
 
 Tensor *tensor_add(const Tensor *a, const Tensor *b) {
-    Tensor *out = tensor_create_like(a);
+    u32 out_shape[MAX_NDIM];
+    u32 out_ndim = broadcast_shape(a, b, out_shape);
+    if (out_ndim == 0) {
+        printf("Failed to add tensors: shapes not broadcastable\n");
+        return nullptr;
+    }
+    Tensor *out = new Tensor(out_ndim, out_shape, a->on_gpu);
     if (!tensor_add(out, a, b)) {
-        printf("Failed to add tensors\n");
-        tensor_free(out);
+        delete out;
         return nullptr;
     }
     return out;
 }
+
 Tensor *tensor_add(const Tensor *a, f32 scalar) {
     Tensor *out = tensor_create_like(a);
     for (u64 i = 0; i < out->size; i++) {
@@ -195,48 +281,78 @@ Tensor *tensor_add(const Tensor *a, f32 scalar) {
     return out;
 }
 
-b32 tensor_sub(Tensor *out, const Tensor *a, const Tensor *b) {
-    if (!tensor_shape_eq(a, b)) {
-        return false;
-    }
-    if (!tensor_shape_eq(a, out)) {
+b32 tensor_div(Tensor *out, const Tensor *a, f32 scalar) {
+    if (!tensor_shape_eq(out, a)) {
+        printf("Different shape in div");
         return false;
     }
 
     for (u64 i = 0; i < out->size; i++) {
-        out->data[i] = a->data[i] - b->data[i];
+        out->data[i] = a->data[i] / scalar;
     }
-
     return true;
+}
+Tensor *tensor_div(const Tensor *a, f32 scalar) {
+    Tensor *out = tensor_create_like(a);
+    tensor_div(out, a, scalar);
+    return out;
+}
+
+b32 tensor_sub(Tensor *out, const Tensor *a, const Tensor *b) {
+    return elementwise_binary(out, a, b, [](f32 x, f32 y) { return x - y; });
+}
+
+Tensor *tensor_sub(const Tensor *a, const Tensor *b) {
+    u32 out_shape[MAX_NDIM];
+    u32 out_ndim = broadcast_shape(a, b, out_shape);
+    if (out_ndim == 0) {
+        printf("Failed to sub tensors: shapes not broadcastable\n");
+        return nullptr;
+    }
+    Tensor *out = new Tensor(out_ndim, out_shape, a->on_gpu);
+    if (!tensor_sub(out, a, b)) {
+        delete out;
+        return nullptr;
+    }
+    return out;
 }
 
 b32 tensor_mul(Tensor *out, const Tensor *a, const Tensor *b) {
-    if (!tensor_shape_eq(a, b)) {
-        return false;
-    }
-    if (!tensor_shape_eq(a, out)) {
-        return false;
-    }
-
-    for (u64 i = 0; i < out->size; i++) {
-        out->data[i] = a->data[i] * b->data[i];
-    }
-
-    return true;
+    return elementwise_binary(out, a, b, [](f32 x, f32 y) { return x * y; });
 }
+
+Tensor *tensor_mul(const Tensor *a, const Tensor *b) {
+    u32 out_shape[MAX_NDIM];
+    u32 out_ndim = broadcast_shape(a, b, out_shape);
+    if (out_ndim == 0) {
+        printf("Failed to mul tensors: shapes not broadcastable\n");
+        return nullptr;
+    }
+    Tensor *out = new Tensor(out_ndim, out_shape, a->on_gpu);
+    if (!tensor_mul(out, a, b)) {
+        delete out;
+        return nullptr;
+    }
+    return out;
+}
+
 b32 tensor_div(Tensor *out, const Tensor *a, const Tensor *b) {
-    if (!tensor_shape_eq(a, b)) {
-        return false;
-    }
-    if (!tensor_shape_eq(a, out)) {
-        return false;
-    }
+    return elementwise_binary(out, a, b, [](f32 x, f32 y) { return x / y; });
+}
 
-    for (u64 i = 0; i < out->size; i++) {
-        out->data[i] = a->data[i] / b->data[i];
+Tensor *tensor_div(const Tensor *a, const Tensor *b) {
+    u32 out_shape[MAX_NDIM];
+    u32 out_ndim = broadcast_shape(a, b, out_shape);
+    if (out_ndim == 0) {
+        printf("Failed to div tensors: shapes not broadcastable\n");
+        return nullptr;
     }
-
-    return true;
+    Tensor *out = new Tensor(out_ndim, out_shape, a->on_gpu);
+    if (!tensor_div(out, a, b)) {
+        delete out;
+        return nullptr;
+    }
+    return out;
 }
 
 inline u32 mat_rows(const Tensor *t) { return t->shape[ROW_DIM(t)]; }
@@ -341,7 +457,7 @@ b32 tensor_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
     u32 out_cols = mat_cols(out);
     ;
 
-    if ((a_cols != b_rows) | (a_rows != out_rows) | (b_cols != out_cols)) {
+    if ((a_cols != b_rows) || (a_rows != out_rows) || (b_cols != out_cols)) {
         return false;
     }
 
@@ -357,12 +473,15 @@ Tensor *tensor_mat_mul(const Tensor *a, const Tensor *b) {
     u32 M = mat_rows(a);
     u32 P = mat_cols(b);
     u32 shape[2] = {M, P};
-    Tensor *out = tensor_create(2, shape, a->on_gpu);
+    Tensor *out = new Tensor(2, shape, a->on_gpu);
     if (!tensor_mat_mul(out, a, b, false)) {
         printf("Matrix multiplication failed due to shape mismatch\n");
         printf("Shape of A: [%d, %d]\n", mat_rows(a), mat_cols(a));
         printf("Shape of B: [%d, %d]\n", mat_rows(b), mat_cols(b));
         printf("Shape of Output: [%d, %d]\n", mat_rows(out), mat_cols(out));
+
+        delete out;
+        return nullptr;
     }
     return out;
 }
@@ -372,34 +491,79 @@ void tensor_scale(Tensor *out, const Tensor *tensor, f32 scale) {
         out->data[i] = tensor->data[i] * scale;
     }
 }
-f32 tensor_sum(const Tensor *tensor) {
-    f32 sum = 0;
-    for (u64 i = 0; i < tensor->size; i++) {
-        sum += tensor->data[i];
+
+b32 tensor_sum(Tensor *out, const Tensor *tensor, b32 clear_out) {
+    if (out->size != 1) {
+        printf("tensor_sum: out must be a scalar tensor (size=1)\n");
+        return false;
     }
-
-    return sum;
+    if (clear_out)
+        tensor_clear(out);
+    tensorIterator it(tensor->ndim, tensor->shape, tensor->stride);
+    while (it.has_next())
+        out->data[0] += tensor->data[it.next()];
+    return true;
 }
 
-Tensor *tensor_view(const Tensor *src) {
-    Tensor *tensor = (Tensor *)malloc(sizeof(Tensor));
-    tensor->data = src->data;
-    tensor->size = src->size;
-    tensor->ndim = src->ndim;
-    tensor->on_gpu = src->on_gpu;
-    tensor->owns_data = false;
+b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim, b32 clear_out) {
+    if (dim >= tensor->ndim) {
+        printf("tensor_sum: dim %u out of range (ndim=%u)\n", dim,
+               tensor->ndim);
+        return false;
+    }
+    if (clear_out)
+        tensor_clear(out);
+    // Output strides with 0 for the summed dim: every element along that
+    // dim maps to the same output slot (same idea as broadcast_stride).
+    u64 out_strides[MAX_NDIM];
+    memcpy(out_strides, out->stride, tensor->ndim * sizeof(u64));
+    out_strides[dim] = 0;
 
-    tensor->shape = (u32 *)malloc(tensor->ndim * sizeof(u32));
+    tensorIterator in_it(tensor->ndim, tensor->shape, tensor->stride);
+    tensorIterator out_it(tensor->ndim, tensor->shape, out_strides);
+    while (in_it.has_next())
+        out->data[out_it.next()] += tensor->data[in_it.next()];
 
-    tensor->stride = (u64 *)malloc(tensor->ndim * sizeof(u64));
-    memcpy(tensor->shape, src->shape, src->ndim * sizeof(u32));
-    memcpy(tensor->stride, src->stride, src->ndim * sizeof(u64));
-
-    return tensor;
+    if (!keep_dim) {
+        for (u32 i = dim; i < out->ndim - 1; i++) {
+            out->shape[i] = out->shape[i + 1];
+        }
+        out->ndim--;
+    }
+    return true;
 }
+
+Tensor *tensor_sum(const Tensor *tensor) {
+    u32 shape[1] = {1};
+    Tensor *out = new Tensor(1, shape, tensor->on_gpu);
+    if (!tensor_sum(out, tensor)) {
+        delete out;
+        return nullptr;
+    }
+    return out;
+}
+
+Tensor *tensor_sum(const Tensor *tensor, u32 dim) {
+    if (dim >= tensor->ndim) {
+        printf("tensor_sum: dim %u out of range (ndim=%u)\n", dim,
+               tensor->ndim);
+        return nullptr;
+    }
+    u32 out_shape[MAX_NDIM];
+    memcpy(out_shape, tensor->shape, tensor->ndim * sizeof(u32));
+    out_shape[dim] = 1;
+    Tensor *out = new Tensor(tensor->ndim, out_shape, tensor->on_gpu);
+    if (!tensor_sum(out, tensor, dim)) {
+        delete out;
+        return nullptr;
+    }
+    return out;
+}
+
+Tensor *tensor_view(const Tensor *src) { return new Tensor(src); }
+
 Tensor *tensor_create_like(const Tensor *src) {
-    Tensor *t = tensor_create(src->ndim, src->shape, src->on_gpu);
-    return t;
+    return new Tensor(src->ndim, src->shape, src->on_gpu);
 }
 
 void tensor_print(const Tensor *tensor) {

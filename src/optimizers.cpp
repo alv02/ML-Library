@@ -3,11 +3,7 @@
 gd_optimizer::gd_optimizer(f32 learning_rate)
     : lr(learning_rate), graph(nullptr) {}
 
-gd_optimizer::~gd_optimizer() {
-    if (graph) {
-        graph_free(graph);
-    }
-}
+gd_optimizer::~gd_optimizer() {}
 
 void gd_optimizer::zero_grad() {
     if (!graph) {

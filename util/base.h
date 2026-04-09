@@ -21,6 +21,8 @@ typedef i32 b32;
 
 typedef float f32;
 
+#define MAX_NDIM 8
+
 #define KiB(n) ((u64)(n) << 10)
 #define MiB(n) ((u64)(n) << 20)
 #define GiB(n) ((u64)(n) << 30)

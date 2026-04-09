@@ -6,8 +6,7 @@
 struct gd_optimizer {
     f32 lr;
 
-    Graph *graph; // Computational graph to optimize, owned by the optimizer,
-                  // needs to be freed in destructor
+    Graph *graph; // Non-owning reference — graph is owned by the model
 
     gd_optimizer(f32 learning_rate);
     ~gd_optimizer();

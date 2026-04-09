@@ -1,3 +1,2 @@
 - Mirar const en funciones
-- Mirar de una vez si hacer funciones tensor_free o tensor.free quiza para las structs base como tensores la primera
-- Decidir de una vez si usar malloc/free new/delete.
+- Broadcast implementado mirar las ops tienen que usar broadcas_shape y tambien en tensor_add y el resto donde solo hay dos parametros y el out se crea en la funcion, tambien operadores para los element wise tensors que llamen a estas ultimas funciones
