@@ -11,9 +11,6 @@ g++ -I include -c src/tensor_iterator.cpp       -o build/tensorIterator.o
 
 LIB_OBJS="build/tensor.o build/autograd.o build/ops.o build/tensorIterator.o"
 
-# ── Generate test data ────────────────────────────────────────────────────────
-echo "=== Generating test data ==="
-(cd test && python3 gen_test_data.py)
 
 # ── Run tests ─────────────────────────────────────────────────────────────────
 TOTAL_PASS=0

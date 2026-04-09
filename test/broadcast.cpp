@@ -109,7 +109,7 @@ static void test_broadcast_strides() {
         Tensor *t = make(2, s);
         // t->stride = [4, 1]
         u32 out_shape[2] = {3, 4};
-        broadcast_stride(t, out_shape, 2, bstrides);
+        expanded_stride(t, out_shape, 2, bstrides);
         u64 expected[2] = {t->stride[0], t->stride[1]}; // [4, 1]
         check("(3,4)→(3,4) strides unchanged",
               strides_eq(bstrides, expected, 2));
@@ -122,7 +122,7 @@ static void test_broadcast_strides() {
         Tensor *t = make(2, s);
         // t->stride = [4, 1]
         u32 out_shape[2] = {3, 4};
-        broadcast_stride(t, out_shape, 2, bstrides);
+        expanded_stride(t, out_shape, 2, bstrides);
         u64 expected[2] = {0, t->stride[1]}; // [0, 1]
         check("(1,4)→(3,4) dim0 stride=0", strides_eq(bstrides, expected, 2));
         delete t;
@@ -134,7 +134,7 @@ static void test_broadcast_strides() {
         Tensor *t = make(2, s);
         // t->stride = [1, 1]
         u32 out_shape[2] = {3, 4};
-        broadcast_stride(t, out_shape, 2, bstrides);
+        expanded_stride(t, out_shape, 2, bstrides);
         u64 expected[2] = {t->stride[0], 0}; // [1, 0]
         check("(3,1)→(3,4) dim1 stride=0", strides_eq(bstrides, expected, 2));
         delete t;
@@ -145,7 +145,7 @@ static void test_broadcast_strides() {
         u32 s[2] = {1, 1};
         Tensor *t = make(2, s);
         u32 out_shape[2] = {3, 4};
-        broadcast_stride(t, out_shape, 2, bstrides);
+        expanded_stride(t, out_shape, 2, bstrides);
         u64 expected[2] = {0, 0};
         check("(1,1)→(3,4) all strides=0", strides_eq(bstrides, expected, 2));
         delete t;
@@ -157,7 +157,7 @@ static void test_broadcast_strides() {
         Tensor *t = make(1, s);
         // t->stride = [1]
         u32 out_shape[2] = {3, 4};
-        broadcast_stride(t, out_shape, 2, bstrides);
+        expanded_stride(t, out_shape, 2, bstrides);
         // (4,) right-aligns to dim 1 of (3,4): bstrides = [0, t->stride[0]]
         u64 expected[2] = {0, t->stride[0]}; // [0, 1]
         check("(4,)→(3,4) prepended dim gets 0",
