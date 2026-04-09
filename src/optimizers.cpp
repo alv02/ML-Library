@@ -25,8 +25,9 @@ void gd_optimizer::step() {
     for (function_var *fv : graph->nodes) {
         if ((fv->flags & FV_FLAG_PARAMETER) && fv->grad) {
             // var = var - lr * dL/dvar
-            tensor_scale(fv->grad, fv->grad, lr);
-            tensor_sub(fv->val, fv->val, fv->grad);
+            Tensor *tmp = tensor_mul(fv->grad, lr);
+            tensor_sub(fv->val, fv->val, tmp);
+            delete tmp;
         }
     }
 }

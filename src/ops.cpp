@@ -16,11 +16,13 @@ Tensor *reduce_grad(const Tensor *grad, const Tensor *target) {
         if (target_expanded_shape[i] == 1 && cur->shape[i] > 1) {
             current_shape[i] = 1;
             next = new Tensor(cur->ndim, current_shape, false);
-            tensor_sum(next, cur, i, false, false);
+            tensor_sum(next, cur, i, true, false);
             delete cur;
             cur = next;
         }
     }
+
+    tensor_reshape(cur, target->shape, target->ndim);
 
     return cur;
 }
@@ -65,7 +67,7 @@ void MatMulOp::backward(Tensor *grad_output) {
     if (B->flags & FV_FLAG_REQUIERES_GRAD) {
         // Lazy creation of grad
         if (!B->grad)
-            inputs[1]->grad = tensor_create_like(inputs[1]->val);
+            B->grad = tensor_create_like(B->val);
 
         Tensor *At = tensor_view(A->val);
         tensor_transpose(At, ROW_DIM(At), COL_DIM(At));
@@ -155,7 +157,7 @@ void MeanSquareErrorOp::backward(Tensor *grad_output) {
             inputs[0]->grad = tensor_create_like(inputs[0]->val);
         Tensor *diff = tensor_create_like(inputs[0]->val);
         tensor_sub(diff, inputs[0]->val, inputs[1]->val);
-        tensor_scale(diff, diff, scale);
+        tensor_mul(diff, diff, scale);
         tensor_add(inputs[0]->grad, inputs[0]->grad, diff);
         delete diff;
     }
@@ -167,7 +169,7 @@ void MeanSquareErrorOp::backward(Tensor *grad_output) {
             inputs[1]->grad = tensor_create_like(inputs[1]->val);
         Tensor *diff = tensor_create_like(inputs[1]->val);
         tensor_sub(diff, inputs[1]->val, inputs[0]->val);
-        tensor_scale(diff, diff, scale);
+        tensor_mul(diff, diff, scale);
         tensor_add(inputs[1]->grad, inputs[1]->grad, diff);
         delete diff;
     }

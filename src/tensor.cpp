@@ -136,6 +136,15 @@ b32 shape_eq(u32 ndim_a, const u32 *shape_a, u32 ndim_b, const u32 *shape_b) {
     }
     return true;
 }
+b32 tensor_is_contiguous(const Tensor *t) {
+    u64 expected = 1;
+    for (u32 i = t->ndim; i-- > 0;) {
+        if (t->stride[i] != expected)
+            return false;
+        expected *= t->shape[i];
+    }
+    return true;
+}
 
 b32 tensor_shape_eq(const Tensor *a, const Tensor *b) {
     return shape_eq(a->ndim, a->shape, b->ndim, b->shape);
@@ -234,7 +243,8 @@ b32 elementwise_binary(Tensor *out, const Tensor *a, const Tensor *b, Fn fn) {
     }
 
     // Use flat index for speed up if not need to broadcast
-    if (tensor_shape_eq(a, b)) {
+    if (tensor_shape_eq(a, b) && tensor_is_contiguous(a) &&
+        tensor_is_contiguous(b)) {
         for (u64 i = 0; i < out->size; i++) {
             out->data[i] = fn(a->data[i], b->data[i]);
         }
@@ -486,10 +496,18 @@ Tensor *tensor_mat_mul(const Tensor *a, const Tensor *b) {
     return out;
 }
 
-void tensor_scale(Tensor *out, const Tensor *tensor, f32 scale) {
+void tensor_mul(Tensor *out, const Tensor *tensor, f32 scalar) {
     for (u64 i = 0; i < tensor->size; i++) {
-        out->data[i] = tensor->data[i] * scale;
+        out->data[i] = tensor->data[i] * scalar;
     }
+}
+
+Tensor *tensor_mul(const Tensor *tensor, f32 scalar) {
+    Tensor *out = tensor_create_like(tensor);
+
+    tensor_mul(out, tensor, scalar);
+
+    return out;
 }
 
 b32 tensor_sum(Tensor *out, const Tensor *tensor, b32 clear_out) {
@@ -505,7 +523,8 @@ b32 tensor_sum(Tensor *out, const Tensor *tensor, b32 clear_out) {
     return true;
 }
 
-b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim, b32 clear_out) {
+b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim,
+               b32 clear_out) {
     if (dim >= tensor->ndim) {
         printf("tensor_sum: dim %u out of range (ndim=%u)\n", dim,
                tensor->ndim);
@@ -518,6 +537,7 @@ b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim, b32 cle
     u64 out_strides[MAX_NDIM];
     memcpy(out_strides, out->stride, tensor->ndim * sizeof(u64));
     out_strides[dim] = 0;
+    out->shape[dim] = 1;
 
     tensorIterator in_it(tensor->ndim, tensor->shape, tensor->stride);
     tensorIterator out_it(tensor->ndim, tensor->shape, out_strides);
@@ -527,9 +547,11 @@ b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim, b32 cle
     if (!keep_dim) {
         for (u32 i = dim; i < out->ndim - 1; i++) {
             out->shape[i] = out->shape[i + 1];
+            out->stride[i] = out->stride[i + 1];
         }
         out->ndim--;
     }
+
     return true;
 }
 
@@ -564,6 +586,28 @@ Tensor *tensor_view(const Tensor *src) { return new Tensor(src); }
 
 Tensor *tensor_create_like(const Tensor *src) {
     return new Tensor(src->ndim, src->shape, src->on_gpu);
+}
+
+b32 tensor_reshape(Tensor *tensor, const u32 *shape, u32 ndim) {
+    u64 shape_size = 1;
+    for (u32 i = 0; i < ndim; i++) {
+        shape_size *= shape[i];
+    }
+    if (tensor->size != shape_size) {
+        return false;
+    }
+
+    for (u32 i = 0; i < ndim; i++)
+        tensor->shape[i] = shape[i];
+
+    shape_size = 1;
+    for (u32 i = ndim; i-- > 0;) {
+        tensor->stride[i] = shape_size;
+        shape_size *= shape[i];
+    }
+    tensor->ndim = ndim;
+
+    return true;
 }
 
 void tensor_print(const Tensor *tensor) {
