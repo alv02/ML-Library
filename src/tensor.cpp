@@ -1,5 +1,6 @@
 #include "../include/tensor.hpp"
 #include "../include/backend/tensor_cpu.hpp"
+#include "../include/backend/tensor_cuda.hpp"
 #include "string.h"
 #include <bits/stdc++.h>
 #include <cstdlib>
@@ -22,7 +23,7 @@ Tensor::Tensor(u32 ndim, const u32 *shape, b32 on_gpu) {
     }
 
     if (on_gpu) {
-        // cudaMalloc(&this->data, this->size * sizeof(f32));
+        tensor_cuda_alloc(this);
     } else {
         this->data = (f32 *)malloc(this->size * sizeof(f32));
         memset(this->data, 0, this->size * sizeof(f32));
@@ -43,7 +44,7 @@ Tensor::Tensor(const Tensor *src) {
 Tensor::~Tensor() {
     if (owns_data) {
         if (on_gpu) {
-            // cudaFree(data);
+            tensor_cuda_free(this);
         } else {
             free(data);
         }
@@ -226,39 +227,69 @@ void expanded_stride(const Tensor *t, const u32 *expanded_shape,
     }
 }
 
-// ---- Dispatched operations -----------------------------------------------
-// Each 3-param (in-place) function dispatches to the right backend.
-// Allocating 2-param wrappers handle shape logic then call the dispatcher.
+// ---- Dispatch helpers ----------------------------------------------------
+
+// Check that `out` has the broadcast shape of a and b.
+static b32 check_broadcast(const Tensor *out, const Tensor *a, const Tensor *b,
+                           const char *op) {
+    u32 bcast[MAX_NDIM];
+    u32 bndim = broadcast_shape(a, b, bcast);
+    if (bndim == 0) {
+        printf("%s: shapes not broadcastable\n", op);
+        return false;
+    }
+    if (bndim != out->ndim) {
+        printf("%s: out ndim mismatch\n", op);
+        return false;
+    }
+    for (u32 i = 0; i < bndim; i++) {
+        if (bcast[i] != out->shape[i]) {
+            printf("%s: out shape mismatch at dim %u\n", op, i);
+            return false;
+        }
+    }
+    return true;
+}
+
+// ---- fill / clear --------------------------------------------------------
 
 void tensor_fill(Tensor *tensor, f32 value) {
-    if (tensor->on_gpu) {
-        // tensor_cuda_fill(tensor, value);
-    } else {
+    if (tensor->on_gpu)
+        tensor_cuda_fill(tensor, value);
+    else
         tensor_cpu_fill(tensor, value);
-    }
 }
 
 void tensor_clear(Tensor *tensor) {
-    if (tensor->on_gpu) {
-        // tensor_cuda_clear(tensor);
-    } else {
+    if (tensor->on_gpu)
+        tensor_cuda_clear(tensor);
+    else
         tensor_cpu_clear(tensor);
-    }
 }
 
 // ---- add -----------------------------------------------------------------
 
 b32 tensor_add(Tensor *out, const Tensor *a, const Tensor *b) {
-    if (a->on_gpu)
-        return false; // TODO: tensor_cuda_add
-    return tensor_cpu_add(out, a, b);
+    if (!check_broadcast(out, a, b, "tensor_add"))
+        return false;
+    switch ((a->on_gpu << 1) | b->on_gpu) {
+    case 0b00:
+        tensor_cpu_add(out, a, b);
+        return true;
+    case 0b11:
+        tensor_cuda_add(out, a, b);
+        return true;
+    default:
+        printf("tensor_add: tensors must be on the same device\n");
+        return false;
+    }
 }
 
 Tensor *tensor_add(const Tensor *a, const Tensor *b) {
     u32 out_shape[MAX_NDIM];
     u32 out_ndim = broadcast_shape(a, b, out_shape);
     if (out_ndim == 0) {
-        printf("Failed to add tensors: shapes not broadcastable\n");
+        printf("tensor_add: shapes not broadcastable\n");
         return nullptr;
     }
     Tensor *out = new Tensor(out_ndim, out_shape, a->on_gpu);
@@ -271,27 +302,36 @@ Tensor *tensor_add(const Tensor *a, const Tensor *b) {
 
 Tensor *tensor_add(const Tensor *a, f32 scalar) {
     Tensor *out = tensor_create_like(a);
-    if (a->on_gpu) {
-        // tensor_cuda_add_scalar(out, a, scalar);
-    } else {
-        tensor_cpu_add_scalar(out, a, scalar);
-    }
+    if (a->on_gpu)
+        tensor_cuda_add(out, a, scalar);
+    else
+        tensor_cpu_add(out, a, scalar);
     return out;
 }
 
 // ---- sub -----------------------------------------------------------------
 
 b32 tensor_sub(Tensor *out, const Tensor *a, const Tensor *b) {
-    if (a->on_gpu)
-        return false; // TODO: tensor_cuda_sub
-    return tensor_cpu_sub(out, a, b);
+    if (!check_broadcast(out, a, b, "tensor_sub"))
+        return false;
+    switch ((a->on_gpu << 1) | b->on_gpu) {
+    case 0b00:
+        tensor_cpu_sub(out, a, b);
+        return true;
+    case 0b11:
+        tensor_cuda_sub(out, a, b);
+        return true;
+    default:
+        printf("tensor_sub: tensors must be on the same device\n");
+        return false;
+    }
 }
 
 Tensor *tensor_sub(const Tensor *a, const Tensor *b) {
     u32 out_shape[MAX_NDIM];
     u32 out_ndim = broadcast_shape(a, b, out_shape);
     if (out_ndim == 0) {
-        printf("Failed to sub tensors: shapes not broadcastable\n");
+        printf("tensor_sub: shapes not broadcastable\n");
         return nullptr;
     }
     Tensor *out = new Tensor(out_ndim, out_shape, a->on_gpu);
@@ -305,16 +345,26 @@ Tensor *tensor_sub(const Tensor *a, const Tensor *b) {
 // ---- mul (elementwise) ---------------------------------------------------
 
 b32 tensor_mul(Tensor *out, const Tensor *a, const Tensor *b) {
-    if (a->on_gpu)
-        return false; // TODO: tensor_cuda_mul
-    return tensor_cpu_mul(out, a, b);
+    if (!check_broadcast(out, a, b, "tensor_mul"))
+        return false;
+    switch ((a->on_gpu << 1) | b->on_gpu) {
+    case 0b00:
+        tensor_cpu_mul(out, a, b);
+        return true;
+    case 0b11:
+        tensor_cuda_mul(out, a, b);
+        return true;
+    default:
+        printf("tensor_mul: tensors must be on the same device\n");
+        return false;
+    }
 }
 
 Tensor *tensor_mul(const Tensor *a, const Tensor *b) {
     u32 out_shape[MAX_NDIM];
     u32 out_ndim = broadcast_shape(a, b, out_shape);
     if (out_ndim == 0) {
-        printf("Failed to mul tensors: shapes not broadcastable\n");
+        printf("tensor_mul: shapes not broadcastable\n");
         return nullptr;
     }
     Tensor *out = new Tensor(out_ndim, out_shape, a->on_gpu);
@@ -328,11 +378,10 @@ Tensor *tensor_mul(const Tensor *a, const Tensor *b) {
 // ---- mul (scalar) --------------------------------------------------------
 
 void tensor_mul(Tensor *out, const Tensor *tensor, f32 scalar) {
-    if (tensor->on_gpu) {
-        // tensor_cuda_mul_scalar(out, tensor, scalar);
-    } else {
-        tensor_cpu_mul_scalar(out, tensor, scalar);
-    }
+    if (tensor->on_gpu)
+        tensor_cuda_mul(out, tensor, scalar);
+    else
+        tensor_cpu_mul(out, tensor, scalar);
 }
 
 Tensor *tensor_mul(const Tensor *tensor, f32 scalar) {
@@ -344,16 +393,26 @@ Tensor *tensor_mul(const Tensor *tensor, f32 scalar) {
 // ---- div (elementwise) ---------------------------------------------------
 
 b32 tensor_div(Tensor *out, const Tensor *a, const Tensor *b) {
-    if (a->on_gpu)
-        return false; // TODO: tensor_cuda_div
-    return tensor_cpu_div(out, a, b);
+    if (!check_broadcast(out, a, b, "tensor_div"))
+        return false;
+    switch ((a->on_gpu << 1) | b->on_gpu) {
+    case 0b00:
+        tensor_cpu_div(out, a, b);
+        return true;
+    case 0b11:
+        tensor_cuda_div(out, a, b);
+        return true;
+    default:
+        printf("tensor_div: tensors must be on the same device\n");
+        return false;
+    }
 }
 
 Tensor *tensor_div(const Tensor *a, const Tensor *b) {
     u32 out_shape[MAX_NDIM];
     u32 out_ndim = broadcast_shape(a, b, out_shape);
     if (out_ndim == 0) {
-        printf("Failed to div tensors: shapes not broadcastable\n");
+        printf("tensor_div: shapes not broadcastable\n");
         return nullptr;
     }
     Tensor *out = new Tensor(out_ndim, out_shape, a->on_gpu);
@@ -367,9 +426,15 @@ Tensor *tensor_div(const Tensor *a, const Tensor *b) {
 // ---- div (scalar) --------------------------------------------------------
 
 b32 tensor_div(Tensor *out, const Tensor *a, f32 scalar) {
+    if (!tensor_shape_eq(out, a)) {
+        printf("tensor_div: out and a must have the same shape\n");
+        return false;
+    }
     if (a->on_gpu)
-        return false; // TODO: tensor_cuda_div_scalar
-    return tensor_cpu_div_scalar(out, a, scalar);
+        tensor_cuda_div(out, a, scalar);
+    else
+        tensor_cpu_div(out, a, scalar);
+    return true;
 }
 
 Tensor *tensor_div(const Tensor *a, f32 scalar) {
@@ -385,16 +450,33 @@ Tensor *tensor_div(const Tensor *a, f32 scalar) {
 
 b32 tensor_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
                    b32 clear_out) {
-    if (a->on_gpu)
-        return false; // TODO: tensor_cuda_mat_mul
-    return tensor_cpu_mat_mul(out, a, b, clear_out);
+    if (a->ndim != 2 || b->ndim != 2) {
+        printf("tensor_mat_mul: only 2-D tensors supported\n");
+        return false;
+    }
+    if (a->shape[COL_DIM(a)] != b->shape[ROW_DIM(b)] ||
+        a->shape[ROW_DIM(a)] != out->shape[ROW_DIM(out)] ||
+        b->shape[COL_DIM(b)] != out->shape[COL_DIM(out)]) {
+        printf("tensor_mat_mul: shape mismatch\n");
+        return false;
+    }
+    switch ((a->on_gpu << 1) | b->on_gpu) {
+    case 0b00:
+        tensor_cpu_mat_mul(out, a, b, clear_out);
+        return true;
+    case 0b11:
+        tensor_cuda_mat_mul(out, a, b, clear_out);
+        return true;
+    default:
+        printf("tensor_mat_mul: tensors must be on the same device\n");
+        return false;
+    }
 }
 
 Tensor *tensor_mat_mul(const Tensor *a, const Tensor *b) {
     u32 shape[2] = {a->shape[ROW_DIM(a)], b->shape[COL_DIM(b)]};
     Tensor *out = new Tensor(2, shape, a->on_gpu);
     if (!tensor_mat_mul(out, a, b, false)) {
-        printf("Matrix multiplication failed due to shape mismatch\n");
         printf("Shape of A: [%d, %d]\n", a->shape[ROW_DIM(a)],
                a->shape[COL_DIM(a)]);
         printf("Shape of B: [%d, %d]\n", b->shape[ROW_DIM(b)],
@@ -408,16 +490,29 @@ Tensor *tensor_mat_mul(const Tensor *a, const Tensor *b) {
 // ---- sum -----------------------------------------------------------------
 
 b32 tensor_sum(Tensor *out, const Tensor *tensor, b32 clear_out) {
+    if (out->size != 1) {
+        printf("tensor_sum: out must be a scalar tensor (size=1)\n");
+        return false;
+    }
     if (tensor->on_gpu)
-        return false; // TODO: tensor_cuda_sum
-    return tensor_cpu_sum(out, tensor, clear_out);
+        tensor_cuda_sum(out, tensor, clear_out);
+    else
+        tensor_cpu_sum(out, tensor, clear_out);
+    return true;
 }
 
 b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim,
                b32 clear_out) {
+    if (dim >= tensor->ndim) {
+        printf("tensor_sum: dim %u out of range (ndim=%u)\n", dim,
+               tensor->ndim);
+        return false;
+    }
     if (tensor->on_gpu)
-        return false; // TODO: tensor_cuda_sum_dim
-    return tensor_cpu_sum_dim(out, tensor, dim, keep_dim, clear_out);
+        tensor_cuda_sum(out, tensor, dim, keep_dim, clear_out);
+    else
+        tensor_cpu_sum(out, tensor, dim, keep_dim, clear_out);
+    return true;
 }
 
 Tensor *tensor_sum(const Tensor *tensor) {
@@ -431,11 +526,6 @@ Tensor *tensor_sum(const Tensor *tensor) {
 }
 
 Tensor *tensor_sum(const Tensor *tensor, u32 dim, b32 keep_dim) {
-    if (dim >= tensor->ndim) {
-        printf("tensor_sum: dim %u out of range (ndim=%u)\n", dim,
-               tensor->ndim);
-        return nullptr;
-    }
     u32 out_shape[MAX_NDIM];
     memcpy(out_shape, tensor->shape, tensor->ndim * sizeof(u32));
     out_shape[dim] = 1;
