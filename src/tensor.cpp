@@ -113,11 +113,32 @@ Tensor *tensor_load(const char *filename, b32 on_gpu) {
             shape_ptr++;
     }
 
-    Tensor *tensor = new Tensor(ndim, shape, on_gpu);
+    Tensor *tensor = new Tensor(ndim, shape, false);
     fread(tensor->data, sizeof(f32), tensor->size, file);
     fclose(file);
 
-    return tensor;
+    if (!on_gpu)
+        return tensor;
+
+    Tensor *gpu = tensor_cuda_to_gpu(tensor);
+    delete tensor;
+    return gpu;
+}
+
+Tensor *tensor_to_gpu(const Tensor *t) {
+    if (t->on_gpu)
+        return tensor_cuda_copy(t);
+    return tensor_cuda_to_gpu(t);
+}
+
+Tensor *tensor_to_cpu(const Tensor *t) {
+    if (!t->on_gpu) {
+        Tensor *copy = new Tensor(t->ndim, t->shape, false);
+        memcpy(copy->stride, t->stride, t->ndim * sizeof(u64));
+        memcpy(copy->data, t->data, t->size * sizeof(f32));
+        return copy;
+    }
+    return tensor_cuda_to_cpu(t);
 }
 
 // ---- Metadata / shape helpers (device-independent) -----------------------

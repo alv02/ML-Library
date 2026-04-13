@@ -27,8 +27,9 @@ struct TensorMeta {
     }
 };
 
-Tensor *tensor_to_gpu(const Tensor *t_cpu);
-Tensor *tensor_to_cpu(const Tensor *t_gpu);
+Tensor *tensor_cuda_to_gpu(const Tensor *t_cpu);
+Tensor *tensor_cuda_to_cpu(const Tensor *t_gpu);
+Tensor *tensor_cuda_copy(const Tensor *t_gpu);
 void tensor_cuda_alloc(Tensor *tensor);
 void tensor_cuda_free(Tensor *tensor);
 

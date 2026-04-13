@@ -36,6 +36,8 @@ struct Tensor {
     }
 };
 Tensor *tensor_load(const char *filename, b32 on_gpu);
+Tensor *tensor_to_gpu(const Tensor *t);
+Tensor *tensor_to_cpu(const Tensor *t);
 void tensor_fill(Tensor *tensor, f32 value);
 
 b32 tensor_is_contiguous(const Tensor *t);

@@ -1,5 +1,4 @@
 #include "../include/tensor.hpp"
-#include "../include/backend/tensor_cuda.hpp"
 #include <cuda_runtime.h>
 #include <cmath>
 #include <cstdio>
@@ -14,15 +13,6 @@ static void check(const char *name, bool ok) {
     printf("  [%s%s%s] %s\n", ok ? GREEN : RED, ok ? "PASS" : "FAIL", RESET, name);
     ok ? passed++ : failed++;
 }
-
-static Tensor *load_gpu(const char *path) {
-    Tensor *cpu = tensor_load(path, false);
-    if (!cpu) return nullptr;
-    Tensor *gpu = tensor_to_gpu(cpu);
-    delete cpu;
-    return gpu;
-}
-
 
 static bool tensors_close(const Tensor *got, const Tensor *expected, f32 tol = 1e-5f) {
     if (got->size != expected->size) return false;
@@ -43,7 +33,7 @@ static void test_mat_mul(const char *name, const char *dir, bool trans_a = false
     snprintf(pout, sizeof(pout), "../data/test/%s/out.npy", dir);
 
     Tensor *a_cpu = tensor_load(pa, false);
-    Tensor *b     = load_gpu(pb);
+    Tensor *b     = tensor_load(pb, true);
     Tensor *exp   = tensor_load(pout, false);
 
     if (!a_cpu || !b || !exp) {
@@ -74,8 +64,8 @@ static void test_add(const char *name, const char *dir) {
     snprintf(pb,   sizeof(pb),   "../data/test/%s/b.npy",   dir);
     snprintf(pout, sizeof(pout), "../data/test/%s/out.npy", dir);
 
-    Tensor *a   = load_gpu(pa);
-    Tensor *b   = load_gpu(pb);
+    Tensor *a   = tensor_load(pa, true);
+    Tensor *b   = tensor_load(pb, true);
     Tensor *exp = tensor_load(pout, false);
 
     if (!a || !b || !exp) {
@@ -94,6 +84,30 @@ static void test_add(const char *name, const char *dir) {
     delete a; delete b; delete exp; delete out; delete out_cpu;
 }
 
+static void test_sum(const char *name, const char *dir) {
+    char pa[256], pout[256];
+    snprintf(pa,   sizeof(pa),   "../data/test/%s/a.npy",   dir);
+    snprintf(pout, sizeof(pout), "../data/test/%s/out.npy", dir);
+
+    Tensor *a   = tensor_load(pa, true);
+    Tensor *exp = tensor_load(pout, false);
+
+    if (!a || !exp) {
+        printf("  [%sFAIL%s] %s — could not load data files\n", RED, RESET, name);
+        failed++;
+        delete a; delete exp;
+        return;
+    }
+
+    Tensor *out = tensor_sum(a);
+    cudaDeviceSynchronize();
+
+    Tensor *out_cpu = tensor_to_cpu(out);
+    check(name, tensors_close(out_cpu, exp, 1e-3f));
+
+    delete a; delete exp; delete out; delete out_cpu;
+}
+
 int main() {
     printf("\n-- CUDA tensor_add --\n");
     test_add("same shape   (3,4)+(3,4)",      "add_same");
@@ -106,6 +120,12 @@ int main() {
     test_mat_mul("square        (4,4)@(4,4)",    "matmul_square");
     test_mat_mul("rect          (3,4)@(4,5)",    "matmul_rect");
     test_mat_mul("transposed A  (4,3)^T@(4,5)",  "matmul_transA", true);
+
+    printf("\n-- CUDA tensor_sum --\n");
+    test_sum("single element  (1,1)",    "sum_single");
+    test_sum("small           (3,4)",    "sum_small");
+    test_sum("medium          (128,32)", "sum_medium");
+    test_sum("large           (512,512)","sum_large");
 
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;

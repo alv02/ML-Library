@@ -15,7 +15,7 @@ Tensor *reduce_grad(const Tensor *grad, const Tensor *target) {
         // Reduce
         if (target_expanded_shape[i] == 1 && cur->shape[i] > 1) {
             current_shape[i] = 1;
-            next = new Tensor(cur->ndim, current_shape, false);
+            next = new Tensor(cur->ndim, current_shape, cur->on_gpu);
             tensor_sum(next, cur, i, true, false);
             delete cur;
             cur = next;
@@ -83,7 +83,7 @@ function_var *AddOp::make_output() {
     const Tensor *b = inputs[1]->val;
     u32 out_shape[MAX_NDIM];
     u32 out_dim = broadcast_shape(a, b, out_shape);
-    Tensor *out_tensor = new Tensor(out_dim, out_shape, false);
+    Tensor *out_tensor = new Tensor(out_dim, out_shape, inputs[0]->val->on_gpu);
 
     u32 flags = FV_FLAG_NONE;
     if ((inputs[0]->flags | inputs[1]->flags) & FV_FLAG_REQUIERES_GRAD)
@@ -148,7 +148,8 @@ void MeanSquareErrorOp::forward(function_var *out) {
 }
 
 void MeanSquareErrorOp::backward(Tensor *grad_output) {
-    f32 scale = grad_output->data[0] * 2.0f / (f32)N;
+    // scale = grad_output * (2 / N) — stays on the same device as grad_output
+    Tensor *scale = tensor_mul(grad_output, 2.0f / (f32)N);
 
     // dA = scale * (A - B)
     if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
@@ -173,4 +174,6 @@ void MeanSquareErrorOp::backward(Tensor *grad_output) {
         tensor_add(inputs[1]->grad, inputs[1]->grad, diff);
         delete diff;
     }
+
+    delete scale;
 }

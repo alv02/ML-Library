@@ -58,4 +58,25 @@ np.save("matmul_transA/a.npy", a.astype(np.float32))        # saved as (4,3), wi
 np.save("matmul_transA/b.npy", b.astype(np.float32))
 np.save("matmul_transA/out.npy", (a.T @ b).astype(np.float32))
 
+def save_sum(dir, a):
+    os.makedirs(dir, exist_ok=True)
+    np.save(f"{dir}/a.npy", a.astype(np.float32))
+    np.save(f"{dir}/out.npy", np.array([a.sum()], dtype=np.float32))
+
+# Small: fits in a single block (< 256 elements)
+a = np.random.randn(3, 4).astype(np.float32)
+save_sum("sum_small", a)
+
+# Medium: needs 2 passes (> 256, < 256*256 elements)
+a = np.random.randn(128, 32).astype(np.float32)   # 4096 elements → 16 blocks → 1 block
+save_sum("sum_medium", a)
+
+# Large: needs 3 passes (> 256*256 elements)
+a = np.random.randn(512, 512).astype(np.float32)  # 262144 → 1024 blocks → 4 blocks → 1 block
+save_sum("sum_large", a)
+
+# Single element edge case
+a = np.random.randn(1, 1).astype(np.float32)
+save_sum("sum_single", a)
+
 print("Test data generated.")

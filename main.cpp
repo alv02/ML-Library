@@ -3,8 +3,8 @@
 #include "include/tensor.hpp"
 
 int main() {
-    Tensor *val_X = tensor_load("data/X.npy", false);
-    Tensor *val_y = tensor_load("data/y.npy", false);
+    Tensor *val_X = tensor_load("data/X.npy", true);
+    Tensor *val_y = tensor_load("data/y.npy", true);
 
     linear_model model = linear_model(val_X, val_y);
     gd_optimizer optim = gd_optimizer(0.1f);
@@ -15,7 +15,9 @@ int main() {
         graph_backward(model.graph);
         optim.step();
         if (epoch % 100 == 0) {
-            printf("Epoch %d loss: %f\n", epoch, model.fv_loss->val->data[0]);
+            Tensor *loss_cpu = tensor_to_cpu(model.fv_loss->val);
+            printf("Epoch %d loss: %f\n", epoch, loss_cpu->data[0]);
+            delete loss_cpu;
         }
         optim.zero_grad();
     }

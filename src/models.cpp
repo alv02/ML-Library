@@ -5,11 +5,11 @@ linear_model::linear_model(Tensor *val_X, Tensor *val_y) {
     u32 n_features = val_X->shape[COL_DIM(val_X)];
 
     u32 w_shape[2] = {n_features, 1};
-    W = new function_var(new Tensor(2, w_shape, false),
+    W = new function_var(new Tensor(2, w_shape, val_X->on_gpu),
                          FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
 
     u32 b_shape[1] = {1};
-    b = new function_var(new Tensor(1, b_shape, false),
+    b = new function_var(new Tensor(1, b_shape, val_X->on_gpu),
                          FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
 
     X = new function_var(val_X, FV_FLAG_NONE);
