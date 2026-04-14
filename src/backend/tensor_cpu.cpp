@@ -14,6 +14,35 @@ void tensor_cpu_clear(Tensor *tensor) {
     memset(tensor->data, 0, sizeof(f32) * tensor->size);
 }
 
+// ---- elementwise unary ---------------------------------------------------
+
+template <typename Fn>
+static void elementwise_unary(Tensor *out, const Tensor *a, Fn fn) {
+    if (tensor_is_contiguous(a)) {
+        for (u64 i = 0; i < out->size; i++)
+            out->data[i] = fn(a->data[i]);
+        return;
+    }
+    // Non-contiguous path: iterate using a's own strides
+    tensorIterator a_iter(a->ndim, a->shape, a->stride);
+    for (u64 i = 0; i < out->size; i++)
+        out->data[i] = fn(a->data[a_iter.next()]);
+}
+
+// ---- activations (relu, exp) ---------------------------------------------
+
+void tensor_cpu_relu(Tensor *dst, const Tensor *src) {
+    elementwise_unary(dst, src, [](f32 x) { return x > 0.0f ? x : 0.0f; });
+}
+
+void tensor_cpu_exp(Tensor *dst, const Tensor *src) {
+    elementwise_unary(dst, src, [](f32 x) { return std::exp(x); });
+}
+
+void tensor_cpu_log(Tensor *dst, const Tensor *src) {
+    elementwise_unary(dst, src, [](f32 x) { return std::log(x); });
+}
+
 // ---- elementwise binary (add / sub / mul / div) --------------------------
 // Validation is done by the dispatcher in tensor.cpp before calling here.
 
@@ -57,6 +86,20 @@ void tensor_cpu_mul(Tensor *out, const Tensor *a, const Tensor *b) {
 
 void tensor_cpu_div(Tensor *out, const Tensor *a, const Tensor *b) {
     elementwise_binary(out, a, b, [](f32 x, f32 y) { return x / y; });
+}
+void tensor_cpu_relu_backward(Tensor *out, const Tensor *grad,
+                              const Tensor *in) {
+    elementwise_binary(out, grad, in,
+                       [](f32 g, f32 x) { return x > 0.0f ? g : 0.0f; });
+}
+
+// ---- reduction (max) -----------------------------------------------------
+
+void tensor_cpu_max(Tensor *out, const Tensor *tensor) {
+    f32 max_val = -__FLT_MAX__;
+    for (u64 i = 0; i < tensor->size; i++)
+        max_val = std::max(max_val, tensor->data[i]);
+    out->data[0] = max_val;
 }
 
 // ---- scalar operations ---------------------------------------------------

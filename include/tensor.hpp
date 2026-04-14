@@ -35,53 +35,78 @@ struct Tensor {
         return data[offset];
     }
 };
+// ---- file I/O / device transfers -----------------------------------------
+
 Tensor *tensor_load(const char *filename, b32 on_gpu);
 Tensor *tensor_to_gpu(const Tensor *t);
 Tensor *tensor_to_cpu(const Tensor *t);
-void tensor_fill(Tensor *tensor, f32 value);
+
+// ---- metadata / shape helpers (device-independent) -----------------------
 
 b32 tensor_is_contiguous(const Tensor *t);
 b32 tensor_shape_eq(const Tensor *a, const Tensor *b);
-
+b32 tensor_transpose(Tensor *tensor, u32 dim0, u32 dim1);
+b32 tensor_reshape(Tensor *tensor, const u32 *shape, u32 ndim);
 u32 broadcast_shape(const Tensor *a, const Tensor *b, u32 *expanded_shape);
 void expanded_shape(const Tensor *t, const u32 *expanded_shape,
                     u32 expanded_ndim, u32 *t_expanded_shape);
-
 void expanded_stride(const Tensor *t, const u32 *expanded_shape,
                      u32 expanded_ndim, u64 *t_expanded_stride);
-b32 tensor_transpose(Tensor *tensor, u32 dim0, u32 dim1);
+Tensor *tensor_view(const Tensor *src);
+Tensor *tensor_create_like(const Tensor *src);
+void tensor_print(const Tensor *tensor);
+
+// ---- fill / clear --------------------------------------------------------
+
+void tensor_fill(Tensor *tensor, f32 value);
 void tensor_clear(Tensor *tensor);
-void tensor_mul(Tensor *out, const Tensor *tensor, f32 scalar);
-Tensor *tensor_mul(const Tensor *tensor, f32 scalar);
+
+// ---- activations (relu, exp) ---------------------------------------------
+
+b32 tensor_relu(Tensor *dst, const Tensor *src);
+b32 tensor_exp(Tensor *dst, const Tensor *src);
+b32 tensor_log(Tensor *dst, const Tensor *src);
+
+// ---- elementwise binary (add / sub / mul / div) --------------------------
+
 b32 tensor_add(Tensor *out, const Tensor *a, const Tensor *b);
 Tensor *tensor_add(const Tensor *a, const Tensor *b);
-Tensor *tensor_add(const Tensor *a, f32 scalar);
 b32 tensor_sub(Tensor *out, const Tensor *a, const Tensor *b);
 Tensor *tensor_sub(const Tensor *a, const Tensor *b);
-b32 tensor_mul(Tensor *out, const Tensor *a,
-               const Tensor *b); // Element wise
+b32 tensor_mul(Tensor *out, const Tensor *a, const Tensor *b);
 Tensor *tensor_mul(const Tensor *a, const Tensor *b);
-b32 tensor_div(Tensor *out, const Tensor *a,
-               const Tensor *b); // Element wise
+b32 tensor_div(Tensor *out, const Tensor *a, const Tensor *b);
 Tensor *tensor_div(const Tensor *a, const Tensor *b);
+b32 tensor_relu_backward(Tensor *out, const Tensor *grad, const Tensor *in);
+b32 tensor_softmax(Tensor *out, const Tensor *in);
 
-b32 tensor_div(Tensor *out, const Tensor *a, f32 scalar); // Element wise
+// ---- scalar operations ---------------------------------------------------
+
+Tensor *tensor_add(const Tensor *a, f32 scalar);
+void tensor_mul(Tensor *out, const Tensor *tensor, f32 scalar);
+Tensor *tensor_mul(const Tensor *tensor, f32 scalar);
+b32 tensor_div(Tensor *out, const Tensor *a, f32 scalar);
 Tensor *tensor_div(const Tensor *a, f32 scalar);
+
+// ---- matrix multiply -----------------------------------------------------
 
 b32 tensor_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
                    b32 clear_out = true);
 Tensor *tensor_mat_mul(const Tensor *a, const Tensor *b);
+
+// ---- reduction (sum, max) ------------------------------------------------
 
 b32 tensor_sum(Tensor *out, const Tensor *tensor, b32 clear_out = true);
 b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim = true,
                b32 clear_out = true);
 Tensor *tensor_sum(const Tensor *tensor);
 Tensor *tensor_sum(const Tensor *tensor, u32 dim, b32 keep_dim = true);
+b32 tensor_max(Tensor *out, const Tensor *tensor);
+Tensor *tensor_max(const Tensor *tensor);
 
-Tensor *tensor_view(const Tensor *src);
-Tensor *tensor_create_like(const Tensor *src);
-b32 tensor_reshape(Tensor *tensor, const u32 *shape, u32 ndim);
+// ---- indexing ------------------------------------------------------------
 
-void tensor_print(const Tensor *tensor);
+void tensor_index_select(Tensor *dst, const Tensor *src, const u32 *indices,
+                         u32 n_indices, u32 dim);
 
 #endif

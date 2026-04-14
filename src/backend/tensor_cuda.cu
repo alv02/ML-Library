@@ -18,6 +18,17 @@ struct MulOp {
 struct DivOp {
     __device__ f32 operator()(f32 a, f32 b) const { return a / b; }
 };
+struct ReluBackwardOp {
+    __device__ f32 operator()(f32 grad, f32 input) const {
+        return input > 0.0f ? grad : 0.0f;
+    }
+};
+struct ExpOp {
+    __device__ f32 operator()(f32 x) const { return expf(x); }
+};
+struct LogOp {
+    __device__ f32 operator()(f32 x) const { return logf(x); }
+};
 
 // ---- Kernels ----------------------------------------------------------------
 
@@ -28,7 +39,7 @@ __global__ void tensor_fill(u64 tensor_size, f32 *tensor_data, f32 value) {
 }
 
 template <typename Op>
-__global__ void elementwise(u64 size, f32 *out, f32 *a, f32 *b, Op op) {
+__global__ void elementwise_binary(u64 size, f32 *out, f32 *a, f32 *b, Op op) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx < size)
         out[workIdx] = op(a[workIdx], b[workIdx]);
@@ -55,10 +66,18 @@ __global__ void elementwise_broadcast(const TensorMeta out_meta,
 }
 
 template <typename Op>
-__global__ void elementwise(u64 size, f32 *out, const f32 *a, f32 b, Op op) {
+__global__ void elementwise_binary(u64 size, f32 *out, const f32 *a, f32 b,
+                                   Op op) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx < size)
         out[workIdx] = op(a[workIdx], b);
+}
+
+template <typename Op>
+__global__ void elementwise_unary(u64 size, f32 *out, const f32 *a, Op op) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (workIdx < size)
+        out[workIdx] = op(a[workIdx]);
 }
 
 __global__ void mat_mul(TensorMeta out_meta, TensorMeta a_meta,
@@ -119,6 +138,25 @@ __global__ void mat_mul_tiled(TensorMeta out_meta, TensorMeta a_meta,
         out[out_meta.at(myRow, myCol)] = value;
 }
 
+__global__ void tensor_max_step(u64 size, f32 *out, f32 *tensor) {
+    __shared__ f32 partial[N_THREADS];
+
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+
+    partial[threadIdx.x] = (workIdx < size) ? tensor[workIdx] : -__FLT_MAX__;
+    __syncthreads();
+
+    for (u32 stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride)
+            partial[threadIdx.x] =
+                fmaxf(partial[threadIdx.x], partial[threadIdx.x + stride]);
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0)
+        out[blockIdx.x] = partial[0];
+}
+
 __global__ void tensor_sum_step(u64 size, f32 *out, f32 *tensor) {
     __shared__ f32 partial_sum[N_THREADS];
 
@@ -139,7 +177,23 @@ __global__ void tensor_sum_step(u64 size, f32 *out, f32 *tensor) {
 __global__ void tensor_sum(TensorMeta out_meta, TensorMeta tensor_meta,
                            f32 *out, f32 *tensor, u32 dim) {}
 
+__global__ void tensor_relu(u64 size, f32 *dst, f32 *src) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+
+    if (workIdx >= size) {
+        return;
+    }
+    dst[workIdx] = src[workIdx] > 0.0f ? src[workIdx] : 0.0f;
+}
+
 // ---- Template dispatch ------------------------------------------------------
+
+template <typename Op>
+static void cuda_elementwise_unary(Tensor *out, const Tensor *a, Op op) {
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(out->size, (u64)threads);
+    elementwise_unary<<<blocks, threads>>>(out->size, out->data, a->data, op);
+}
 
 template <typename Op>
 static void cuda_elementwise_binary(Tensor *out, const Tensor *a,
@@ -149,8 +203,8 @@ static void cuda_elementwise_binary(Tensor *out, const Tensor *a,
 
     if (tensor_shape_eq(a, b) && tensor_is_contiguous(a) &&
         tensor_is_contiguous(b)) {
-        elementwise<<<blocks, threads>>>(out->size, out->data, a->data, b->data,
-                                         op);
+        elementwise_binary<<<blocks, threads>>>(out->size, out->data, a->data,
+                                                b->data, op);
         return;
     }
 
@@ -162,7 +216,8 @@ static void cuda_elementwise_binary(Tensor *out, const Tensor *a,
     return;
 }
 
-// Tensor Meta
+// ---- TensorMeta -------------------------------------------------------------
+
 TensorMeta::TensorMeta(const Tensor *t) : size(t->size), ndim(t->ndim) {
     memcpy(shape, t->shape, ndim * sizeof(u32));
     memcpy(stride, t->stride, ndim * sizeof(u64));
@@ -173,6 +228,15 @@ TensorMeta::TensorMeta(const Tensor *t, const u32 *bcast_shape, u32 bcast_ndim)
     expanded_shape(t, bcast_shape, bcast_ndim, shape);
     expanded_stride(t, bcast_shape, bcast_ndim, stride);
 }
+
+// ---- memory management (alloc / free / transfers) ---------------------------
+
+void tensor_cuda_alloc(Tensor *tensor) {
+    cudaMalloc(&tensor->data, sizeof(f32) * tensor->size);
+    cudaMemset(tensor->data, 0, sizeof(f32) * tensor->size);
+}
+
+void tensor_cuda_free(Tensor *tensor) { cudaFree(tensor->data); }
 
 Tensor *tensor_cuda_to_gpu(const Tensor *t_cpu) {
     Tensor *t_gpu = new Tensor(t_cpu->ndim, t_cpu->shape, true);
@@ -198,15 +262,7 @@ Tensor *tensor_cuda_copy(const Tensor *t_gpu) {
     return copy;
 }
 
-void tensor_cuda_alloc(Tensor *tensor) {
-    cudaMalloc(&tensor->data, sizeof(f32) * tensor->size);
-    cudaMemset(tensor->data, 0, sizeof(f32) * tensor->size);
-}
-void tensor_cuda_free(Tensor *tensor) { cudaFree(tensor->data); }
-void tensor_cuda_clear(Tensor *tensor) {
-    cudaMemset(tensor->data, 0, sizeof(f32) * tensor->size);
-}
-// Wrapper functions for kernels
+// ---- fill / clear -----------------------------------------------------------
 
 void tensor_cuda_fill(Tensor *tensor, f32 value) {
     u32 threads = N_THREADS;
@@ -214,6 +270,31 @@ void tensor_cuda_fill(Tensor *tensor, f32 value) {
 
     tensor_fill<<<blocks, threads>>>(tensor->size, tensor->data, value);
 }
+
+void tensor_cuda_clear(Tensor *tensor) {
+    cudaMemset(tensor->data, 0, sizeof(f32) * tensor->size);
+}
+
+// ---- activations (relu, exp) ------------------------------------------------
+
+void tensor_cuda_relu(Tensor *dst, const Tensor *src) {
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(src->size, (u64)threads);
+
+    tensor_relu<<<blocks, threads>>>(src->size, dst->data, src->data);
+}
+
+void tensor_cuda_exp(Tensor *dst, const Tensor *src) {
+    cuda_elementwise_unary(dst, src, ExpOp{});
+}
+
+void tensor_cuda_log(Tensor *dst, const Tensor *src) {
+    cuda_elementwise_unary(dst, src, LogOp{});
+}
+
+// ---- elementwise binary (add / sub / mul / div) -----------------------------
+// Validation is done by the dispatcher in tensor.cpp before calling here.
+
 void tensor_cuda_add(Tensor *out, const Tensor *a, const Tensor *b) {
     cuda_elementwise_binary(out, a, b, AddOp{});
 }
@@ -226,38 +307,45 @@ void tensor_cuda_mul(Tensor *out, const Tensor *a, const Tensor *b) {
 void tensor_cuda_div(Tensor *out, const Tensor *a, const Tensor *b) {
     cuda_elementwise_binary(out, a, b, DivOp{});
 }
+void tensor_cuda_relu_backward(Tensor *out, const Tensor *grad,
+                               const Tensor *in) {
+    cuda_elementwise_binary(out, grad, in, ReluBackwardOp{});
+}
 
-// Scalar functions
+// ---- scalar operations ------------------------------------------------------
+
 void tensor_cuda_add(Tensor *out, const Tensor *tensor, f32 scalar) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(out->size, (u64)threads);
 
-    elementwise<<<blocks, threads>>>(out->size, out->data, tensor->data, scalar,
-                                     AddOp{});
+    elementwise_binary<<<blocks, threads>>>(out->size, out->data, tensor->data,
+                                            scalar, AddOp{});
 }
 
 void tensor_cuda_sub(Tensor *out, const Tensor *tensor, f32 scalar) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(out->size, (u64)threads);
 
-    elementwise<<<blocks, threads>>>(out->size, out->data, tensor->data, scalar,
-                                     SubOp{});
+    elementwise_binary<<<blocks, threads>>>(out->size, out->data, tensor->data,
+                                            scalar, SubOp{});
 }
 void tensor_cuda_mul(Tensor *out, const Tensor *tensor, f32 scalar) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(out->size, (u64)threads);
 
-    elementwise<<<blocks, threads>>>(out->size, out->data, tensor->data, scalar,
-                                     MulOp{});
+    elementwise_binary<<<blocks, threads>>>(out->size, out->data, tensor->data,
+                                            scalar, MulOp{});
 }
 
 void tensor_cuda_div(Tensor *out, const Tensor *tensor, f32 scalar) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(out->size, (u64)threads);
 
-    elementwise<<<blocks, threads>>>(out->size, out->data, tensor->data, scalar,
-                                     DivOp{});
+    elementwise_binary<<<blocks, threads>>>(out->size, out->data, tensor->data,
+                                            scalar, DivOp{});
 }
+
+// ---- matrix multiply --------------------------------------------------------
 
 void tensor_cuda_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
                          b32 clear_out) {
@@ -274,6 +362,8 @@ void tensor_cuda_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
     mat_mul_tiled<<<blocks, threadsPerBlock>>>(out_meta, a_meta, b_meta,
                                                out->data, a->data, b->data);
 }
+
+// ---- reduction (sum) --------------------------------------------------------
 
 void tensor_cuda_sum(Tensor *out, const Tensor *tensor, b32 clear_out) {
     u32 threads = N_THREADS;
@@ -300,6 +390,27 @@ void tensor_cuda_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim,
     if (out->size == 1) {
         tensor_cuda_sum(out, tensor, clear_out);
     } else {
-        printf("Not supported yet");
+        tensor_cuda_sum<<<>>>
+    }
+}
+
+void tensor_cuda_max(Tensor *out, const Tensor *tensor) {
+    u32 threads = N_THREADS;
+    u32 blocks = 0;
+
+    Tensor *cur = tensor_view(tensor);
+    Tensor *next = nullptr;
+    while (true) {
+        blocks = cuda::ceil_div(cur->size, (u64)threads);
+        u32 shape[] = {blocks};
+        next = blocks == 1 ? tensor_view(out) : new Tensor(1, shape, true);
+
+        tensor_max_step<<<blocks, threads>>>(cur->size, next->data, cur->data);
+        delete cur;
+        if (blocks == 1) {
+            delete next;
+            break;
+        }
+        cur = next;
     }
 }

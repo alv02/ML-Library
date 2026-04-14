@@ -1,26 +1,24 @@
 import numpy as np
-from sklearn.datasets import fetch_california_housing
+from sklearn.datasets import fetch_openml
 
-# Load dataset
-data = fetch_california_housing()
+print("Downloading MNIST...")
+mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
 
-X = data.data.astype(np.float32)
-y = data.target.reshape(-1, 1).astype(np.float32)
+X = mnist.data.astype(np.float32) / 255.0       # [70000, 784], normalized to [0, 1]
+y_int = mnist.target.astype(np.int32)            # [70000]
 
-# Optional: normalize (VERY recommended for training stability)
-X_mean = X.mean(axis=0, keepdims=True)
-X_std = X.std(axis=0, keepdims=True) + 1e-8
-X = (X - X_mean) / X_std
+# One-hot encode labels → [70000, 10]
+y = np.zeros((len(y_int), 10), dtype=np.float32)
+y[np.arange(len(y_int)), y_int] = 1.0
 
-y_mean = y.mean()
-y_std = y.std() + 1e-8
-y = (y - y_mean) / y_std
-W = np.linalg.lstsq(X, y, rcond=None)[0]
-print("Optimal W:", W.flatten())
-print("Optimal loss:", np.mean((X @ W - y) ** 2))
-# Save
-np.save("data/X.npy", np.ascontiguousarray(X))
-np.save("data/y.npy", np.ascontiguousarray(y))
+# Standard MNIST split: first 60000 train, last 10000 test
+X_train, X_test = X[:60000], X[60000:]
+y_train, y_test = y[:60000], y[60000:]
 
-print("Saved X:", X.shape)
-print("Saved y:", y.shape)
+np.save("data/X_train.npy", np.ascontiguousarray(X_train))
+np.save("data/y_train.npy", np.ascontiguousarray(y_train))
+np.save("data/X_test.npy",  np.ascontiguousarray(X_test))
+np.save("data/y_test.npy",  np.ascontiguousarray(y_test))
+
+print(f"Saved X_train {X_train.shape}, y_train {y_train.shape}")
+print(f"Saved X_test  {X_test.shape},  y_test  {y_test.shape}")

@@ -27,30 +27,52 @@ struct TensorMeta {
     }
 };
 
+// ---- memory management (alloc / free / transfers) ------------------------
+
 Tensor *tensor_cuda_to_gpu(const Tensor *t_cpu);
 Tensor *tensor_cuda_to_cpu(const Tensor *t_gpu);
 Tensor *tensor_cuda_copy(const Tensor *t_gpu);
 void tensor_cuda_alloc(Tensor *tensor);
 void tensor_cuda_free(Tensor *tensor);
 
+// ---- fill / clear --------------------------------------------------------
+
 void tensor_cuda_fill(Tensor *tensor, f32 value);
 void tensor_cuda_clear(Tensor *tensor);
+
+// ---- activations (relu, exp) ---------------------------------------------
+
+void tensor_cuda_relu(Tensor *dst, const Tensor *src);
+void tensor_cuda_exp(Tensor *dst, const Tensor *src);
+void tensor_cuda_log(Tensor *dst, const Tensor *src);
+
+// ---- elementwise binary (add / sub / mul / div) --------------------------
 
 void tensor_cuda_add(Tensor *out, const Tensor *a, const Tensor *b);
 void tensor_cuda_sub(Tensor *out, const Tensor *a, const Tensor *b);
 void tensor_cuda_mul(Tensor *out, const Tensor *a, const Tensor *b);
 void tensor_cuda_div(Tensor *out, const Tensor *a, const Tensor *b);
+void tensor_cuda_relu_backward(Tensor *out, const Tensor *grad,
+                               const Tensor *in);
+
+
+// ---- scalar operations ---------------------------------------------------
 
 void tensor_cuda_add(Tensor *out, const Tensor *tensor, f32 scalar);
 void tensor_cuda_sub(Tensor *out, const Tensor *tensor, f32 scalar);
 void tensor_cuda_mul(Tensor *out, const Tensor *tensor, f32 scalar);
 void tensor_cuda_div(Tensor *out, const Tensor *tensor, f32 scalar);
 
+// ---- matrix multiply -----------------------------------------------------
+
 void tensor_cuda_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
                          b32 clear_out);
+
+// ---- reduction (sum, max) ------------------------------------------------
 
 void tensor_cuda_sum(Tensor *out, const Tensor *tensor, b32 clear_out);
 void tensor_cuda_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim,
                      b32 clear_out);
+void tensor_cuda_max(Tensor *out, const Tensor *tensor);
 
 #endif // TENSOR_CUDA_HPP

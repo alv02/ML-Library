@@ -288,20 +288,76 @@ void tensor_clear(Tensor *tensor) {
         tensor_cpu_clear(tensor);
 }
 
+// ---- activations (relu, exp) ---------------------------------------------
+
+b32 tensor_relu(Tensor *dst, const Tensor *src) {
+    if (!tensor_shape_eq(dst, src)) {
+        printf("tensor_relu: shape mismatch");
+        return false;
+    }
+    switch ((dst->on_gpu << 1) | src->on_gpu) {
+    case 0b00:
+        tensor_cpu_relu(dst, src);
+        return true;
+    case 0b11:
+        tensor_cuda_relu(dst, src);
+        return true;
+    default:
+        printf("tensor_relu: tensors must be on the same device\n");
+        return false;
+    }
+}
+
+b32 tensor_exp(Tensor *dst, const Tensor *src) {
+    if (!tensor_shape_eq(dst, src)) {
+        printf("tensor_exp: shape mismatch\n");
+        return false;
+    }
+    switch ((dst->on_gpu << 1) | src->on_gpu) {
+    case 0b00:
+        tensor_cpu_exp(dst, src);
+        return true;
+    case 0b11:
+        tensor_cuda_exp(dst, src);
+        return true;
+    default:
+        printf("tensor_exp: tensors must be on the same device\n");
+        return false;
+    }
+}
+
+b32 tensor_log(Tensor *dst, const Tensor *src) {
+    if (!tensor_shape_eq(dst, src)) {
+        printf("tensor_log: shape mismatch\n");
+        return false;
+    }
+    switch ((dst->on_gpu << 1) | src->on_gpu) {
+    case 0b00:
+        tensor_cpu_log(dst, src);
+        return true;
+    case 0b11:
+        tensor_cuda_log(dst, src);
+        return true;
+    default:
+        printf("tensor_log: tensors must be on the same device\n");
+        return false;
+    }
+}
+
 // ---- add -----------------------------------------------------------------
 
 b32 tensor_add(Tensor *out, const Tensor *a, const Tensor *b) {
     if (!check_broadcast(out, a, b, "tensor_add"))
         return false;
-    switch ((a->on_gpu << 1) | b->on_gpu) {
-    case 0b00:
+    switch ((out->on_gpu << 2) | (a->on_gpu << 1) | b->on_gpu) {
+    case 0b000:
         tensor_cpu_add(out, a, b);
         return true;
-    case 0b11:
+    case 0b111:
         tensor_cuda_add(out, a, b);
         return true;
     default:
-        printf("tensor_add: tensors must be on the same device\n");
+        printf("tensor_add: all tensors must be on the same device\n");
         return false;
     }
 }
@@ -335,15 +391,15 @@ Tensor *tensor_add(const Tensor *a, f32 scalar) {
 b32 tensor_sub(Tensor *out, const Tensor *a, const Tensor *b) {
     if (!check_broadcast(out, a, b, "tensor_sub"))
         return false;
-    switch ((a->on_gpu << 1) | b->on_gpu) {
-    case 0b00:
+    switch ((out->on_gpu << 2) | (a->on_gpu << 1) | b->on_gpu) {
+    case 0b000:
         tensor_cpu_sub(out, a, b);
         return true;
-    case 0b11:
+    case 0b111:
         tensor_cuda_sub(out, a, b);
         return true;
     default:
-        printf("tensor_sub: tensors must be on the same device\n");
+        printf("tensor_sub: all tensors must be on the same device\n");
         return false;
     }
 }
@@ -368,15 +424,15 @@ Tensor *tensor_sub(const Tensor *a, const Tensor *b) {
 b32 tensor_mul(Tensor *out, const Tensor *a, const Tensor *b) {
     if (!check_broadcast(out, a, b, "tensor_mul"))
         return false;
-    switch ((a->on_gpu << 1) | b->on_gpu) {
-    case 0b00:
+    switch ((out->on_gpu << 2) | (a->on_gpu << 1) | b->on_gpu) {
+    case 0b000:
         tensor_cpu_mul(out, a, b);
         return true;
-    case 0b11:
+    case 0b111:
         tensor_cuda_mul(out, a, b);
         return true;
     default:
-        printf("tensor_mul: tensors must be on the same device\n");
+        printf("tensor_mul: all tensors must be on the same device\n");
         return false;
     }
 }
@@ -416,15 +472,15 @@ Tensor *tensor_mul(const Tensor *tensor, f32 scalar) {
 b32 tensor_div(Tensor *out, const Tensor *a, const Tensor *b) {
     if (!check_broadcast(out, a, b, "tensor_div"))
         return false;
-    switch ((a->on_gpu << 1) | b->on_gpu) {
-    case 0b00:
+    switch ((out->on_gpu << 2) | (a->on_gpu << 1) | b->on_gpu) {
+    case 0b000:
         tensor_cpu_div(out, a, b);
         return true;
-    case 0b11:
+    case 0b111:
         tensor_cuda_div(out, a, b);
         return true;
     default:
-        printf("tensor_div: tensors must be on the same device\n");
+        printf("tensor_div: all tensors must be on the same device\n");
         return false;
     }
 }
@@ -444,6 +500,53 @@ Tensor *tensor_div(const Tensor *a, const Tensor *b) {
     return out;
 }
 
+// ---- relu_grad (elementwise) ---------------------------------------------
+b32 tensor_relu_backward(Tensor *out, const Tensor *grad, const Tensor *in) {
+    if (!tensor_shape_eq(out, in) || !tensor_shape_eq(grad, in)) {
+        printf("tensor_relu: shape mismatch\n");
+        return false;
+    }
+    switch ((out->on_gpu << 2) | (grad->on_gpu << 1) | in->on_gpu) {
+    case 0b000:
+        tensor_cpu_relu_backward(out, grad, in);
+        return true;
+    case 0b111:
+        tensor_cuda_relu_backward(out, grad, in);
+        return true;
+    default:
+        printf(
+            "tensor_relu_backward: all tensors must be on the same device\n");
+        return false;
+    }
+}
+
+// ---- softmax -------------------------------------------------------------
+// Numerically stable: softmax(x) = exp(x - max(x)) / sum(exp(x - max(x)))
+
+b32 tensor_softmax(Tensor *out, const Tensor *in) {
+    if (!tensor_shape_eq(out, in)) {
+        printf("tensor_softmax: shape mismatch\n");
+        return false;
+    }
+    if (out->on_gpu != in->on_gpu) {
+        printf("tensor_softmax: tensors must be on the same device\n");
+        return false;
+    }
+
+    u32 scalar_shape[1] = {1};
+    Tensor *max_val = new Tensor(1, scalar_shape, in->on_gpu);
+    Tensor *sum_val = new Tensor(1, scalar_shape, in->on_gpu);
+
+    tensor_max(max_val, in);      // scalar max
+    tensor_sub(out, in, max_val); // broadcast [1] → in shape (stability)
+    tensor_exp(out, out);
+    tensor_sum(sum_val, out);      // scalar sum
+    tensor_div(out, out, sum_val); // broadcast [1] → out shape
+
+    delete max_val;
+    delete sum_val;
+    return true;
+}
 // ---- div (scalar) --------------------------------------------------------
 
 b32 tensor_div(Tensor *out, const Tensor *a, f32 scalar) {
@@ -481,15 +584,15 @@ b32 tensor_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
         printf("tensor_mat_mul: shape mismatch\n");
         return false;
     }
-    switch ((a->on_gpu << 1) | b->on_gpu) {
-    case 0b00:
+    switch ((out->on_gpu << 2) | (a->on_gpu << 1) | b->on_gpu) {
+    case 0b000:
         tensor_cpu_mat_mul(out, a, b, clear_out);
         return true;
-    case 0b11:
+    case 0b111:
         tensor_cuda_mat_mul(out, a, b, clear_out);
         return true;
     default:
-        printf("tensor_mat_mul: tensors must be on the same device\n");
+        printf("tensor_mat_mul: all tensors must be on the same device\n");
         return false;
     }
 }
@@ -557,3 +660,30 @@ Tensor *tensor_sum(const Tensor *tensor, u32 dim, b32 keep_dim) {
     }
     return out;
 }
+
+// ---- max -----------------------------------------------------------------
+
+b32 tensor_max(Tensor *out, const Tensor *tensor) {
+    if (out->size != 1) {
+        printf("tensor_max: out must be a scalar tensor (size=1)\n");
+        return false;
+    }
+    if (tensor->on_gpu)
+        tensor_cuda_max(out, tensor);
+    else
+        tensor_cpu_max(out, tensor);
+    return true;
+}
+
+Tensor *tensor_max(const Tensor *tensor) {
+    u32 shape[1] = {1};
+    Tensor *out = new Tensor(1, shape, tensor->on_gpu);
+    if (!tensor_max(out, tensor)) {
+        delete out;
+        return nullptr;
+    }
+    return out;
+}
+
+void tensor_index_select(Tensor *dst, const Tensor *src, const u32 *indices,
+                         u32 n_indices, u32 dim) {}

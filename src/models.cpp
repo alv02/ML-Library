@@ -1,5 +1,6 @@
 #include "../include/models.hpp"
-#include "../include/ops.hpp"
+
+// ── linear_model ─────────────────────────────────────────────────────────────
 
 linear_model::linear_model(Tensor *val_X, Tensor *val_y) {
     u32 n_features = val_X->shape[COL_DIM(val_X)];
@@ -15,7 +16,6 @@ linear_model::linear_model(Tensor *val_X, Tensor *val_y) {
     X = new function_var(val_X, FV_FLAG_NONE);
     y = new function_var(val_y, FV_FLAG_NONE);
 
-    // Each op infers its output shape and flags from its inputs
     op_matmul = new MatMulOp(X, W);
     fv_xw = op_matmul->make_output();
 
@@ -47,3 +47,32 @@ void linear_model::forward() {
     op_add->forward(fv_pred);
     op_mse->forward(fv_loss);
 }
+
+// ── nn_model ─────────────────────────────────────────────────────────────────
+
+nn_model::nn_model(Tensor *val_X, Tensor *val_y,
+                   const std::vector<u32> &layer_sizes) {}
+
+nn_model::~nn_model() {
+    graph_free(graph);
+    for (auto *op : op_matmul)
+        delete op;
+    for (auto *op : op_add)
+        delete op;
+    for (auto *op : op_relu)
+        delete op;
+    delete op_loss;
+    for (auto *fv : W)
+        delete fv;
+    for (auto *fv : b)
+        delete fv;
+    for (auto *fv : z)
+        delete fv;
+    for (auto *fv : a)
+        delete fv;
+    delete fv_loss;
+    delete X;
+    delete y;
+}
+
+void nn_model::forward() {}
