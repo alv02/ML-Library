@@ -79,4 +79,30 @@ save_sum("sum_large", a)
 a = np.random.randn(1, 1).astype(np.float32)
 save_sum("sum_single", a)
 
+def save_sum_dim(dir, a, dim, keep_dim):
+    os.makedirs(dir, exist_ok=True)
+    np.save(f"{dir}/a.npy", a.astype(np.float32))
+    np.save(f"{dir}/out.npy", a.sum(axis=dim, keepdims=keep_dim).astype(np.float32))
+
+# 2D: sum along dim=0 (rows), keep_dim=True  → (1,4)
+a = np.random.randn(3, 4).astype(np.float32)
+save_sum_dim("sum_dim0_2d_keep",    a, dim=0, keep_dim=True)
+save_sum_dim("sum_dim0_2d_nokeep",  a, dim=0, keep_dim=False)
+
+# 2D: sum along dim=1 (cols), keep_dim=True  → (3,1)
+save_sum_dim("sum_dim1_2d_keep",    a, dim=1, keep_dim=True)
+save_sum_dim("sum_dim1_2d_nokeep",  a, dim=1, keep_dim=False)
+
+# 3D: sum along each dim
+b = np.random.randn(2, 3, 4).astype(np.float32)
+save_sum_dim("sum_dim0_3d_keep",    b, dim=0, keep_dim=True)
+save_sum_dim("sum_dim1_3d_keep",    b, dim=1, keep_dim=True)
+save_sum_dim("sum_dim2_3d_keep",    b, dim=2, keep_dim=True)
+save_sum_dim("sum_dim1_3d_nokeep",  b, dim=1, keep_dim=False)
+
+# Larger tensor
+c = np.random.randn(64, 128).astype(np.float32)
+save_sum_dim("sum_dim0_large_keep", c, dim=0, keep_dim=True)
+save_sum_dim("sum_dim1_large_keep", c, dim=1, keep_dim=True)
+
 print("Test data generated.")

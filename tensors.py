@@ -11,9 +11,9 @@ y_int = mnist.target.astype(np.int32)            # [70000]
 y = np.zeros((len(y_int), 10), dtype=np.float32)
 y[np.arange(len(y_int)), y_int] = 1.0
 
-# Standard MNIST split: first 60000 train, last 10000 test
-X_train, X_test = X[:60000], X[60000:]
-y_train, y_test = y[:60000], y[60000:]
+# Small subset for testing: 100 train, 100 test
+X_train, X_test = X[:100], X[60000:60100]
+y_train, y_test = y[:100], y[60000:60100]
 
 np.save("data/X_train.npy", np.ascontiguousarray(X_train))
 np.save("data/y_train.npy", np.ascontiguousarray(y_train))

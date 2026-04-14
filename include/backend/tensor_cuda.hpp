@@ -25,7 +25,24 @@ struct TensorMeta {
     ML_DEVICE u64 at(u64 row, u64 col) const {
         return row * stride[ndim - 2] + col * stride[ndim - 1];
     }
+    // Decompose a flat index in *this* layout and re-index into src.
+    // Works for both broadcast (src has stride=0 on expanded dims) and
+    // reduce (shape[dim]=1 in this layout → idx_i=0 naturally).
+    ML_DEVICE u64 offset_from(u64 flat_idx, const TensorMeta &src) const {
+        u64 remaining = flat_idx;
+        u64 offset = 0;
+        for (u32 i = 0; i < ndim; i++) {
+            u64 idx_i = remaining / stride[i];
+            remaining -= idx_i * stride[i];
+            offset += idx_i * src.stride[i];
+        }
+        return offset;
+    }
 };
+
+// ---- copy (into existing tensor) ----------------------------------------
+
+void tensor_cuda_copy(Tensor *dst, const Tensor *src);
 
 // ---- memory management (alloc / free / transfers) ------------------------
 
@@ -55,7 +72,6 @@ void tensor_cuda_div(Tensor *out, const Tensor *a, const Tensor *b);
 void tensor_cuda_relu_backward(Tensor *out, const Tensor *grad,
                                const Tensor *in);
 
-
 // ---- scalar operations ---------------------------------------------------
 
 void tensor_cuda_add(Tensor *out, const Tensor *tensor, f32 scalar);
@@ -70,9 +86,11 @@ void tensor_cuda_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
 
 // ---- reduction (sum, max) ------------------------------------------------
 
-void tensor_cuda_sum(Tensor *out, const Tensor *tensor, b32 clear_out);
-void tensor_cuda_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim,
-                     b32 clear_out);
+void tensor_cuda_sum(Tensor *out, const Tensor *tensor);
+void tensor_cuda_sum(Tensor *out, const Tensor *tensor, u32 dim);
 void tensor_cuda_max(Tensor *out, const Tensor *tensor);
+void tensor_cuda_max(Tensor *out, const Tensor *tensor, u32 dim);
 
+// ---- intializing ---------------------------------------------------------
+void tensor_cuda_he_init(Tensor *tensor);
 #endif // TENSOR_CUDA_HPP

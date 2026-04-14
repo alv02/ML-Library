@@ -25,9 +25,9 @@ struct linear_model {
     // Graph — built once in constructor, owned by model
     Graph *graph;
 
-    linear_model(Tensor *val_X, Tensor *val_y);
+    linear_model(const Tensor *val_X, const Tensor *val_y);
     ~linear_model();
-    void forward();
+    void forward(const Tensor *val_X, const Tensor *val_y, b32 copy = false);
 };
 
 struct nn_model {
@@ -39,15 +39,18 @@ struct nn_model {
     function_var *X;
     function_var *y;
 
-    // Intermediate variables — allocated once, reused every forward
-    std::vector<function_var *> z;  // pre-activation: X @ W + b
-    std::vector<function_var *> a;  // post-activation: relu(z)
+    // Hidden layers variables
+    std::vector<function_var *> z;  // pre-activation: X @ W
+    std::vector<function_var *> zb; // pre-activation: z + b
+    std::vector<function_var *> a;  // post-activation: relu(zb)
+
     function_var *fv_loss;
 
-    // Ops
+    // Hidden layers ops
     std::vector<MatMulOp *> op_matmul;
     std::vector<AddOp *> op_add;
     std::vector<ReluOp *> op_relu;
+
     CrossEntropyWithLogitsOp *op_loss;
 
     // Graph

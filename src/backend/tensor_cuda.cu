@@ -1,5 +1,6 @@
 #include "../../include/backend/tensor_cuda.hpp"
 #include <cuda/cmath>
+#include <curand_kernel.h>
 
 static constexpr u32 TILE = 16;
 static constexpr u32 N_THREADS = 256;
@@ -54,14 +55,8 @@ __global__ void elementwise_broadcast(const TensorMeta out_meta,
     if (workIdx >= out_meta.size)
         return;
 
-    u64 remaining = workIdx;
-    u64 a_offset = 0, b_offset = 0;
-    for (u32 i = 0; i < out_meta.ndim; i++) {
-        u64 idx_i = remaining / out_meta.stride[i];
-        remaining -= idx_i * out_meta.stride[i];
-        a_offset += idx_i * a_meta.stride[i];
-        b_offset += idx_i * b_meta.stride[i];
-    }
+    u64 a_offset = out_meta.offset_from(workIdx, a_meta);
+    u64 b_offset = out_meta.offset_from(workIdx, b_meta);
     out[workIdx] = op(a[a_offset], b[b_offset]);
 }
 
@@ -174,8 +169,38 @@ __global__ void tensor_sum_step(u64 size, f32 *out, f32 *tensor) {
     if (threadIdx.x == 0)
         out[blockIdx.x] = partial_sum[0];
 }
+
+__global__ void tensor_max(TensorMeta out_meta, TensorMeta tensor_meta,
+                           f32 *out, f32 *tensor, u32 dim) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (workIdx >= out_meta.size)
+        return;
+
+    u64 base_offset = out_meta.offset_from(workIdx, tensor_meta);
+
+    f32 max_val = -__FLT_MAX__;
+    for (u32 i = 0; i < tensor_meta.shape[dim]; i++) {
+        f32 val = tensor[base_offset + i * tensor_meta.stride[dim]];
+        if (val > max_val)
+            max_val = val;
+    }
+    out[workIdx] = max_val;
+}
+
 __global__ void tensor_sum(TensorMeta out_meta, TensorMeta tensor_meta,
-                           f32 *out, f32 *tensor, u32 dim) {}
+                           f32 *out, f32 *tensor, u32 dim) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+
+    if (workIdx >= out_meta.size)
+        return;
+
+    u64 base_offset = out_meta.offset_from(workIdx, tensor_meta);
+
+    f32 sum = 0.0f;
+    for (u32 i = 0; i < tensor_meta.shape[dim]; i++)
+        sum += tensor[base_offset + i * tensor_meta.stride[dim]];
+    out[workIdx] = sum;
+}
 
 __global__ void tensor_relu(u64 size, f32 *dst, f32 *src) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -227,6 +252,27 @@ TensorMeta::TensorMeta(const Tensor *t, const u32 *bcast_shape, u32 bcast_ndim)
     : size(t->size), ndim(bcast_ndim) {
     expanded_shape(t, bcast_shape, bcast_ndim, shape);
     expanded_stride(t, bcast_shape, bcast_ndim, stride);
+}
+
+// ---- copy (into existing tensor) --------------------------------------------
+
+void tensor_cuda_copy(Tensor *dst, const Tensor *src) {
+    cudaMemcpyKind kind;
+    switch ((dst->on_gpu << 1) | src->on_gpu) {
+    case 0b00:
+        kind = cudaMemcpyHostToHost;
+        break;
+    case 0b01:
+        kind = cudaMemcpyDeviceToHost;
+        break;
+    case 0b10:
+        kind = cudaMemcpyHostToDevice;
+        break;
+    case 0b11:
+        kind = cudaMemcpyDeviceToDevice;
+        break;
+    }
+    cudaMemcpy(dst->data, src->data, src->size * sizeof(f32), kind);
 }
 
 // ---- memory management (alloc / free / transfers) ---------------------------
@@ -365,7 +411,7 @@ void tensor_cuda_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
 
 // ---- reduction (sum) --------------------------------------------------------
 
-void tensor_cuda_sum(Tensor *out, const Tensor *tensor, b32 clear_out) {
+void tensor_cuda_sum(Tensor *out, const Tensor *tensor) {
     u32 threads = N_THREADS;
     u32 blocks = 0;
 
@@ -385,13 +431,19 @@ void tensor_cuda_sum(Tensor *out, const Tensor *tensor, b32 clear_out) {
         cur = next;
     }
 }
-void tensor_cuda_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim,
-                     b32 clear_out) {
+void tensor_cuda_sum(Tensor *out, const Tensor *tensor, u32 dim) {
     if (out->size == 1) {
-        tensor_cuda_sum(out, tensor, clear_out);
-    } else {
-        tensor_cuda_sum<<<>>>
+        tensor_cuda_sum(out, tensor);
+        return;
     }
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(out->size, u64(threads));
+
+    TensorMeta out_meta = TensorMeta(out);
+    TensorMeta tensor_meta = TensorMeta(tensor);
+
+    tensor_sum<<<blocks, threads>>>(out_meta, tensor_meta, out->data,
+                                    tensor->data, dim);
 }
 
 void tensor_cuda_max(Tensor *out, const Tensor *tensor) {
@@ -413,4 +465,30 @@ void tensor_cuda_max(Tensor *out, const Tensor *tensor) {
         }
         cur = next;
     }
+}
+
+void tensor_cuda_max(Tensor *out, const Tensor *tensor, u32 dim) {
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(out->size, u64(threads));
+
+    TensorMeta out_meta = TensorMeta(out);
+    TensorMeta tensor_meta = TensorMeta(tensor);
+
+    tensor_max<<<blocks, threads>>>(out_meta, tensor_meta, out->data,
+                                    tensor->data, dim);
+}
+
+// ---- intializing ---------------------------------------------------------
+void tensor_cuda_he_init(Tensor *tensor) {
+    curandGenerator_t gen;
+    curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
+
+    curandSetPseudoRandomGeneratorSeed(gen, 1234ULL);
+
+    u32 in_features = tensor->shape[ROW_DIM(tensor)];
+    float stddev = sqrtf(2.0f / in_features);
+    // Generate normal distribution directly on GPU
+    curandGenerateNormal(gen, tensor->data, tensor->size, 0.0f, stddev);
+
+    curandDestroyGenerator(gen);
 }

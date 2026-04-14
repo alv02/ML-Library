@@ -3,6 +3,10 @@
 
 #include "../tensor.hpp"
 
+// ---- copy ----------------------------------------------------------------
+
+void tensor_cpu_copy(Tensor *dst, const Tensor *src);
+
 // ---- fill / clear --------------------------------------------------------
 
 void tensor_cpu_fill(Tensor *tensor, f32 value);
@@ -37,8 +41,11 @@ void tensor_cpu_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
 // ---- reduction (sum, max) ------------------------------------------------
 
 void tensor_cpu_sum(Tensor *out, const Tensor *tensor, b32 clear_out);
-void tensor_cpu_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim,
-                    b32 clear_out);
+void tensor_cpu_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 clear_out);
 void tensor_cpu_max(Tensor *out, const Tensor *tensor);
+void tensor_cpu_max(Tensor *out, const Tensor *tensor, u32 dim);
+
+// ---- intializing ---------------------------------------------------------
+void tensor_cpu_he_init(Tensor *tensor);
 
 #endif // TENSOR_CPU_HPP

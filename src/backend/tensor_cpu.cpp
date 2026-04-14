@@ -2,6 +2,13 @@
 #include "../../include/tensor_iterator.hpp"
 #include <cstdio>
 #include <cstring>
+#include <random>
+
+// ---- copy ----------------------------------------------------------------
+
+void tensor_cpu_copy(Tensor *dst, const Tensor *src) {
+    memcpy(dst->data, src->data, src->size * sizeof(f32));
+}
 
 // ---- fill / clear --------------------------------------------------------
 
@@ -102,6 +109,23 @@ void tensor_cpu_max(Tensor *out, const Tensor *tensor) {
     out->data[0] = max_val;
 }
 
+void tensor_cpu_max(Tensor *out, const Tensor *tensor, u32 dim) {
+    tensor_cpu_fill(out, -__FLT_MAX__);
+
+    u64 out_strides[MAX_NDIM];
+    memcpy(out_strides, out->stride, out->ndim * sizeof(u64));
+    out_strides[dim] = 0;
+
+    tensorIterator in_it(tensor->ndim, tensor->shape, tensor->stride);
+    tensorIterator out_it(tensor->ndim, tensor->shape, out_strides);
+    while (in_it.has_next()) {
+        u64 out_idx = out_it.next();
+        f32 val = tensor->data[in_it.next()];
+        if (val > out->data[out_idx])
+            out->data[out_idx] = val;
+    }
+}
+
 // ---- scalar operations ---------------------------------------------------
 
 void tensor_cpu_mul(Tensor *out, const Tensor *tensor, f32 scalar) {
@@ -191,26 +215,31 @@ void tensor_cpu_sum(Tensor *out, const Tensor *tensor, b32 clear_out) {
         out->data[0] += tensor->data[i];
 }
 
-void tensor_cpu_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim,
-                    b32 clear_out) {
+void tensor_cpu_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 clear_out) {
     if (clear_out)
         tensor_cpu_clear(out);
 
     u64 out_strides[MAX_NDIM];
-    memcpy(out_strides, out->stride, tensor->ndim * sizeof(u64));
+    memcpy(out_strides, out->stride, out->ndim * sizeof(u64));
     out_strides[dim] = 0;
-    out->shape[dim] = 1;
 
     tensorIterator in_it(tensor->ndim, tensor->shape, tensor->stride);
     tensorIterator out_it(tensor->ndim, tensor->shape, out_strides);
     while (in_it.has_next())
         out->data[out_it.next()] += tensor->data[in_it.next()];
+}
 
-    if (!keep_dim) {
-        for (u32 i = dim; i < out->ndim - 1; i++) {
-            out->shape[i] = out->shape[i + 1];
-            out->stride[i] = out->stride[i + 1];
-        }
-        out->ndim--;
+// ---- intializing ---------------------------------------------------------
+void tensor_cpu_he_init(Tensor *tensor) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    u32 in_features = tensor->shape[ROW_DIM(tensor)];
+
+    float stddev = std::sqrt(2.0f / in_features);
+    std::normal_distribution<float> dist(0.0f, stddev);
+
+    for (u64 i = 0; i < tensor->size; i++) {
+        tensor->data[i] = dist(gen);
     }
 }

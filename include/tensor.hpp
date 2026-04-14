@@ -56,6 +56,10 @@ Tensor *tensor_view(const Tensor *src);
 Tensor *tensor_create_like(const Tensor *src);
 void tensor_print(const Tensor *tensor);
 
+// ---- copy ----------------------------------------------------------------
+
+void tensor_copy(Tensor *dst, const Tensor *src);
+
 // ---- fill / clear --------------------------------------------------------
 
 void tensor_fill(Tensor *tensor, f32 value);
@@ -103,6 +107,11 @@ Tensor *tensor_sum(const Tensor *tensor);
 Tensor *tensor_sum(const Tensor *tensor, u32 dim, b32 keep_dim = true);
 b32 tensor_max(Tensor *out, const Tensor *tensor);
 Tensor *tensor_max(const Tensor *tensor);
+b32 tensor_max(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim = true);
+Tensor *tensor_max(const Tensor *tensor, u32 dim, b32 keep_dim = true);
+
+// ---- intializing ---------------------------------------------------------
+void tensor_he_init(Tensor *tensor);
 
 // ---- indexing ------------------------------------------------------------
 

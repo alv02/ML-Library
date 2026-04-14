@@ -27,11 +27,15 @@ target_include_directories(mllib PUBLIC include)
 
 # Link CUDA runtime
 find_package(CUDAToolkit REQUIRED)
-target_link_libraries(mllib PUBLIC CUDA::cudart)
+target_link_libraries(mllib PUBLIC CUDA::cudart CUDA::curand)
 
 # ── Main executable ───────────────────────────────────────────────────────────
 add_executable(main main.cpp)
 target_link_libraries(main PRIVATE mllib)
+
+# ── MNIST main ────────────────────────────────────────────────────────────────
+add_executable(main_mnist main_mnist.cpp)
+target_link_libraries(main_mnist PRIVATE mllib)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 enable_testing()

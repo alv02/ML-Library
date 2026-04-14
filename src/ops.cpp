@@ -219,6 +219,8 @@ void CrossEntropyWithLogitsOp::forward(function_var *out) {
     const Tensor *logits  = inputs[0]->val;
     const Tensor *targets = inputs[1]->val;
 
+    N_batch = logits->ndim >= 2 ? logits->shape[0] : 1;
+
     // softmax(logits) — numerically stable, saved for backward
     tensor_softmax(saved_softmax, logits);
 

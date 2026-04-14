@@ -272,6 +272,19 @@ static b32 check_broadcast(const Tensor *out, const Tensor *a, const Tensor *b,
     return true;
 }
 
+// ---- copy ----------------------------------------------------------------
+
+void tensor_copy(Tensor *dst, const Tensor *src) {
+    switch ((dst->on_gpu << 1) | src->on_gpu) {
+    case 0b00:
+        tensor_cpu_copy(dst, src);
+        break;
+    default:
+        tensor_cuda_copy(dst, src);
+        break;
+    }
+}
+
 // ---- fill / clear --------------------------------------------------------
 
 void tensor_fill(Tensor *tensor, f32 value) {
@@ -533,18 +546,23 @@ b32 tensor_softmax(Tensor *out, const Tensor *in) {
         return false;
     }
 
-    u32 scalar_shape[1] = {1};
-    Tensor *max_val = new Tensor(1, scalar_shape, in->on_gpu);
-    Tensor *sum_val = new Tensor(1, scalar_shape, in->on_gpu);
+    // Per-row max and sum — shape [N, 1] for a [N, C] input
+    u32 row_shape[MAX_NDIM];
+    memcpy(row_shape, in->shape, in->ndim * sizeof(u32));
+    u32 col_dim = COL_DIM(in);
+    row_shape[col_dim] = 1;
 
-    tensor_max(max_val, in);      // scalar max
-    tensor_sub(out, in, max_val); // broadcast [1] → in shape (stability)
+    Tensor *row_max = new Tensor(in->ndim, row_shape, in->on_gpu);
+    Tensor *row_sum = new Tensor(in->ndim, row_shape, in->on_gpu);
+
+    tensor_max(row_max, in, col_dim, true); // per-row max  [N,1]
+    tensor_sub(out, in, row_max);           // broadcast subtract
     tensor_exp(out, out);
-    tensor_sum(sum_val, out);      // scalar sum
-    tensor_div(out, out, sum_val); // broadcast [1] → out shape
+    tensor_sum(row_sum, out, col_dim, true); // per-row sum  [N,1]
+    tensor_div(out, out, row_sum);           // broadcast divide
 
-    delete max_val;
-    delete sum_val;
+    delete row_max;
+    delete row_sum;
     return true;
 }
 // ---- div (scalar) --------------------------------------------------------
@@ -618,11 +636,17 @@ b32 tensor_sum(Tensor *out, const Tensor *tensor, b32 clear_out) {
         printf("tensor_sum: out must be a scalar tensor (size=1)\n");
         return false;
     }
-    if (tensor->on_gpu)
-        tensor_cuda_sum(out, tensor, clear_out);
-    else
+    switch ((out->on_gpu << 1) | tensor->on_gpu) {
+    case 0b00:
         tensor_cpu_sum(out, tensor, clear_out);
-    return true;
+        return true;
+    case 0b11:
+        tensor_cuda_sum(out, tensor);
+        return true;
+    default:
+        printf("tensor_sum: tensors must be on the same device\n");
+        return false;
+    }
 }
 
 b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim,
@@ -632,10 +656,25 @@ b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim,
                tensor->ndim);
         return false;
     }
-    if (tensor->on_gpu)
-        tensor_cuda_sum(out, tensor, dim, keep_dim, clear_out);
-    else
-        tensor_cpu_sum(out, tensor, dim, keep_dim, clear_out);
+    // backends always receive out with keep_dim shape (shape[dim]=1, same ndim)
+    switch ((out->on_gpu << 1) | tensor->on_gpu) {
+    case 0b00:
+        tensor_cpu_sum(out, tensor, dim, clear_out);
+        break;
+    case 0b11:
+        tensor_cuda_sum(out, tensor, dim);
+        break;
+    default:
+        printf("tensor_sum: tensors must be on the same device\n");
+        return false;
+    }
+    if (!keep_dim) {
+        for (u32 i = dim; i < out->ndim - 1; i++) {
+            out->shape[i] = out->shape[i + 1];
+            out->stride[i] = out->stride[i + 1];
+        }
+        out->ndim--;
+    }
     return true;
 }
 
@@ -683,6 +722,43 @@ Tensor *tensor_max(const Tensor *tensor) {
         return nullptr;
     }
     return out;
+}
+
+b32 tensor_max(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim) {
+    if (out->on_gpu != tensor->on_gpu) {
+        printf("tensor_max: out and tensor must be on the same device\n");
+        return false;
+    }
+    if (tensor->on_gpu)
+        tensor_cuda_max(out, tensor, dim);
+    else
+        tensor_cpu_max(out, tensor, dim);
+    return true;
+}
+
+Tensor *tensor_max(const Tensor *tensor, u32 dim, b32 keep_dim) {
+    u32 out_shape[MAX_NDIM];
+    u32 out_ndim = tensor->ndim;
+    memcpy(out_shape, tensor->shape, out_ndim * sizeof(u32));
+    if (keep_dim) {
+        out_shape[dim] = 1;
+    } else {
+        for (u32 i = dim; i < out_ndim - 1; i++)
+            out_shape[i] = out_shape[i + 1];
+        out_ndim--;
+    }
+    Tensor *out = new Tensor(out_ndim, out_shape, tensor->on_gpu);
+    tensor_max(out, tensor, dim, keep_dim);
+    return out;
+}
+
+// ---- intializing ---------------------------------------------------------
+void tensor_he_init(Tensor *tensor) {
+    if (tensor->on_gpu) {
+        tensor_cuda_he_init(tensor);
+    } else {
+        tensor_cpu_he_init(tensor);
+    }
 }
 
 void tensor_index_select(Tensor *dst, const Tensor *src, const u32 *indices,

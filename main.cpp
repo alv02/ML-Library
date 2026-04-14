@@ -3,36 +3,22 @@
 #include "include/tensor.hpp"
 
 int main() {
-    Tensor *val_X = tensor_load("data/X_train.npy", true);
-    Tensor *val_y = tensor_load("data/y_train.npy", true);
+    Tensor *val_X = tensor_load("data/X.npy", true);
+    Tensor *val_y = tensor_load("data/y.npy", true);
 
-    if (!val_X || !val_y) {
-        printf("Failed to load data. Run: python tensors.py\n");
-        return 1;
-    }
-
-    printf("X: [%u, %u]  y: [%u, %u]\n",
-           val_X->shape[0], val_X->shape[1],
-           val_y->shape[0], val_y->shape[1]);
-
-    // 784 → 256 → 128 → 10
-    nn_model model(val_X, val_y, {256, 128, 10});
-    gd_optimizer optim(0.01f);
+    linear_model model = linear_model(val_X, val_y);
+    gd_optimizer optim = gd_optimizer(0.1f);
     optim.set_graph(model.graph);
 
-    for (int epoch = 0; epoch < 500; epoch++) {
-        model.forward();
+    for (int epoch = 0; epoch < 1000; epoch++) {
+        model.forward(val_X, val_y);
         graph_backward(model.graph);
         optim.step();
-        optim.zero_grad();
-
-        if (epoch % 10 == 0) {
+        if (epoch % 100 == 0) {
             Tensor *loss_cpu = tensor_to_cpu(model.fv_loss->val);
-            printf("Epoch %3d  loss: %.4f\n", epoch, loss_cpu->data[0]);
+            printf("Epoch %d loss: %f\n", epoch, loss_cpu->data[0]);
             delete loss_cpu;
         }
+        optim.zero_grad();
     }
-
-    delete val_X;
-    delete val_y;
 }
