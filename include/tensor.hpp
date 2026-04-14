@@ -68,8 +68,11 @@ void tensor_clear(Tensor *tensor);
 // ---- activations (relu, exp) ---------------------------------------------
 
 b32 tensor_relu(Tensor *dst, const Tensor *src);
+Tensor *tensor_relu(const Tensor *src);
 b32 tensor_exp(Tensor *dst, const Tensor *src);
+Tensor *tensor_exp(const Tensor *src);
 b32 tensor_log(Tensor *dst, const Tensor *src);
+Tensor *tensor_log(const Tensor *src);
 
 // ---- elementwise binary (add / sub / mul / div) --------------------------
 
@@ -82,12 +85,17 @@ Tensor *tensor_mul(const Tensor *a, const Tensor *b);
 b32 tensor_div(Tensor *out, const Tensor *a, const Tensor *b);
 Tensor *tensor_div(const Tensor *a, const Tensor *b);
 b32 tensor_relu_backward(Tensor *out, const Tensor *grad, const Tensor *in);
+Tensor *tensor_relu_backward(const Tensor *grad, const Tensor *in);
 b32 tensor_softmax(Tensor *out, const Tensor *in);
+Tensor *tensor_softmax(const Tensor *in);
 
 // ---- scalar operations ---------------------------------------------------
 
+b32 tensor_add(Tensor *out, const Tensor *a, f32 scalar);
 Tensor *tensor_add(const Tensor *a, f32 scalar);
-void tensor_mul(Tensor *out, const Tensor *tensor, f32 scalar);
+b32 tensor_sub(Tensor *out, const Tensor *a, f32 scalar);
+Tensor *tensor_sub(const Tensor *a, f32 scalar);
+b32 tensor_mul(Tensor *out, const Tensor *tensor, f32 scalar);
 Tensor *tensor_mul(const Tensor *tensor, f32 scalar);
 b32 tensor_div(Tensor *out, const Tensor *a, f32 scalar);
 Tensor *tensor_div(const Tensor *a, f32 scalar);
@@ -115,7 +123,9 @@ void tensor_he_init(Tensor *tensor);
 
 // ---- indexing ------------------------------------------------------------
 
-void tensor_index_select(Tensor *dst, const Tensor *src, const u32 *indices,
-                         u32 n_indices, u32 dim);
+b32 tensor_index_select(Tensor *dst, const Tensor *src, const u32 *indices,
+                        u32 n_indices, u32 dim);
+Tensor *tensor_index_select(const Tensor *src, const u32 *indices,
+                            u32 n_indices, u32 dim);
 
 #endif

@@ -211,7 +211,32 @@ __global__ void tensor_relu(u64 size, f32 *dst, f32 *src) {
     dst[workIdx] = src[workIdx] > 0.0f ? src[workIdx] : 0.0f;
 }
 
-// ---- Template dispatch ------------------------------------------------------
+__global__ void tensor_index_select(TensorMeta dst_meta, TensorMeta src_meta,
+                                    f32 *dst, const f32 *src,
+                                    const u32 *indices, u32 n_indices,
+                                    u32 dim) {
+
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+
+    if (workIdx >= dst_meta.size) {
+        return;
+    }
+    u64 remaining = workIdx;
+    u64 offset = 0;
+    for (u32 i = 0; i < src_meta.ndim; i++) {
+        u64 idx_i = remaining / dst_meta.stride[i];
+        remaining -= idx_i * dst_meta.stride[i];
+        if (i == dim) {
+            offset += indices[idx_i] * src_meta.stride[i];
+        } else {
+            offset += idx_i * src_meta.stride[i];
+        }
+    }
+    dst[workIdx] = src[offset];
+}
+
+// ---- Template dispatch
+// ------------------------------------------------------
 
 template <typename Op>
 static void cuda_elementwise_unary(Tensor *out, const Tensor *a, Op op) {
@@ -491,4 +516,23 @@ void tensor_cuda_he_init(Tensor *tensor) {
     curandGenerateNormal(gen, tensor->data, tensor->size, 0.0f, stddev);
 
     curandDestroyGenerator(gen);
+}
+
+// ---- indexing ------------------------------------------------------------
+void tensor_cuda_index_select(Tensor *dst, const Tensor *src,
+                              const u32 *indices, u32 n_indices, u32 dim) {
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(dst->size, u64(threads));
+
+    TensorMeta dst_meta = TensorMeta(dst);
+    TensorMeta src_meta = TensorMeta(src);
+
+    u32 *indices_gpu;
+    cudaMalloc(&indices_gpu, n_indices * sizeof(u32));
+    cudaMemcpy(indices_gpu, indices, n_indices * sizeof(u32),
+               cudaMemcpyHostToDevice);
+
+    tensor_index_select<<<blocks, threads>>>(
+        dst_meta, src_meta, dst->data, src->data, indices_gpu, n_indices, dim);
+    cudaFree(indices_gpu);
 }

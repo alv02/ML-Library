@@ -93,4 +93,9 @@ void tensor_cuda_max(Tensor *out, const Tensor *tensor, u32 dim);
 
 // ---- intializing ---------------------------------------------------------
 void tensor_cuda_he_init(Tensor *tensor);
+
+// ---- indexing ------------------------------------------------------------
+void tensor_cuda_index_select(Tensor *dst, const Tensor *src,
+                              const u32 *indices, u32 n_indices, u32 dim);
+
 #endif // TENSOR_CUDA_HPP

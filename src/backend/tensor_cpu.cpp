@@ -143,6 +143,11 @@ void tensor_cpu_add(Tensor *out, const Tensor *a, f32 scalar) {
         out->data[i] = a->data[i] + scalar;
 }
 
+void tensor_cpu_sub(Tensor *out, const Tensor *a, f32 scalar) {
+    for (u64 i = 0; i < out->size; i++)
+        out->data[i] = a->data[i] - scalar;
+}
+
 // ---- matrix multiply -----------------------------------------------------
 
 static inline u32 mat_rows(const Tensor *t) { return t->shape[ROW_DIM(t)]; }
@@ -209,10 +214,16 @@ void tensor_cpu_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
 // ---- reduction (sum) -----------------------------------------------------
 
 void tensor_cpu_sum(Tensor *out, const Tensor *tensor, b32 clear_out) {
-    if (clear_out)
-        tensor_cpu_clear(out);
-    for (u64 i = 0; i < tensor->size; i++)
-        out->data[0] += tensor->data[i];
+    // Kahan compesated summation
+    f32 sum = clear_out ? 0.0f : out->data[0];
+    f32 c = 0.0f;
+    for (u64 i = 0; i < tensor->size; i++) {
+        f32 y = tensor->data[i] - c;
+        f32 t = sum + y;
+        c = (t - sum) - y;
+        sum = t;
+    }
+    out->data[0] = sum;
 }
 
 void tensor_cpu_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 clear_out) {
@@ -241,5 +252,23 @@ void tensor_cpu_he_init(Tensor *tensor) {
 
     for (u64 i = 0; i < tensor->size; i++) {
         tensor->data[i] = dist(gen);
+    }
+}
+
+void tensor_cpu_index_select(Tensor *dst, const Tensor *src, const u32 *indices,
+                             u32 n_indices, u32 dim) {
+    // Each selected index maps to a set of contiguous blocks of size
+    // inner_size. outer_size is how many such blocks exist per index (the
+    // product of dims before `dim`).
+    u64 inner_size = src->stride[dim];
+    u64 outer_size = src->size / (src->shape[dim] * inner_size);
+
+    for (u64 o = 0; o < outer_size; o++) {
+        for (u32 n = 0; n < n_indices; n++) {
+            f32 *dst_ptr = dst->data + (o * n_indices + n) * inner_size;
+            const f32 *src_ptr =
+                src->data + (o * src->shape[dim] + indices[n]) * inner_size;
+            memcpy(dst_ptr, src_ptr, inner_size * sizeof(f32));
+        }
     }
 }

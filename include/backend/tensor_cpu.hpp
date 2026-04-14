@@ -32,6 +32,7 @@ void tensor_cpu_relu_backward(Tensor *out, const Tensor *grad,
 void tensor_cpu_mul(Tensor *out, const Tensor *tensor, f32 scalar);
 void tensor_cpu_div(Tensor *out, const Tensor *a, f32 scalar);
 void tensor_cpu_add(Tensor *out, const Tensor *a, f32 scalar);
+void tensor_cpu_sub(Tensor *out, const Tensor *a, f32 scalar);
 
 // ---- matrix multiply -----------------------------------------------------
 
@@ -47,5 +48,9 @@ void tensor_cpu_max(Tensor *out, const Tensor *tensor, u32 dim);
 
 // ---- intializing ---------------------------------------------------------
 void tensor_cpu_he_init(Tensor *tensor);
+
+// ---- indexing ------------------------------------------------------------
+void tensor_cpu_index_select(Tensor *dst, const Tensor *src, const u32 *indices,
+                             u32 n_indices, u32 dim);
 
 #endif // TENSOR_CPU_HPP

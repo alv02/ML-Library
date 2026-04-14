@@ -105,4 +105,28 @@ c = np.random.randn(64, 128).astype(np.float32)
 save_sum_dim("sum_dim0_large_keep", c, dim=0, keep_dim=True)
 save_sum_dim("sum_dim1_large_keep", c, dim=1, keep_dim=True)
 
+def save_index_select(dir, a, indices, axis):
+    os.makedirs(dir, exist_ok=True)
+    np.save(f"{dir}/a.npy", a.astype(np.float32))
+    np.save(f"{dir}/out.npy", np.take(a, indices, axis=axis).astype(np.float32))
+
+# Source: (3,4)
+a = np.arange(12, dtype=np.float32).reshape(3, 4)
+
+# dim=0: select rows [0,2] → (2,4)
+save_index_select("idx_select_dim0_basic",   a, [0, 2],    axis=0)
+# dim=0: permute rows [2,0,1] → (3,4)
+save_index_select("idx_select_dim0_permute", a, [2, 0, 1], axis=0)
+# dim=0: repeated index [1,1] → (2,4)
+save_index_select("idx_select_dim0_repeat",  a, [1, 1],    axis=0)
+# dim=1: select cols [1,3] → (3,2)
+save_index_select("idx_select_dim1_basic",   a, [1, 3],    axis=1)
+# dim=1: select cols [0,2,3] → (3,3)
+save_index_select("idx_select_dim1_multi",   a, [0, 2, 3], axis=1)
+
+# Larger source: (8,16) random
+b = np.random.randn(8, 16).astype(np.float32)
+save_index_select("idx_select_dim0_large",   b, [3, 7, 0, 5], axis=0)
+save_index_select("idx_select_dim1_large",   b, [0, 4, 8, 12, 15], axis=1)
+
 print("Test data generated.")
