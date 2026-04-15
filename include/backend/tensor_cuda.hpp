@@ -25,9 +25,6 @@ struct TensorMeta {
     ML_DEVICE u64 at(u64 row, u64 col) const {
         return row * stride[ndim - 2] + col * stride[ndim - 1];
     }
-    // Decompose a flat index in *this* layout and re-index into src.
-    // Works for both broadcast (src has stride=0 on expanded dims) and
-    // reduce (shape[dim]=1 in this layout → idx_i=0 naturally).
     ML_DEVICE u64 offset_from(u64 flat_idx, const TensorMeta &src) const {
         u64 remaining = flat_idx;
         u64 offset = 0;
@@ -40,17 +37,17 @@ struct TensorMeta {
     }
 };
 
-// ---- copy (into existing tensor) ----------------------------------------
-
-void tensor_cuda_copy(Tensor *dst, const Tensor *src);
-
 // ---- memory management (alloc / free / transfers) ------------------------
 
+void tensor_cuda_alloc(Tensor *tensor);
+void tensor_cuda_free(Tensor *tensor);
 Tensor *tensor_cuda_to_gpu(const Tensor *t_cpu);
 Tensor *tensor_cuda_to_cpu(const Tensor *t_gpu);
 Tensor *tensor_cuda_copy(const Tensor *t_gpu);
-void tensor_cuda_alloc(Tensor *tensor);
-void tensor_cuda_free(Tensor *tensor);
+
+// ---- copy (into existing tensor) ----------------------------------------
+
+void tensor_cuda_copy(Tensor *dst, const Tensor *src);
 
 // ---- fill / clear --------------------------------------------------------
 
@@ -69,6 +66,7 @@ void tensor_cuda_add(Tensor *out, const Tensor *a, const Tensor *b);
 void tensor_cuda_sub(Tensor *out, const Tensor *a, const Tensor *b);
 void tensor_cuda_mul(Tensor *out, const Tensor *a, const Tensor *b);
 void tensor_cuda_div(Tensor *out, const Tensor *a, const Tensor *b);
+void tensor_cuda_equal(Tensor *out, const Tensor *a, const Tensor *b);
 void tensor_cuda_relu_backward(Tensor *out, const Tensor *grad,
                                const Tensor *in);
 
@@ -84,17 +82,20 @@ void tensor_cuda_div(Tensor *out, const Tensor *tensor, f32 scalar);
 void tensor_cuda_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
                          b32 clear_out);
 
-// ---- reduction (sum, max) ------------------------------------------------
+// ---- reduction (sum, max, argmax) ----------------------------------------
 
 void tensor_cuda_sum(Tensor *out, const Tensor *tensor);
 void tensor_cuda_sum(Tensor *out, const Tensor *tensor, u32 dim);
 void tensor_cuda_max(Tensor *out, const Tensor *tensor);
 void tensor_cuda_max(Tensor *out, const Tensor *tensor, u32 dim);
+void tensor_cuda_argmax(Tensor *out, const Tensor *tensor, u32 dim);
 
-// ---- intializing ---------------------------------------------------------
+// ---- initializing --------------------------------------------------------
+
 void tensor_cuda_he_init(Tensor *tensor);
 
 // ---- indexing ------------------------------------------------------------
+
 void tensor_cuda_index_select(Tensor *dst, const Tensor *src,
                               const u32 *indices, u32 n_indices, u32 dim);
 

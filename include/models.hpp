@@ -27,7 +27,7 @@ struct linear_model {
 
     linear_model(const Tensor *val_X, const Tensor *val_y);
     ~linear_model();
-    void forward(const Tensor *val_X, const Tensor *val_y, b32 copy = false);
+    void forward(const Tensor *val_X = nullptr, const Tensor *val_y = nullptr);
 };
 
 struct nn_model {
@@ -58,7 +58,7 @@ struct nn_model {
 
     nn_model(Tensor *val_X, Tensor *val_y, const std::vector<u32> &layer_sizes);
     ~nn_model();
-    void forward();
+    void forward(const Tensor *val_X = nullptr, const Tensor *val_y = nullptr);
 };
 
 #endif

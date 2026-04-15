@@ -43,6 +43,9 @@ function_var *MatMulOp::make_output() {
 }
 
 void MatMulOp::forward(function_var *out) {
+    u32 shape[2] = {inputs[0]->val->shape[ROW_DIM(inputs[0]->val)],
+                    inputs[1]->val->shape[COL_DIM(inputs[1]->val)]};
+    tensor_realloc(out->val, shape, 2);
     tensor_mat_mul(out->val, inputs[0]->val, inputs[1]->val, true);
 }
 
@@ -52,8 +55,10 @@ void MatMulOp::backward(Tensor *grad_output) {
 
     // dA = grad @ B.T
     if (A->flags & FV_FLAG_REQUIERES_GRAD) {
-        if (!A->grad)
+        if (!A->grad || !tensor_shape_eq(A->grad, A->val)) {
+            delete A->grad;
             A->grad = tensor_create_like(A->val);
+        }
         Tensor *Bt = tensor_view(B->val);
         tensor_transpose(Bt, ROW_DIM(Bt), COL_DIM(Bt));
         tensor_mat_mul(A->grad, grad_output, Bt, false);
@@ -62,8 +67,10 @@ void MatMulOp::backward(Tensor *grad_output) {
 
     // dB = A.T @ grad
     if (B->flags & FV_FLAG_REQUIERES_GRAD) {
-        if (!B->grad)
+        if (!B->grad || !tensor_shape_eq(B->grad, B->val)) {
+            delete B->grad;
             B->grad = tensor_create_like(B->val);
+        }
         Tensor *At = tensor_view(A->val);
         tensor_transpose(At, ROW_DIM(At), COL_DIM(At));
         tensor_mat_mul(B->grad, At, grad_output, false);
@@ -90,6 +97,9 @@ function_var *AddOp::make_output() {
 }
 
 void AddOp::forward(function_var *out) {
+    u32 shape[MAX_NDIM];
+    u32 ndim = broadcast_shape(inputs[0]->val, inputs[1]->val, shape);
+    tensor_realloc(out->val, shape, ndim);
     tensor_add(out->val, inputs[0]->val, inputs[1]->val);
 }
 
@@ -98,16 +108,20 @@ void AddOp::backward(Tensor *grad_output) {
     function_var *B = inputs[1];
 
     if (A->flags & FV_FLAG_REQUIERES_GRAD) {
-        if (!A->grad)
+        if (!A->grad || !tensor_shape_eq(A->grad, A->val)) {
+            delete A->grad;
             A->grad = tensor_create_like(A->val);
+        }
         Tensor *dA = reduce_grad(grad_output, A->val);
         tensor_add(A->grad, A->grad, dA);
         delete dA;
     }
 
     if (B->flags & FV_FLAG_REQUIERES_GRAD) {
-        if (!B->grad)
+        if (!B->grad || !tensor_shape_eq(B->grad, B->val)) {
+            delete B->grad;
             B->grad = tensor_create_like(B->val);
+        }
         Tensor *dB = reduce_grad(grad_output, B->val);
         tensor_add(B->grad, B->grad, dB);
         delete dB;
@@ -129,14 +143,17 @@ function_var *ReluOp::make_output() {
 }
 
 void ReluOp::forward(function_var *out) {
+    tensor_realloc(out->val, inputs[0]->val->shape, inputs[0]->val->ndim);
     tensor_relu(out->val, inputs[0]->val);
 }
 
 void ReluOp::backward(Tensor *grad_output) {
     function_var *A = inputs[0];
     if (A->flags & FV_FLAG_REQUIERES_GRAD) {
-        if (!A->grad)
+        if (!A->grad || !tensor_shape_eq(A->grad, A->val)) {
+            delete A->grad;
             A->grad = tensor_create_like(A->val);
+        }
         tensor_relu_backward(A->grad, grad_output, A->val);
     }
 }
@@ -173,8 +190,10 @@ void MeanSquareErrorOp::backward(Tensor *grad_output) {
 
     // dA = scale * (A - B)
     if (A->flags & FV_FLAG_REQUIERES_GRAD) {
-        if (!A->grad)
+        if (!A->grad || !tensor_shape_eq(A->grad, A->val)) {
+            delete A->grad;
             A->grad = tensor_create_like(A->val);
+        }
         Tensor *diff = tensor_create_like(A->val);
         tensor_sub(diff, A->val, B->val);
         tensor_mul(diff, diff, scale);
@@ -184,8 +203,10 @@ void MeanSquareErrorOp::backward(Tensor *grad_output) {
 
     // dB = scale * (B - A)
     if (B->flags & FV_FLAG_REQUIERES_GRAD) {
-        if (!B->grad)
+        if (!B->grad || !tensor_shape_eq(B->grad, B->val)) {
+            delete B->grad;
             B->grad = tensor_create_like(B->val);
+        }
         Tensor *diff = tensor_create_like(B->val);
         tensor_sub(diff, B->val, A->val);
         tensor_mul(diff, diff, scale);
@@ -220,6 +241,7 @@ void CrossEntropyWithLogitsOp::forward(function_var *out) {
     const Tensor *targets = inputs[1]->val;
 
     N_batch = logits->ndim >= 2 ? logits->shape[0] : 1;
+    tensor_realloc(saved_softmax, logits->shape, logits->ndim);
 
     // softmax(logits) — numerically stable, saved for backward
     tensor_softmax(saved_softmax, logits);
@@ -239,8 +261,10 @@ void CrossEntropyWithLogitsOp::backward(Tensor *grad_output) {
 
     // d_logits = (softmax - targets) / N_batch * grad_output
     if (logits->flags & FV_FLAG_REQUIERES_GRAD) {
-        if (!logits->grad)
+        if (!logits->grad || !tensor_shape_eq(logits->grad, logits->val)) {
+            delete logits->grad;
             logits->grad = tensor_create_like(logits->val);
+        }
 
         Tensor *d = tensor_create_like(logits->val);
         tensor_sub(d, saved_softmax, targets->val);
@@ -252,8 +276,10 @@ void CrossEntropyWithLogitsOp::backward(Tensor *grad_output) {
 
     // d_targets = -log(softmax) / N_batch * grad_output
     if (targets->flags & FV_FLAG_REQUIERES_GRAD) {
-        if (!targets->grad)
+        if (!targets->grad || !tensor_shape_eq(targets->grad, targets->val)) {
+            delete targets->grad;
             targets->grad = tensor_create_like(targets->val);
+        }
 
         Tensor *d = tensor_create_like(targets->val);
         tensor_log(d, saved_softmax);

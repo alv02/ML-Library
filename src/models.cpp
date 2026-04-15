@@ -44,9 +44,13 @@ linear_model::~linear_model() {
     delete fv_loss;
 }
 
-void linear_model::forward(const Tensor *val_X, const Tensor *val_y, b32 copy) {
-    if (copy) {
+void linear_model::forward(const Tensor *val_X, const Tensor *val_y) {
+    if (val_X) {
+        tensor_realloc(X->val, val_X->shape, val_X->ndim);
         tensor_copy(X->val, val_X);
+    }
+    if (val_y) {
+        tensor_realloc(y->val, val_y->shape, val_y->ndim);
         tensor_copy(y->val, val_y);
     }
     op_matmul->forward(fv_xw);
@@ -134,7 +138,15 @@ nn_model::~nn_model() {
     delete y;
 }
 
-void nn_model::forward() {
+void nn_model::forward(const Tensor *val_X, const Tensor *val_y) {
+    if (val_X) {
+        tensor_realloc(X->val, val_X->shape, val_X->ndim);
+        tensor_copy(X->val, val_X);
+    }
+    if (val_y) {
+        tensor_realloc(y->val, val_y->shape, val_y->ndim);
+        tensor_copy(y->val, val_y);
+    }
     u32 n_layers = (u32)op_matmul.size();
     for (u32 l = 0; l < n_layers; l++) {
         op_matmul[l]->forward(z[l]);

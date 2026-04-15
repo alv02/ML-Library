@@ -250,6 +250,26 @@ void expanded_stride(const Tensor *t, const u32 *expanded_shape,
 
 // ---- Dispatch helpers ----------------------------------------------------
 
+// Check that `out` is the correct keep_dim=true reduction output of `src`
+// along `dim`: same ndim, same shape everywhere except out->shape[dim] == 1.
+static b32 check_reduction_shape(const Tensor *out, const Tensor *src, u32 dim,
+                                 const char *op) {
+    if (out->ndim != src->ndim) {
+        printf("%s: out ndim (%u) != src ndim (%u)\n", op, out->ndim,
+               src->ndim);
+        return false;
+    }
+    for (u32 i = 0; i < src->ndim; i++) {
+        u32 expected = (i == dim) ? 1 : src->shape[i];
+        if (out->shape[i] != expected) {
+            printf("%s: out->shape[%u]=%u, expected %u\n", op, i, out->shape[i],
+                   expected);
+            return false;
+        }
+    }
+    return true;
+}
+
 // Check that `out` has the broadcast shape of a and b.
 static b32 check_broadcast(const Tensor *out, const Tensor *a, const Tensor *b,
                            const char *op) {
@@ -270,6 +290,45 @@ static b32 check_broadcast(const Tensor *out, const Tensor *a, const Tensor *b,
         }
     }
     return true;
+}
+
+// ---- realloc -------------------------------------------------------------
+
+void tensor_realloc(Tensor *t, const u32 *new_shape, u32 new_ndim) {
+    if (t->ndim == new_ndim) {
+        bool same = true;
+        for (u32 i = 0; i < new_ndim; i++)
+            if (t->shape[i] != new_shape[i]) {
+                same = false;
+                break;
+            }
+        if (same)
+            return;
+    }
+
+    if (t->owns_data) {
+        if (t->on_gpu)
+            tensor_cuda_free(t);
+        else
+            free(t->data);
+    }
+
+    t->ndim = new_ndim;
+    t->size = 1;
+    for (u32 i = 0; i < new_ndim; i++)
+        t->shape[i] = new_shape[i];
+    for (u32 i = new_ndim; i-- > 0;) {
+        t->stride[i] = t->size;
+        t->size *= t->shape[i];
+    }
+
+    t->owns_data = true;
+    if (t->on_gpu) {
+        tensor_cuda_alloc(t);
+    } else {
+        t->data = (f32 *)malloc(t->size * sizeof(f32));
+        memset(t->data, 0, t->size * sizeof(f32));
+    }
 }
 
 // ---- copy ----------------------------------------------------------------
@@ -323,7 +382,10 @@ b32 tensor_relu(Tensor *dst, const Tensor *src) {
 
 Tensor *tensor_relu(const Tensor *src) {
     Tensor *dst = tensor_create_like(src);
-    if (!tensor_relu(dst, src)) { delete dst; return nullptr; }
+    if (!tensor_relu(dst, src)) {
+        delete dst;
+        return nullptr;
+    }
     return dst;
 }
 
@@ -347,7 +409,10 @@ b32 tensor_exp(Tensor *dst, const Tensor *src) {
 
 Tensor *tensor_exp(const Tensor *src) {
     Tensor *dst = tensor_create_like(src);
-    if (!tensor_exp(dst, src)) { delete dst; return nullptr; }
+    if (!tensor_exp(dst, src)) {
+        delete dst;
+        return nullptr;
+    }
     return dst;
 }
 
@@ -371,7 +436,10 @@ b32 tensor_log(Tensor *dst, const Tensor *src) {
 
 Tensor *tensor_log(const Tensor *src) {
     Tensor *dst = tensor_create_like(src);
-    if (!tensor_log(dst, src)) { delete dst; return nullptr; }
+    if (!tensor_log(dst, src)) {
+        delete dst;
+        return nullptr;
+    }
     return dst;
 }
 
@@ -506,6 +574,37 @@ Tensor *tensor_div(const Tensor *a, const Tensor *b) {
     }
     return out;
 }
+// ---- equals(elementwise) ------------------------------------------------
+
+b32 tensor_equal(Tensor *out, const Tensor *a, const Tensor *b) {
+    if (!check_broadcast(out, a, b, "tensor_equal"))
+        return false;
+    switch ((out->on_gpu << 2) | (a->on_gpu << 1) | b->on_gpu) {
+    case 0b000:
+        tensor_cpu_equal(out, a, b);
+        return true;
+    case 0b111:
+        tensor_cuda_equal(out, a, b);
+        return true;
+    default:
+        printf("tensor_div: all tensors must be on the same device\n");
+        return false;
+    }
+}
+Tensor *tensor_equal(const Tensor *a, const Tensor *b) {
+    u32 out_shape[MAX_NDIM];
+    u32 out_ndim = broadcast_shape(a, b, out_shape);
+    if (out_ndim == 0) {
+        printf("tensor_equal: shapes not broadcastable\n");
+        return nullptr;
+    }
+    Tensor *out = new Tensor(out_ndim, out_shape, a->on_gpu);
+    if (!tensor_equal(out, a, b)) {
+        delete out;
+        return nullptr;
+    }
+    return out;
+}
 
 // ---- relu_grad (elementwise) ---------------------------------------------
 b32 tensor_relu_backward(Tensor *out, const Tensor *grad, const Tensor *in) {
@@ -529,7 +628,10 @@ b32 tensor_relu_backward(Tensor *out, const Tensor *grad, const Tensor *in) {
 
 Tensor *tensor_relu_backward(const Tensor *grad, const Tensor *in) {
     Tensor *out = tensor_create_like(in);
-    if (!tensor_relu_backward(out, grad, in)) { delete out; return nullptr; }
+    if (!tensor_relu_backward(out, grad, in)) {
+        delete out;
+        return nullptr;
+    }
     return out;
 }
 
@@ -568,7 +670,10 @@ b32 tensor_softmax(Tensor *out, const Tensor *in) {
 
 Tensor *tensor_softmax(const Tensor *in) {
     Tensor *out = tensor_create_like(in);
-    if (!tensor_softmax(out, in)) { delete out; return nullptr; }
+    if (!tensor_softmax(out, in)) {
+        delete out;
+        return nullptr;
+    }
     return out;
 }
 
@@ -594,7 +699,10 @@ b32 tensor_add(Tensor *out, const Tensor *a, f32 scalar) {
 
 Tensor *tensor_add(const Tensor *a, f32 scalar) {
     Tensor *out = tensor_create_like(a);
-    if (!tensor_add(out, a, scalar)) { delete out; return nullptr; }
+    if (!tensor_add(out, a, scalar)) {
+        delete out;
+        return nullptr;
+    }
     return out;
 }
 
@@ -620,7 +728,10 @@ b32 tensor_sub(Tensor *out, const Tensor *a, f32 scalar) {
 
 Tensor *tensor_sub(const Tensor *a, f32 scalar) {
     Tensor *out = tensor_create_like(a);
-    if (!tensor_sub(out, a, scalar)) { delete out; return nullptr; }
+    if (!tensor_sub(out, a, scalar)) {
+        delete out;
+        return nullptr;
+    }
     return out;
 }
 
@@ -646,7 +757,10 @@ b32 tensor_mul(Tensor *out, const Tensor *tensor, f32 scalar) {
 
 Tensor *tensor_mul(const Tensor *tensor, f32 scalar) {
     Tensor *out = tensor_create_like(tensor);
-    if (!tensor_mul(out, tensor, scalar)) { delete out; return nullptr; }
+    if (!tensor_mul(out, tensor, scalar)) {
+        delete out;
+        return nullptr;
+    }
     return out;
 }
 
@@ -747,6 +861,8 @@ b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim,
                tensor->ndim);
         return false;
     }
+    if (!check_reduction_shape(out, tensor, dim, "tensor_sum"))
+        return false;
     // backends always receive out with keep_dim shape (shape[dim]=1, same ndim)
     switch ((out->on_gpu << 1) | tensor->on_gpu) {
     case 0b00:
@@ -823,9 +939,12 @@ Tensor *tensor_max(const Tensor *tensor) {
 
 b32 tensor_max(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim) {
     if (dim >= tensor->ndim) {
-        printf("tensor_max: dim %u out of range (ndim=%u)\n", dim, tensor->ndim);
+        printf("tensor_max: dim %u out of range (ndim=%u)\n", dim,
+               tensor->ndim);
         return false;
     }
+    if (!check_reduction_shape(out, tensor, dim, "tensor_max"))
+        return false;
     switch ((out->on_gpu << 1) | tensor->on_gpu) {
     case 0b00:
         tensor_cpu_max(out, tensor, dim);
@@ -851,15 +970,57 @@ Tensor *tensor_max(const Tensor *tensor, u32 dim, b32 keep_dim) {
     u32 out_shape[MAX_NDIM];
     u32 out_ndim = tensor->ndim;
     memcpy(out_shape, tensor->shape, out_ndim * sizeof(u32));
-    if (keep_dim) {
-        out_shape[dim] = 1;
-    } else {
-        for (u32 i = dim; i < out_ndim - 1; i++)
-            out_shape[i] = out_shape[i + 1];
-        out_ndim--;
-    }
+    out_shape[dim] = 1;
     Tensor *out = new Tensor(out_ndim, out_shape, tensor->on_gpu);
     tensor_max(out, tensor, dim, keep_dim);
+    return out;
+}
+
+// ---- argmax --------------------------------------------------------------
+
+b32 tensor_argmax(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim) {
+    if (dim >= tensor->ndim) {
+        printf("tensor_argmax: dim %u out of range (ndim=%u)\n", dim,
+               tensor->ndim);
+        return false;
+    }
+    if (!check_reduction_shape(out, tensor, dim, "tensor_argmax"))
+        return false;
+    switch ((out->on_gpu << 1) | tensor->on_gpu) {
+    case 0b00:
+        tensor_cpu_argmax(out, tensor, dim);
+        break;
+    case 0b11:
+        tensor_cuda_argmax(out, tensor, dim);
+        break;
+    default:
+        printf("tensor_argmax: tensors must be on the same device\n");
+        return false;
+    }
+    if (!keep_dim) {
+        for (u32 i = dim; i < out->ndim - 1; i++) {
+            out->shape[i] = out->shape[i + 1];
+            out->stride[i] = out->stride[i + 1];
+        }
+        out->ndim--;
+    }
+    return true;
+}
+
+Tensor *tensor_argmax(const Tensor *tensor, u32 dim, b32 keep_dim) {
+    if (dim >= tensor->ndim) {
+        printf("tensor_argmax: dim %u out of range (ndim=%u)\n", dim,
+               tensor->ndim);
+        return nullptr;
+    }
+    u32 out_shape[MAX_NDIM];
+    memcpy(out_shape, tensor->shape, tensor->ndim * sizeof(u32));
+    out_shape[dim] = 1;
+    Tensor *out = new Tensor(tensor->ndim, out_shape, tensor->on_gpu);
+    if (!tensor_argmax(out, tensor, dim, keep_dim)) {
+        delete out;
+        return nullptr;
+    }
     return out;
 }
 

@@ -56,6 +56,11 @@ Tensor *tensor_view(const Tensor *src);
 Tensor *tensor_create_like(const Tensor *src);
 void tensor_print(const Tensor *tensor);
 
+// ---- realloc -------------------------------------------------------------
+
+// Reallocates t's data buffer if the shape differs. No-op if shape matches.
+void tensor_realloc(Tensor *t, const u32 *new_shape, u32 new_ndim);
+
 // ---- copy ----------------------------------------------------------------
 
 void tensor_copy(Tensor *dst, const Tensor *src);
@@ -84,6 +89,8 @@ b32 tensor_mul(Tensor *out, const Tensor *a, const Tensor *b);
 Tensor *tensor_mul(const Tensor *a, const Tensor *b);
 b32 tensor_div(Tensor *out, const Tensor *a, const Tensor *b);
 Tensor *tensor_div(const Tensor *a, const Tensor *b);
+b32 tensor_equal(Tensor *out, const Tensor *a, const Tensor *b);
+Tensor *tensor_equal(const Tensor *a, const Tensor *b);
 b32 tensor_relu_backward(Tensor *out, const Tensor *grad, const Tensor *in);
 Tensor *tensor_relu_backward(const Tensor *grad, const Tensor *in);
 b32 tensor_softmax(Tensor *out, const Tensor *in);
@@ -106,7 +113,7 @@ b32 tensor_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
                    b32 clear_out = true);
 Tensor *tensor_mat_mul(const Tensor *a, const Tensor *b);
 
-// ---- reduction (sum, max) ------------------------------------------------
+// ---- reduction (sum, max, argmax) ----------------------------------------
 
 b32 tensor_sum(Tensor *out, const Tensor *tensor, b32 clear_out = true);
 b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim = true,
@@ -117,6 +124,9 @@ b32 tensor_max(Tensor *out, const Tensor *tensor);
 Tensor *tensor_max(const Tensor *tensor);
 b32 tensor_max(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim = true);
 Tensor *tensor_max(const Tensor *tensor, u32 dim, b32 keep_dim = true);
+b32 tensor_argmax(Tensor *out, const Tensor *tensor, u32 dim,
+                  b32 keep_dim = true);
+Tensor *tensor_argmax(const Tensor *tensor, u32 dim, b32 keep_dim = true);
 
 // ---- intializing ---------------------------------------------------------
 void tensor_he_init(Tensor *tensor);

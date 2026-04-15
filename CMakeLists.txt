@@ -19,6 +19,8 @@ add_library(mllib
     src/ops.cpp
     src/models.cpp
     src/optimizers.cpp
+    src/metrics.cpp
+    src/visualize.cpp
     src/backend/tensor_cpu.cpp
     src/backend/tensor_cuda.cu
 )

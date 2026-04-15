@@ -21,7 +21,7 @@ void tensor_cpu_clear(Tensor *tensor) {
     memset(tensor->data, 0, sizeof(f32) * tensor->size);
 }
 
-// ---- elementwise unary ---------------------------------------------------
+// ---- activations (relu, exp) ---------------------------------------------
 
 template <typename Fn>
 static void elementwise_unary(Tensor *out, const Tensor *a, Fn fn) {
@@ -30,13 +30,10 @@ static void elementwise_unary(Tensor *out, const Tensor *a, Fn fn) {
             out->data[i] = fn(a->data[i]);
         return;
     }
-    // Non-contiguous path: iterate using a's own strides
     tensorIterator a_iter(a->ndim, a->shape, a->stride);
     for (u64 i = 0; i < out->size; i++)
         out->data[i] = fn(a->data[a_iter.next()]);
 }
-
-// ---- activations (relu, exp) ---------------------------------------------
 
 void tensor_cpu_relu(Tensor *dst, const Tensor *src) {
     elementwise_unary(dst, src, [](f32 x) { return x > 0.0f ? x : 0.0f; });
@@ -56,15 +53,12 @@ void tensor_cpu_log(Tensor *dst, const Tensor *src) {
 template <typename Fn>
 static void elementwise_binary(Tensor *out, const Tensor *a, const Tensor *b,
                                Fn fn) {
-    // Fast path: same shape, contiguous memory — no broadcast needed
     if (tensor_shape_eq(a, b) && tensor_is_contiguous(a) &&
         tensor_is_contiguous(b)) {
         for (u64 i = 0; i < out->size; i++)
             out->data[i] = fn(a->data[i], b->data[i]);
         return;
     }
-
-    // Broadcast path: use out->shape/ndim (already validated by dispatcher)
     u64 a_strides[MAX_NDIM];
     u64 b_strides[MAX_NDIM];
     expanded_stride(a, out->shape, out->ndim, a_strides);
@@ -75,8 +69,6 @@ static void elementwise_binary(Tensor *out, const Tensor *a, const Tensor *b,
 
     for (u64 i = 0; i < out->size; i++)
         out->data[i] = fn(a->data[a_iter.next()], b->data[b_iter.next()]);
-
-    return;
 }
 
 void tensor_cpu_add(Tensor *out, const Tensor *a, const Tensor *b) {
@@ -94,49 +86,18 @@ void tensor_cpu_mul(Tensor *out, const Tensor *a, const Tensor *b) {
 void tensor_cpu_div(Tensor *out, const Tensor *a, const Tensor *b) {
     elementwise_binary(out, a, b, [](f32 x, f32 y) { return x / y; });
 }
+
+void tensor_cpu_equal(Tensor *out, const Tensor *a, const Tensor *b) {
+    elementwise_binary(out, a, b, [](f32 x, f32 y) { return x == y; });
+}
+
 void tensor_cpu_relu_backward(Tensor *out, const Tensor *grad,
                               const Tensor *in) {
     elementwise_binary(out, grad, in,
                        [](f32 g, f32 x) { return x > 0.0f ? g : 0.0f; });
 }
 
-// ---- reduction (max) -----------------------------------------------------
-
-void tensor_cpu_max(Tensor *out, const Tensor *tensor) {
-    f32 max_val = -__FLT_MAX__;
-    for (u64 i = 0; i < tensor->size; i++)
-        max_val = std::max(max_val, tensor->data[i]);
-    out->data[0] = max_val;
-}
-
-void tensor_cpu_max(Tensor *out, const Tensor *tensor, u32 dim) {
-    tensor_cpu_fill(out, -__FLT_MAX__);
-
-    u64 out_strides[MAX_NDIM];
-    memcpy(out_strides, out->stride, out->ndim * sizeof(u64));
-    out_strides[dim] = 0;
-
-    tensorIterator in_it(tensor->ndim, tensor->shape, tensor->stride);
-    tensorIterator out_it(tensor->ndim, tensor->shape, out_strides);
-    while (in_it.has_next()) {
-        u64 out_idx = out_it.next();
-        f32 val = tensor->data[in_it.next()];
-        if (val > out->data[out_idx])
-            out->data[out_idx] = val;
-    }
-}
-
 // ---- scalar operations ---------------------------------------------------
-
-void tensor_cpu_mul(Tensor *out, const Tensor *tensor, f32 scalar) {
-    for (u64 i = 0; i < tensor->size; i++)
-        out->data[i] = tensor->data[i] * scalar;
-}
-
-void tensor_cpu_div(Tensor *out, const Tensor *a, f32 scalar) {
-    for (u64 i = 0; i < out->size; i++)
-        out->data[i] = a->data[i] / scalar;
-}
 
 void tensor_cpu_add(Tensor *out, const Tensor *a, f32 scalar) {
     for (u64 i = 0; i < out->size; i++)
@@ -146,6 +107,16 @@ void tensor_cpu_add(Tensor *out, const Tensor *a, f32 scalar) {
 void tensor_cpu_sub(Tensor *out, const Tensor *a, f32 scalar) {
     for (u64 i = 0; i < out->size; i++)
         out->data[i] = a->data[i] - scalar;
+}
+
+void tensor_cpu_mul(Tensor *out, const Tensor *tensor, f32 scalar) {
+    for (u64 i = 0; i < tensor->size; i++)
+        out->data[i] = tensor->data[i] * scalar;
+}
+
+void tensor_cpu_div(Tensor *out, const Tensor *a, f32 scalar) {
+    for (u64 i = 0; i < out->size; i++)
+        out->data[i] = a->data[i] / scalar;
 }
 
 // ---- matrix multiply -----------------------------------------------------
@@ -211,10 +182,10 @@ void tensor_cpu_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
     _mat_mul(out, a, b);
 }
 
-// ---- reduction (sum) -----------------------------------------------------
+// ---- reduction (sum, max, argmax) ----------------------------------------
 
 void tensor_cpu_sum(Tensor *out, const Tensor *tensor, b32 clear_out) {
-    // Kahan compesated summation
+    // Kahan compensated summation
     f32 sum = clear_out ? 0.0f : out->data[0];
     f32 c = 0.0f;
     for (u64 i = 0; i < tensor->size; i++) {
@@ -240,26 +211,77 @@ void tensor_cpu_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 clear_out) {
         out->data[out_it.next()] += tensor->data[in_it.next()];
 }
 
-// ---- intializing ---------------------------------------------------------
-void tensor_cpu_he_init(Tensor *tensor) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
+void tensor_cpu_max(Tensor *out, const Tensor *tensor) {
+    f32 max_val = -__FLT_MAX__;
+    for (u64 i = 0; i < tensor->size; i++)
+        max_val = std::max(max_val, tensor->data[i]);
+    out->data[0] = max_val;
+}
 
-    u32 in_features = tensor->shape[ROW_DIM(tensor)];
+void tensor_cpu_max(Tensor *out, const Tensor *tensor, u32 dim) {
+    tensor_cpu_fill(out, -__FLT_MAX__);
 
-    float stddev = std::sqrt(2.0f / in_features);
-    std::normal_distribution<float> dist(0.0f, stddev);
+    u64 out_strides[MAX_NDIM];
+    memcpy(out_strides, out->stride, out->ndim * sizeof(u64));
+    out_strides[dim] = 0;
 
-    for (u64 i = 0; i < tensor->size; i++) {
-        tensor->data[i] = dist(gen);
+    tensorIterator in_it(tensor->ndim, tensor->shape, tensor->stride);
+    tensorIterator out_it(tensor->ndim, tensor->shape, out_strides);
+    while (in_it.has_next()) {
+        u64 out_idx = out_it.next();
+        f32 val = tensor->data[in_it.next()];
+        if (val > out->data[out_idx])
+            out->data[out_idx] = val;
     }
 }
 
+void tensor_cpu_argmax(Tensor *out, const Tensor *tensor, u32 dim) {
+    Tensor *max_vals = new Tensor(out->ndim, out->shape, false);
+    tensor_cpu_fill(max_vals, -__FLT_MAX__);
+    tensor_cpu_fill(out, 0.0f);
+
+    // out_strides: stride=0 on dim → collapses it, maps each input to its slot
+    u64 out_strides[MAX_NDIM];
+    memcpy(out_strides, out->stride, out->ndim * sizeof(u64));
+    out_strides[dim] = 0;
+
+    // dim_strides: stride=1 on dim, 0 elsewhere → yields index along dim
+    u64 dim_strides[MAX_NDIM] = {};
+    dim_strides[dim] = 1;
+
+    tensorIterator in_it(tensor->ndim, tensor->shape, tensor->stride);
+    tensorIterator out_it(tensor->ndim, tensor->shape, out_strides);
+    tensorIterator dim_it(tensor->ndim, tensor->shape, dim_strides);
+
+    while (in_it.has_next()) {
+        u64 out_idx = out_it.next();
+        u64 dim_idx = dim_it.next();
+        f32 val = tensor->data[in_it.next()];
+        if (val > max_vals->data[out_idx]) {
+            max_vals->data[out_idx] = val;
+            out->data[out_idx] = (f32)dim_idx;
+        }
+    }
+
+    delete max_vals;
+}
+
+// ---- initializing --------------------------------------------------------
+
+void tensor_cpu_he_init(Tensor *tensor) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    u32 in_features = tensor->shape[ROW_DIM(tensor)];
+    float stddev = std::sqrt(2.0f / in_features);
+    std::normal_distribution<float> dist(0.0f, stddev);
+    for (u64 i = 0; i < tensor->size; i++)
+        tensor->data[i] = dist(gen);
+}
+
+// ---- indexing ------------------------------------------------------------
+
 void tensor_cpu_index_select(Tensor *dst, const Tensor *src, const u32 *indices,
                              u32 n_indices, u32 dim) {
-    // Each selected index maps to a set of contiguous blocks of size
-    // inner_size. outer_size is how many such blocks exist per index (the
-    // product of dims before `dim`).
     u64 inner_size = src->stride[dim];
     u64 outer_size = src->size / (src->shape[dim] * inner_size);
 
