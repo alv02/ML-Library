@@ -9,22 +9,35 @@
 #define ML_DEVICE
 #endif
 
+// GPU-side mirror of a Tensor's shape and stride metadata.
+// Copied to the device so kernels can do multi-dimensional indexing without
+// accessing the host-side Tensor struct.
 struct TensorMeta {
-    u64 size;
-    u32 ndim;
-    u32 shape[MAX_NDIM];
-    u64 stride[MAX_NDIM];
+    u64 size;              // total number of elements
+    u32 ndim;              // number of dimensions
+    u32 shape[MAX_NDIM];   // size of each dimension
+    u64 stride[MAX_NDIM];  // stride per dimension (0 = broadcast that dim)
 
-    // Simple copy
+    // Copies shape and strides directly from t.
     TensorMeta(const Tensor *t);
-    // Broadcast-expanded — zeros out strides on broadcast dims
+    // Broadcast-expanded constructor: left-pads shape with 1s and strides with 0s
+    // to reach bcast_ndim. Dims where t->shape==1 also get stride=0 so kernels
+    // using offset_from() automatically repeat the same element there.
     TensorMeta(const Tensor *t, const u32 *bcast_shape, u32 bcast_ndim);
 
     ML_DEVICE u32 rows() const { return shape[ndim - 2]; }
     ML_DEVICE u32 cols() const { return shape[ndim - 1]; }
+    // Returns the flat offset for the element at (row, col) using the last two dims.
     ML_DEVICE u64 at(u64 row, u64 col) const {
         return row * stride[ndim - 2] + col * stride[ndim - 1];
     }
+    // Maps a flat output index to a flat source offset, handling broadcasting.
+    // Uses *this* tensor's strides as divisors to decompose flat_idx into
+    // per-dimension indices, then re-indexes with src.stride.
+    // Because src may have stride=0 on broadcast dims, those dimensions always
+    // resolve to offset 0 regardless of the index — same element is reused.
+    // Example: out is [3,2,4], src is [1,2,4] (broadcast on dim 0).
+    //   flat_idx=9 → out divides to coords (1,0,1) → src offset = 0+0+1 = 1.
     ML_DEVICE u64 offset_from(u64 flat_idx, const TensorMeta &src) const {
         u64 remaining = flat_idx;
         u64 offset = 0;

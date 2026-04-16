@@ -9,7 +9,7 @@ Tensor *reduce_grad(const Tensor *grad, const Tensor *target) {
     memcpy(current_shape, grad->shape, sizeof(u32) * grad->ndim);
 
     u32 target_expanded_shape[MAX_NDIM];
-    expanded_shape(target, grad->shape, grad->ndim, target_expanded_shape);
+    expanded_shape(target, grad->ndim, target_expanded_shape);
 
     for (u32 i = 0; i < grad->ndim; i++) {
         if (target_expanded_shape[i] == 1 && cur->shape[i] > 1) {
@@ -136,8 +136,7 @@ function_var *ReluOp::make_output() {
     if (A->flags & FV_FLAG_REQUIERES_GRAD)
         flags |= FV_FLAG_REQUIERES_GRAD;
 
-    function_var *out =
-        new function_var(tensor_create_like(A->val), flags);
+    function_var *out = new function_var(tensor_create_like(A->val), flags);
     out->grad_fn = this;
     return out;
 }
@@ -237,7 +236,7 @@ function_var *CrossEntropyWithLogitsOp::make_output() {
 }
 
 void CrossEntropyWithLogitsOp::forward(function_var *out) {
-    const Tensor *logits  = inputs[0]->val;
+    const Tensor *logits = inputs[0]->val;
     const Tensor *targets = inputs[1]->val;
 
     N_batch = logits->ndim >= 2 ? logits->shape[0] : 1;
@@ -256,7 +255,7 @@ void CrossEntropyWithLogitsOp::forward(function_var *out) {
 }
 
 void CrossEntropyWithLogitsOp::backward(Tensor *grad_output) {
-    function_var *logits  = inputs[0];
+    function_var *logits = inputs[0];
     function_var *targets = inputs[1];
 
     // d_logits = (softmax - targets) / N_batch * grad_output

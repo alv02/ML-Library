@@ -73,18 +73,19 @@ nn_model::nn_model(Tensor *val_X, Tensor *val_y,
     function_var *cur = X;
     for (u32 l = 0; l < (u32)layer_sizes.size(); l++) {
         u32 out_features = layer_sizes[l];
-        u32 w_shape[2] = {in_features, out_features};
+        u32 w_shape[2] = {out_features, in_features};
         u32 b_shape[2] = {1, out_features};
 
-        W.push_back(
-            new function_var(new Tensor(2, w_shape, on_gpu),
-                             FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER));
+        Tensor *w = new Tensor(2, w_shape, on_gpu);
+        tensor_transpose(w, COL_DIM(w), ROW_DIM(w));
+        Wt.push_back(
+            new function_var(w, FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER));
 
         b.push_back(
             new function_var(new Tensor(2, b_shape, on_gpu),
                              FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER));
 
-        MatMulOp *mm = new MatMulOp(cur, W[l]);
+        MatMulOp *mm = new MatMulOp(cur, Wt[l]);
         op_matmul.push_back(mm);
         z.push_back(op_matmul[l]->make_output());
         AddOp *add = new AddOp(z[l], b[l]);
@@ -109,7 +110,7 @@ nn_model::nn_model(Tensor *val_X, Tensor *val_y,
     graph = graph_create(fv_loss);
 
     // He initialization for Ws
-    for (auto *_w : W) {
+    for (auto *_w : Wt) {
         tensor_he_init(_w->val);
     }
 }
@@ -123,7 +124,7 @@ nn_model::~nn_model() {
     for (auto *op : op_relu)
         delete op;
     delete op_loss;
-    for (auto *fv : W)
+    for (auto *fv : Wt)
         delete fv;
     for (auto *fv : b)
         delete fv;

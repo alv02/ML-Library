@@ -7,7 +7,14 @@
 // ---- copy ----------------------------------------------------------------
 
 void tensor_cpu_copy(Tensor *dst, const Tensor *src) {
-    memcpy(dst->data, src->data, src->size * sizeof(f32));
+    if (tensor_is_contiguous(dst) && tensor_is_contiguous(src)) {
+        memcpy(dst->data, src->data, src->size * sizeof(f32));
+        return;
+    }
+    tensorIterator dst_iter(dst->ndim, dst->shape, dst->stride);
+    tensorIterator src_iter(src->ndim, src->shape, src->stride);
+    for (u64 i = 0; i < dst->size; i++)
+        dst->data[dst_iter.next()] = src->data[src_iter.next()];
 }
 
 // ---- fill / clear --------------------------------------------------------
@@ -23,16 +30,21 @@ void tensor_cpu_clear(Tensor *tensor) {
 
 // ---- activations (relu, exp) ---------------------------------------------
 
+// Applies fn element-wise: out[i] = fn(a[i]).
+// Fast path when both tensors are contiguous (direct flat index). Falls back to
+// two tensorIterators when either tensor is non-contiguous so strides are
+// respected for both reads and writes.
 template <typename Fn>
 static void elementwise_unary(Tensor *out, const Tensor *a, Fn fn) {
-    if (tensor_is_contiguous(a)) {
+    if (tensor_is_contiguous(out) && tensor_is_contiguous(a)) {
         for (u64 i = 0; i < out->size; i++)
             out->data[i] = fn(a->data[i]);
         return;
     }
+    tensorIterator out_iter(out->ndim, out->shape, out->stride);
     tensorIterator a_iter(a->ndim, a->shape, a->stride);
     for (u64 i = 0; i < out->size; i++)
-        out->data[i] = fn(a->data[a_iter.next()]);
+        out->data[out_iter.next()] = fn(a->data[a_iter.next()]);
 }
 
 void tensor_cpu_relu(Tensor *dst, const Tensor *src) {
@@ -50,25 +62,31 @@ void tensor_cpu_log(Tensor *dst, const Tensor *src) {
 // ---- elementwise binary (add / sub / mul / div) --------------------------
 // Validation is done by the dispatcher in tensor.cpp before calling here.
 
+// Applies fn element-wise with broadcasting: out[i] = fn(a[...], b[...]).
+// Fast path when all three tensors have the same shape and are contiguous.
+// General path: three iterators walk the output shape using each tensor's own
+// strides (0 on broadcast dims for inputs), so reads from a/b and writes to out
+// all respect non-contiguous layouts (e.g. transposed weight matrices).
 template <typename Fn>
 static void elementwise_binary(Tensor *out, const Tensor *a, const Tensor *b,
                                Fn fn) {
-    if (tensor_shape_eq(a, b) && tensor_is_contiguous(a) &&
-        tensor_is_contiguous(b)) {
+    if (tensor_shape_eq(a, b) && tensor_is_contiguous(out) &&
+        tensor_is_contiguous(a) && tensor_is_contiguous(b)) {
         for (u64 i = 0; i < out->size; i++)
             out->data[i] = fn(a->data[i], b->data[i]);
         return;
     }
     u64 a_strides[MAX_NDIM];
     u64 b_strides[MAX_NDIM];
-    expanded_stride(a, out->shape, out->ndim, a_strides);
-    expanded_stride(b, out->shape, out->ndim, b_strides);
+    expanded_stride(a, out->ndim, a_strides);
+    expanded_stride(b, out->ndim, b_strides);
 
+    tensorIterator out_iter(out->ndim, out->shape, out->stride);
     tensorIterator a_iter(out->ndim, out->shape, a_strides);
     tensorIterator b_iter(out->ndim, out->shape, b_strides);
 
     for (u64 i = 0; i < out->size; i++)
-        out->data[i] = fn(a->data[a_iter.next()], b->data[b_iter.next()]);
+        out->data[out_iter.next()] = fn(a->data[a_iter.next()], b->data[b_iter.next()]);
 }
 
 void tensor_cpu_add(Tensor *out, const Tensor *a, const Tensor *b) {
@@ -99,30 +117,55 @@ void tensor_cpu_relu_backward(Tensor *out, const Tensor *grad,
 
 // ---- scalar operations ---------------------------------------------------
 
-void tensor_cpu_add(Tensor *out, const Tensor *a, f32 scalar) {
+template <typename Fn>
+static void elementwise_scalar(Tensor *out, const Tensor *a, f32 scalar,
+                                Fn fn) {
+    if (tensor_is_contiguous(out) && tensor_is_contiguous(a)) {
+        for (u64 i = 0; i < out->size; i++)
+            out->data[i] = fn(a->data[i], scalar);
+        return;
+    }
+    tensorIterator out_iter(out->ndim, out->shape, out->stride);
+    tensorIterator a_iter(a->ndim, a->shape, a->stride);
     for (u64 i = 0; i < out->size; i++)
-        out->data[i] = a->data[i] + scalar;
+        out->data[out_iter.next()] = fn(a->data[a_iter.next()], scalar);
+}
+
+void tensor_cpu_add(Tensor *out, const Tensor *a, f32 scalar) {
+    elementwise_scalar(out, a, scalar, [](f32 x, f32 s) { return x + s; });
 }
 
 void tensor_cpu_sub(Tensor *out, const Tensor *a, f32 scalar) {
-    for (u64 i = 0; i < out->size; i++)
-        out->data[i] = a->data[i] - scalar;
+    elementwise_scalar(out, a, scalar, [](f32 x, f32 s) { return x - s; });
 }
 
 void tensor_cpu_mul(Tensor *out, const Tensor *tensor, f32 scalar) {
-    for (u64 i = 0; i < tensor->size; i++)
-        out->data[i] = tensor->data[i] * scalar;
+    elementwise_scalar(out, tensor, scalar, [](f32 x, f32 s) { return x * s; });
 }
 
 void tensor_cpu_div(Tensor *out, const Tensor *a, f32 scalar) {
-    for (u64 i = 0; i < out->size; i++)
-        out->data[i] = a->data[i] / scalar;
+    elementwise_scalar(out, a, scalar, [](f32 x, f32 s) { return x / s; });
 }
 
 // ---- matrix multiply -----------------------------------------------------
 
 static inline u32 mat_rows(const Tensor *t) { return t->shape[ROW_DIM(t)]; }
 static inline u32 mat_cols(const Tensor *t) { return t->shape[COL_DIM(t)]; }
+
+// The four loop orderings below all compute the same matmul out = a @ b but
+// iterate in different orders to maximise cache locality depending on whether
+// each matrix is row-major or column-major in memory.
+//
+// In a row-major matrix stride[row] > stride[col], so walking along columns is
+// sequential in memory (cache-friendly). In a column-major (transposed) matrix
+// stride[row] < stride[col], so walking along rows is sequential instead.
+// The outermost loop should iterate over the dimension that is NOT sequential
+// in memory so the inner loops can stream through cache lines.
+//
+//   nn: a row-major, b row-major — ikj order (streams b's rows in the k loop)
+//   nt: a row-major, b col-major — ijk order (streams b's columns in the k loop)
+//   tn: a col-major, b row-major — kij order (streams a's columns in the i loop)
+//   tt: a col-major, b col-major — jki order (streams both col-major matrices)
 
 static void _mm_nn(Tensor *out, const Tensor *a, const Tensor *b) {
     u32 M = mat_rows(a), N = mat_cols(a), P = mat_cols(b);
@@ -156,6 +199,10 @@ static void _mm_tt(Tensor *out, const Tensor *a, const Tensor *b) {
                 (*out)(i, j) += (*a)(i, k) * (*b)(k, j);
 }
 
+// Selects the loop ordering based on each matrix's memory layout.
+// stride[ROW] < stride[COL] means the matrix is column-major (transposed):
+// stepping along rows is sequential, stepping along cols is strided.
+// The two booleans are packed into a 2-bit key: ta=bit1, tb=bit0.
 static void _mat_mul(Tensor *out, const Tensor *a, const Tensor *b) {
     b32 ta = a->stride[ROW_DIM(a)] < a->stride[COL_DIM(a)];
     b32 tb = b->stride[ROW_DIM(b)] < b->stride[COL_DIM(b)];
@@ -197,6 +244,11 @@ void tensor_cpu_sum(Tensor *out, const Tensor *tensor, b32 clear_out) {
     out->data[0] = sum;
 }
 
+// Stride=0 trick: copy out's strides then zero the target dim. The out iterator
+// now maps every input position along that dim to the same output slot, so
+// all values along the dim accumulate into a single output element.
+// Example: tensor=[3,4], dim=1 → out_strides[1]=0 collapses all 4 columns into
+// the same slot for each row, summing them.
 void tensor_cpu_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 clear_out) {
     if (clear_out)
         tensor_cpu_clear(out);
@@ -235,6 +287,14 @@ void tensor_cpu_max(Tensor *out, const Tensor *tensor, u32 dim) {
     }
 }
 
+// Uses three parallel iterators running over the full input shape:
+//   in_it  — walks input with real strides (reads values).
+//   out_it — same shape but out_strides[dim]=0, collapses dim so all positions
+//            along it map to the same output slot (same stride=0 trick as sum).
+//   dim_it — all strides 0 except dim_strides[dim]=1, so its offset counts 0,1,2,...
+//            as the iterator advances along that axis and 0 everywhere else.
+//            This gives the current index within the reduction dimension.
+// Whenever a new max is found the corresponding dim_it offset is stored as the index.
 void tensor_cpu_argmax(Tensor *out, const Tensor *tensor, u32 dim) {
     Tensor *max_vals = new Tensor(out->ndim, out->shape, false);
     tensor_cpu_fill(max_vals, -__FLT_MAX__);
@@ -280,6 +340,13 @@ void tensor_cpu_he_init(Tensor *tensor) {
 
 // ---- indexing ------------------------------------------------------------
 
+// Decomposes the tensor into outer slices, index slices, and inner slices:
+//   inner_size = src->stride[dim]  → number of elements in one slice along dim
+//   outer_size = total / (shape[dim] * inner_size) → number of outer batches
+// For each outer batch and each requested index, copies one inner_size block
+// from the source to the destination via memcpy.
+// Example: src=[5,3], indices=[2,0], dim=0 → inner_size=3, outer_size=1
+//   copies row 2 (src+6) then row 0 (src+0) into dst.
 void tensor_cpu_index_select(Tensor *dst, const Tensor *src, const u32 *indices,
                              u32 n_indices, u32 dim) {
     u64 inner_size = src->stride[dim];

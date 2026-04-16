@@ -32,7 +32,7 @@ struct linear_model {
 
 struct nn_model {
     // Parameters
-    std::vector<function_var *> W;
+    std::vector<function_var *> Wt;
     std::vector<function_var *> b;
 
     // Inputs and targets

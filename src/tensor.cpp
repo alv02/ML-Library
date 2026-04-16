@@ -17,10 +17,7 @@ Tensor::Tensor(u32 ndim, const u32 *shape, b32 on_gpu) {
     for (u32 i = 0; i < ndim; i++)
         this->shape[i] = shape[i];
 
-    for (u32 i = ndim; i-- > 0;) {
-        this->stride[i] = this->size;
-        this->size *= this->shape[i];
-    }
+    this->size = tensor_compute_strides(this->stride, this->shape, ndim);
 
     if (on_gpu) {
         tensor_cuda_alloc(this);
@@ -143,6 +140,15 @@ Tensor *tensor_to_cpu(const Tensor *t) {
 
 // ---- Metadata / shape helpers (device-independent) -----------------------
 
+u64 tensor_compute_strides(u64 *stride, const u32 *shape, u32 ndim) {
+    u64 size = 1;
+    for (u32 i = ndim; i-- > 0;) {
+        stride[i] = size;
+        size *= shape[i];
+    }
+    return size;
+}
+
 b32 tensor_is_contiguous(const Tensor *t) {
     u64 expected = 1;
     for (u32 i = t->ndim; i-- > 0;) {
@@ -180,13 +186,8 @@ b32 tensor_reshape(Tensor *tensor, const u32 *shape, u32 ndim) {
 
     for (u32 i = 0; i < ndim; i++)
         tensor->shape[i] = shape[i];
-
-    new_size = 1;
-    for (u32 i = ndim; i-- > 0;) {
-        tensor->stride[i] = new_size;
-        new_size *= shape[i];
-    }
     tensor->ndim = ndim;
+    tensor_compute_strides(tensor->stride, tensor->shape, ndim);
     return true;
 }
 
@@ -211,7 +212,10 @@ void tensor_print(const Tensor *tensor) {
     }
     printf("])\n");
 }
-
+// Computes the broadcast output shape of a and b following NumPy rules:
+// align shapes from the right, each dim must be equal or one of them must be 1.
+// Writes result into out_shape and returns the output ndim (0 = incompatible
+// shapes). Example: a=[3,1,4], b=[2,4] → out_shape=[3,2,4], returns 3.
 u32 broadcast_shape(const Tensor *a, const Tensor *b, u32 *out_shape) {
     u32 expanded_ndim = max(a->ndim, b->ndim);
     for (u32 i = 0; i < expanded_ndim; i++) {
@@ -226,8 +230,10 @@ u32 broadcast_shape(const Tensor *a, const Tensor *b, u32 *out_shape) {
     return expanded_ndim;
 }
 
-void expanded_shape(const Tensor *t, const u32 *expanded_shape,
-                    u32 expanded_ndim, u32 *t_expanded_shape) {
+// Left-pads t->shape with 1s to reach expanded_ndim, writing into
+// t_expanded_shape. Example: t.shape=[4,5], expanded_ndim=4 →
+// t_expanded_shape=[1,1,4,5].
+void expanded_shape(const Tensor *t, u32 expanded_ndim, u32 *t_expanded_shape) {
     u32 n_prepend = expanded_ndim - t->ndim;
     u32 i = 0;
     for (; i < n_prepend; i++)
@@ -236,8 +242,28 @@ void expanded_shape(const Tensor *t, const u32 *expanded_shape,
         t_expanded_shape[i] = t->shape[i - n_prepend];
 }
 
-void expanded_stride(const Tensor *t, const u32 *expanded_shape,
-                     u32 expanded_ndim, u64 *t_expanded_stride) {
+b32 tensor_expand_shape(Tensor *t, u32 expanded_ndim) {
+    if (t->ndim > expanded_ndim)
+        return false;
+    if (t->ndim == expanded_ndim)
+        return true;
+    u32 new_shape[MAX_NDIM];
+    expanded_shape(t, expanded_ndim, new_shape);
+    for (u32 i = 0; i < expanded_ndim; i++)
+        t->shape[i] = new_shape[i];
+    t->ndim = expanded_ndim;
+    tensor_compute_strides(t->stride, t->shape, expanded_ndim);
+    return true;
+}
+
+// Left-pads t->stride with 0s to reach expanded_ndim, writing into
+// t_expanded_stride. Prepended dims get stride 0. Dims where shape==1 also get
+// stride 0. Stride 0 means the index always lands on the same element — this is
+// how broadcasting works without copying data: advancing the index in a
+// broadcast dim costs 0 offset. Example: t.shape=[1,5], t.stride=[5,1],
+// expanded_ndim=3 → t_expanded_stride=[0,0,1].
+void expanded_stride(const Tensor *t, u32 expanded_ndim,
+                     u64 *t_expanded_stride) {
     u32 n_prepend = expanded_ndim - t->ndim;
     u32 i = 0;
     for (; i < n_prepend; i++)
@@ -314,13 +340,9 @@ void tensor_realloc(Tensor *t, const u32 *new_shape, u32 new_ndim) {
     }
 
     t->ndim = new_ndim;
-    t->size = 1;
     for (u32 i = 0; i < new_ndim; i++)
         t->shape[i] = new_shape[i];
-    for (u32 i = new_ndim; i-- > 0;) {
-        t->stride[i] = t->size;
-        t->size *= t->shape[i];
-    }
+    t->size = tensor_compute_strides(t->stride, t->shape, new_ndim);
 
     t->owns_data = true;
     if (t->on_gpu) {
@@ -1097,3 +1119,20 @@ Tensor *tensor_index_select(const Tensor *src, const u32 *indices,
     }
     return dst;
 }
+
+// ---- Conv2dParams constructor -------------------------------------------
+Conv2dParams::Conv2dParams(u32 k, u32 stride, u32 pad, u32 dil)
+    : kernel_size_h(k), kernel_size_w(k), stride_h(stride), stride_w(stride),
+      pad_h(pad), pad_w(pad) {}
+
+// ---- spatial / patch operations ------------------------------------------
+b32 tensor_unfold2d(Tensor *out, const Tensor *input, Conv2dParams params) {
+    Tensor *input_expanded = tensor_view(input);
+    if (!tensor_expand_shape(input_expanded, 4)) {
+        printf("Tensors with 5 or more dimensions not supported, shape should "
+               "be (N, C, H, W)\n");
+    }
+
+    return true;
+}
+Tensor *tensor_unfold(const Tensor *input, Conv2dParams params);

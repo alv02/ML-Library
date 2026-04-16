@@ -5,6 +5,7 @@
 
 // ---- copy ----------------------------------------------------------------
 
+// Raw memcpy of the data buffer. Shapes must already match.
 void tensor_cpu_copy(Tensor *dst, const Tensor *src);
 
 // ---- fill / clear --------------------------------------------------------
@@ -42,10 +43,16 @@ void tensor_cpu_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
 
 // ---- reduction (sum, max, argmax) ----------------------------------------
 
+// Reduces the entire tensor to a scalar using Kahan compensated summation.
 void tensor_cpu_sum(Tensor *out, const Tensor *tensor, b32 clear_out);
+// Reduces along dim using the stride=0 trick: out_strides[dim]=0 maps all
+// positions along that axis to the same output slot so they accumulate there.
 void tensor_cpu_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 clear_out);
+// Reduces the entire tensor to a scalar (maximum value).
 void tensor_cpu_max(Tensor *out, const Tensor *tensor);
+// Reduces along dim using the same stride=0 trick as tensor_cpu_sum.
 void tensor_cpu_max(Tensor *out, const Tensor *tensor, u32 dim);
+// Returns the index (as f32) of the max value along dim.
 void tensor_cpu_argmax(Tensor *out, const Tensor *tensor, u32 dim);
 
 // ---- initializing --------------------------------------------------------

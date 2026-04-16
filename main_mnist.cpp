@@ -42,7 +42,8 @@ int main() {
     Tensor *loss_cpu = tensor_to_cpu(model.fv_loss->val);
     printf("Test loss: %f\n", loss_cpu->data[0]);
     delete loss_cpu;
-    printf("Test accuracy: %.2f%%\n", accuracy(model.a.back()->val, test_val_y) * 100.0f);
+    printf("Test accuracy: %.2f%%\n",
+           accuracy(model.a.back()->val, test_val_y) * 100.0f);
 
     printf("\n--- Wrong predictions ---\n");
     visualize_wrong(test_val_X, model.a.back()->val, test_val_y, 5);

@@ -1,5 +1,8 @@
 #include "../include/tensor_iterator.hpp"
 
+// Copies shape and strides; initializes counter to all zeros and remaining to
+// the total number of elements (product of shape). Strides may be 0 to indicate
+// a broadcast dimension.
 tensorIterator::tensorIterator(u32 ndim, const u32 *shape, const u64 *stride) {
     this->ndim = ndim;
     this->remaining = 1;
@@ -12,6 +15,12 @@ tensorIterator::tensorIterator(u32 ndim, const u32 *shape, const u64 *stride) {
     }
 }
 tensorIterator::~tensorIterator() {}
+
+// Computes the flat memory offset for the current counter, decrements remaining,
+// then advances the counter like an odometer (last dim increments first; when a
+// dim overflows shape[i] it resets to 0 and the carry propagates to the left).
+// Dims with stride=0 always contribute 0 to the offset regardless of counter,
+// which implements broadcasting — the same element is returned for all indices.
 u64 tensorIterator::next() {
     u64 offset = 0;
     remaining--;
