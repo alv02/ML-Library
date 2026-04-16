@@ -22,6 +22,8 @@ struct function_var {
 
     function_var(Tensor *val, u32 flags);
     ~function_var();
+    u32 n_rows() const;
+    u32 n_cols() const;
 };
 
 void fv_print(const function_var *fv);
@@ -30,7 +32,8 @@ struct function {
     u32 n_inputs;
     function_var *inputs[MAX_INPUTS];
 
-    // Allocate output fv with correct shape and flags, wire grad_fn. Called once.
+    // Allocate output fv with correct shape and flags, wire grad_fn. Called
+    // once.
     virtual function_var *make_output() = 0;
     // Compute values into an already-allocated fv. Called every step.
     virtual void forward(function_var *out) = 0;

@@ -1,8 +1,7 @@
 #include "../include/tensor.hpp"
-#include <cuda_runtime.h>
-#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cuda_runtime.h>
 
 #define GREEN "\033[32m"
 #define RED   "\033[31m"
@@ -21,16 +20,20 @@ static void check(const char *name, bool ok) {
     ok ? passed++ : failed++;
 }
 
-static bool tensors_close(const Tensor *got, const Tensor *expected, f32 tol = 1e-5f) {
-    if (got->size != expected->size) return false;
-    for (u64 i = 0; i < got->size; i++) {
-        if (fabsf(got->data[i] - expected->data[i]) > tol) {
-            printf("    mismatch at [%llu]: got %.6f  expected %.6f\n",
-                   (unsigned long long)i, got->data[i], expected->data[i]);
-            return false;
-        }
+static void check_tensors(const char *name, const Tensor *got, const Tensor *exp,
+                          f32 tol = 1e-5f) {
+    if (!tensor_shape_eq(got, exp)) {
+        printf("  [%sFAIL%s] %s — shape mismatch: got [", RED, RESET, name);
+        for (u32 i = 0; i < got->ndim; i++)
+            printf("%u%s", got->shape[i], i + 1 < got->ndim ? "," : "");
+        printf("] expected [");
+        for (u32 i = 0; i < exp->ndim; i++)
+            printf("%u%s", exp->shape[i], i + 1 < exp->ndim ? "," : "");
+        printf("]\n");
+        failed++;
+        return;
     }
-    return true;
+    check(name, tensor_equals(got, exp, tol));
 }
 
 static void test_add(const char *name, const char *dir) {
@@ -50,11 +53,10 @@ static void test_add(const char *name, const char *dir) {
         return;
     }
 
-    Tensor *out = tensor_add(a, b);
+    Tensor *out     = tensor_add(a, b);
     sync();
-
     Tensor *out_cpu = tensor_to_cpu(out);
-    check(name, tensors_close(out_cpu, exp));
+    check_tensors(name, out_cpu, exp);
 
     delete a; delete b; delete exp; delete out; delete out_cpu;
 }
@@ -79,11 +81,10 @@ static void test_mat_mul(const char *name, const char *dir, bool trans_a = false
     if (trans_a)
         tensor_transpose(a, 0, 1);
 
-    Tensor *out = tensor_mat_mul(a, b);
+    Tensor *out     = tensor_mat_mul(a, b);
     sync();
-
     Tensor *out_cpu = tensor_to_cpu(out);
-    check(name, tensors_close(out_cpu, exp, 1e-4f));
+    check_tensors(name, out_cpu, exp, 1e-4f);
 
     delete a; delete b; delete exp; delete out; delete out_cpu;
 }
@@ -103,11 +104,10 @@ static void test_sum(const char *name, const char *dir) {
         return;
     }
 
-    Tensor *out = tensor_sum(a);
+    Tensor *out     = tensor_sum(a);
     sync();
-
     Tensor *out_cpu = tensor_to_cpu(out);
-    check(name, tensors_close(out_cpu, exp, 1e-3f));
+    check_tensors(name, out_cpu, exp, 1e-3f);
 
     delete a; delete exp; delete out; delete out_cpu;
 }
@@ -127,30 +127,10 @@ static void test_sum_dim(const char *name, const char *dir, u32 dim, b32 keep_di
         return;
     }
 
-    Tensor *out = tensor_sum(a, dim, keep_dim);
+    Tensor *out     = tensor_sum(a, dim, keep_dim);
     sync();
-
     Tensor *out_cpu = tensor_to_cpu(out);
-
-    bool data_ok  = tensors_close(out_cpu, exp, 1e-4f);
-    bool ndim_ok  = (out_cpu->ndim == exp->ndim);
-    bool shape_ok = true;
-    for (u32 i = 0; i < exp->ndim && shape_ok; i++)
-        shape_ok = (out_cpu->shape[i] == exp->shape[i]);
-
-    if (!ndim_ok)
-        printf("    ndim mismatch: got %u expected %u\n", out_cpu->ndim, exp->ndim);
-    if (!shape_ok) {
-        printf("    shape mismatch: got [");
-        for (u32 i = 0; i < out_cpu->ndim; i++)
-            printf("%u%s", out_cpu->shape[i], i+1 < out_cpu->ndim ? "," : "");
-        printf("] expected [");
-        for (u32 i = 0; i < exp->ndim; i++)
-            printf("%u%s", exp->shape[i], i+1 < exp->ndim ? "," : "");
-        printf("]\n");
-    }
-
-    check(name, data_ok && ndim_ok && shape_ok);
+    check_tensors(name, out_cpu, exp, 1e-4f);
 
     delete a; delete exp; delete out; delete out_cpu;
 }
@@ -173,30 +153,95 @@ static void test_index_select(const char *name, const char *dir,
 
     Tensor *out = tensor_index_select(a, indices, n_indices, dim);
     if (!out) {
-        printf("  [%sFAIL%s] %s — tensor_index_select returned nullptr\n", RED, RESET, name);
+        printf("  [%sFAIL%s] %s — returned nullptr\n", RED, RESET, name);
         failed++;
         delete a; delete exp;
         return;
     }
     sync();
-
     Tensor *out_cpu = tensor_to_cpu(out);
+    check_tensors(name, out_cpu, exp);
 
-    bool shape_ok = (out_cpu->ndim == exp->ndim);
-    for (u32 i = 0; i < exp->ndim && shape_ok; i++)
-        shape_ok = (out_cpu->shape[i] == exp->shape[i]);
+    delete a; delete exp; delete out; delete out_cpu;
+}
 
-    if (!shape_ok) {
-        printf("    shape mismatch: got [");
-        for (u32 i = 0; i < out_cpu->ndim; i++)
-            printf("%u%s", out_cpu->shape[i], i+1 < out_cpu->ndim ? "," : "");
-        printf("] expected [");
-        for (u32 i = 0; i < exp->ndim; i++)
-            printf("%u%s", exp->shape[i], i+1 < exp->ndim ? "," : "");
-        printf("]\n");
+// Input saved as [C, N, H, W]; transpose(0,1) gives non-contiguous [N, C, H, W]
+static void test_unfold2d_noncontig(const char *name, const char *dir,
+                                    Conv2dParams params) {
+    char pa[256], pout[256];
+    snprintf(pa,   sizeof(pa),   "../data/test/%s/a.npy",   dir);
+    snprintf(pout, sizeof(pout), "../data/test/%s/out.npy", dir);
+
+    Tensor *a   = tensor_load(pa,   g_on_gpu);
+    Tensor *exp = tensor_load(pout, false);
+
+    if (!a || !exp) {
+        printf("  [%sFAIL%s] %s — could not load data files\n", RED, RESET, name);
+        failed++;
+        delete a; delete exp;
+        return;
     }
 
-    check(name, shape_ok && tensors_close(out_cpu, exp));
+    tensor_transpose(a, 0, 1); // [C,N,H,W] → [N,C,H,W] non-contiguous
+
+    u32 flat[1] = {(u32)exp->size};
+    Tensor *out = new Tensor(1, flat, g_on_gpu);
+    tensor_unfold2d(out, a, params);
+    sync();
+    Tensor *out_cpu = tensor_to_cpu(out);
+    check_tensors(name, out_cpu, exp);
+
+    delete a; delete exp; delete out; delete out_cpu;
+}
+
+static void test_fold2d(const char *name, const char *dir, Conv2dParams params,
+                        u32 N, u32 C, u32 H, u32 W) {
+    char pa[256], pout[256];
+    snprintf(pa,   sizeof(pa),   "../data/test/%s/a.npy",   dir);
+    snprintf(pout, sizeof(pout), "../data/test/%s/out.npy", dir);
+
+    Tensor *col = tensor_load(pa,   g_on_gpu);
+    Tensor *exp = tensor_load(pout, false);
+
+    if (!col || !exp) {
+        printf("  [%sFAIL%s] %s — could not load data files\n", RED, RESET, name);
+        failed++;
+        delete col; delete exp;
+        return;
+    }
+
+    u32 dst_shape[4] = {N, C, H, W};
+    Tensor *out = new Tensor(4, dst_shape, g_on_gpu);
+    tensor_clear(out);
+    tensor_fold2d(out, col, params);
+    sync();
+    Tensor *out_cpu = tensor_to_cpu(out);
+    check_tensors(name, out_cpu, exp);
+
+    delete col; delete exp; delete out; delete out_cpu;
+}
+
+static void test_unfold2d(const char *name, const char *dir, Conv2dParams params) {
+    char pa[256], pout[256];
+    snprintf(pa,   sizeof(pa),   "../data/test/%s/a.npy",   dir);
+    snprintf(pout, sizeof(pout), "../data/test/%s/out.npy", dir);
+
+    Tensor *a   = tensor_load(pa,   g_on_gpu);
+    Tensor *exp = tensor_load(pout, false);
+
+    if (!a || !exp) {
+        printf("  [%sFAIL%s] %s — could not load data files\n", RED, RESET, name);
+        failed++;
+        delete a; delete exp;
+        return;
+    }
+
+    u32 flat[1] = {(u32)exp->size};
+    Tensor *out = new Tensor(1, flat, g_on_gpu);
+    tensor_unfold2d(out, a, params);
+    sync();
+    Tensor *out_cpu = tensor_to_cpu(out);
+    check_tensors(name, out_cpu, exp);
 
     delete a; delete exp; delete out; delete out_cpu;
 }
@@ -207,20 +252,19 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--cpu") == 0) g_on_gpu = false;
     }
 
-    const char *backend = g_on_gpu ? "CUDA" : "CPU";
-    printf("\nBackend: %s\n", backend);
+    printf("\nBackend: %s\n", g_on_gpu ? "CUDA" : "CPU");
 
     printf("\n-- tensor_add --\n");
-    test_add("same shape   (3,4)+(3,4)",      "add_same");
-    test_add("bcast row    (3,4)+(1,4)",       "add_bcast_row");
-    test_add("bcast col    (3,4)+(3,1)",       "add_bcast_col");
-    test_add("bcast scalar (3,4)+(1,1)",       "add_bcast_scalar");
-    test_add("diff ndim    (3,4)+(4,)",        "add_diff_ndim");
+    test_add("same shape   (3,4)+(3,4)",   "add_same");
+    test_add("bcast row    (3,4)+(1,4)",   "add_bcast_row");
+    test_add("bcast col    (3,4)+(3,1)",   "add_bcast_col");
+    test_add("bcast scalar (3,4)+(1,1)",   "add_bcast_scalar");
+    test_add("diff ndim    (3,4)+(4,)",    "add_diff_ndim");
 
     printf("\n-- tensor_mat_mul --\n");
-    test_mat_mul("square        (4,4)@(4,4)",    "matmul_square");
-    test_mat_mul("rect          (3,4)@(4,5)",    "matmul_rect");
-    test_mat_mul("transposed A  (4,3)^T@(4,5)",  "matmul_transA", true);
+    test_mat_mul("square        (4,4)@(4,4)",   "matmul_square");
+    test_mat_mul("rect          (3,4)@(4,5)",   "matmul_rect");
+    test_mat_mul("transposed A  (4,3)^T@(4,5)", "matmul_transA", true);
 
     printf("\n-- tensor_sum --\n");
     test_sum("single element  (1,1)",    "sum_single");
@@ -255,6 +299,31 @@ int main(int argc, char **argv) {
       test_index_select("dim=0 large [3,7,0,5](8,16)→(4,16)","idx_select_dim0_large",   idx, 4, 0); }
     { const u32 idx[] = {0, 4, 8, 12, 15};
       test_index_select("dim=1 large 5 cols   (8,16)→(8,5)", "idx_select_dim1_large",   idx, 5, 1); }
+
+    printf("\n-- tensor_unfold2d --\n");
+    test_unfold2d("1x1x4x4  k=3 s=1 p=0", "unfold2d_1c_4x4_k3s1",    Conv2dParams(3));
+    test_unfold2d("1x2x3x3  k=2 s=1 p=0", "unfold2d_2c_3x3_k2s1",    Conv2dParams(2));
+    test_unfold2d("2x1x4x4  k=3 s=1 p=0", "unfold2d_batch_4x4_k3s1", Conv2dParams(3));
+    test_unfold2d("1x1x6x6  k=3 s=2 p=0", "unfold2d_1c_6x6_k3s2",    Conv2dParams(3, 2, 0));
+    test_unfold2d("1x1x5x5  k=2 s=2 p=0", "unfold2d_1c_5x5_k2s2",    Conv2dParams(2, 2, 0));
+    test_unfold2d("1x1x3x3  k=3 s=1 p=1", "unfold2d_1c_3x3_k3p1",    Conv2dParams(3, 1, 1));
+    test_unfold2d("1x1x4x4  k=3 s=1 p=1", "unfold2d_1c_4x4_k3p1",    Conv2dParams(3, 1, 1));
+    test_unfold2d("1x1x4x4  k=3 s=2 p=1", "unfold2d_1c_4x4_k3s2p1",  Conv2dParams(3, 2, 1));
+
+    printf("\n-- tensor_unfold2d (non-contiguous input) --\n");
+    test_unfold2d_noncontig("1x2x3x3  k=2 s=1 p=0", "unfold2d_noncontig_2c_3x3_k2s1",    Conv2dParams(2));
+    test_unfold2d_noncontig("2x1x4x4  k=3 s=1 p=0", "unfold2d_noncontig_batch_4x4_k3s1", Conv2dParams(3));
+    test_unfold2d_noncontig("2x3x4x4  k=3 s=1 p=0", "unfold2d_noncontig_2n3c_4x4_k3s1",  Conv2dParams(3));
+    test_unfold2d_noncontig("2x3x4x4  k=3 s=1 p=1", "unfold2d_noncontig_2n3c_4x4_k3p1",  Conv2dParams(3, 1, 1));
+
+    printf("\n-- tensor_fold2d --\n");
+    test_fold2d("1x1x4x4  k=3 s=1 p=0", "fold2d_1c_4x4_k3s1",    Conv2dParams(3),       1, 1, 4, 4);
+    test_fold2d("1x2x3x3  k=2 s=1 p=0", "fold2d_2c_3x3_k2s1",    Conv2dParams(2),       1, 2, 3, 3);
+    test_fold2d("2x1x4x4  k=3 s=1 p=0", "fold2d_batch_4x4_k3s1", Conv2dParams(3),       2, 1, 4, 4);
+    test_fold2d("1x1x6x6  k=3 s=2 p=0", "fold2d_1c_6x6_k3s2",    Conv2dParams(3, 2, 0), 1, 1, 6, 6);
+    test_fold2d("1x1x4x4  k=3 s=1 p=1", "fold2d_1c_4x4_k3p1",    Conv2dParams(3, 1, 1), 1, 1, 4, 4);
+    test_fold2d("1x1x4x4  k=3 s=2 p=1", "fold2d_1c_4x4_k3s2p1",  Conv2dParams(3, 2, 1), 1, 1, 4, 4);
+    test_fold2d("2x3x4x4  k=3 s=1 p=0", "fold2d_2n3c_4x4_k3s1",  Conv2dParams(3),       2, 3, 4, 4);
 
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;

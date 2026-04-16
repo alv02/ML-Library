@@ -64,4 +64,13 @@ void tensor_cpu_he_init(Tensor *tensor);
 void tensor_cpu_index_select(Tensor *dst, const Tensor *src, const u32 *indices,
                              u32 n_indices, u32 dim);
 
+// ---- spatial / patch operations ------------------------------------------
+
+void tensor_cpu_unfold2d(Tensor *dst, const Tensor *src, Conv2dParams params);
+void tensor_cpu_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params);
+
+// ---- comparison ----------------------------------------------------------
+
+b32 tensor_cpu_equals(const Tensor *a, const Tensor *b, f32 tol);
+
 #endif // TENSOR_CPU_HPP

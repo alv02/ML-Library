@@ -160,12 +160,8 @@ b32 tensor_is_contiguous(const Tensor *t) {
 }
 
 b32 tensor_shape_eq(const Tensor *a, const Tensor *b) {
-    if (a->ndim != b->ndim)
-        return false;
-    for (u32 i = 0; i < a->ndim; i++)
-        if (a->shape[i] != b->shape[i])
-            return false;
-    return true;
+    return a->ndim == b->ndim &&
+           memcmp(a->shape, b->shape, a->ndim * sizeof(u32)) == 0;
 }
 
 b32 tensor_transpose(Tensor *tensor, u32 dim0, u32 dim1) {
@@ -364,6 +360,24 @@ void tensor_copy(Tensor *dst, const Tensor *src) {
         tensor_cuda_copy(dst, src);
         break;
     }
+}
+
+void tensor_contiguous(Tensor *t) {
+    if (tensor_is_contiguous(t))
+        return;
+    Tensor *tmp = new Tensor(t->ndim, t->shape, t->on_gpu);
+    tensor_copy(tmp, t);
+    if (t->owns_data) {
+        if (t->on_gpu)
+            tensor_cuda_free(t);
+        else
+            free(t->data);
+    }
+    t->data = tmp->data;
+    memcpy(t->stride, tmp->stride, t->ndim * sizeof(u64));
+    t->owns_data = true;
+    tmp->owns_data = false;
+    delete tmp;
 }
 
 // ---- fill / clear --------------------------------------------------------
@@ -1121,18 +1135,113 @@ Tensor *tensor_index_select(const Tensor *src, const u32 *indices,
 }
 
 // ---- Conv2dParams constructor -------------------------------------------
-Conv2dParams::Conv2dParams(u32 k, u32 stride, u32 pad, u32 dil)
-    : kernel_size_h(k), kernel_size_w(k), stride_h(stride), stride_w(stride),
-      pad_h(pad), pad_w(pad) {}
+Conv2dParams::Conv2dParams(u32 k, u32 stride, u32 pad, u32 dil,
+                           f32 pad_constant)
+    : k_h(k), k_w(k), stride_h(stride), stride_w(stride), pad_h(pad),
+      pad_w(pad), pad_constant(pad_constant) {}
 
 // ---- spatial / patch operations ------------------------------------------
 b32 tensor_unfold2d(Tensor *out, const Tensor *input, Conv2dParams params) {
     Tensor *input_expanded = tensor_view(input);
     if (!tensor_expand_shape(input_expanded, 4)) {
-        printf("Tensors with 5 or more dimensions not supported, shape should "
-               "be (N, C, H, W)\n");
+        printf("tensor_unfold2d: input has more than 4 dimensions\n");
+        delete input_expanded;
+        return false;
     }
 
-    return true;
+    u32 N = input_expanded->shape[0];
+    u32 C = input_expanded->shape[1];
+    u32 H = input_expanded->shape[2];
+    u32 W = input_expanded->shape[3];
+    params.compute_output_size(H, W);
+    u32 expected_size =
+        N * params.L_h * params.L_w * C * params.k_h * params.k_w;
+
+    if (out->size != expected_size) {
+        printf("tensor_unfold2d: out has wrong size (got %llu, expected %u)\n",
+               (unsigned long long)out->size, expected_size);
+        delete input_expanded;
+        return false;
+    }
+
+    switch (out->on_gpu << 1 | input->on_gpu) {
+    case 0b00:
+        tensor_cpu_unfold2d(out, input_expanded, params);
+        delete input_expanded;
+        return true;
+    case 0b11:
+        tensor_cuda_unfold2d(out, input_expanded, params);
+        delete input_expanded;
+        return true;
+    default:
+        printf("tensor_unfold2d: tensors must be on the same device\n");
+        delete input_expanded;
+        return false;
+    }
 }
-Tensor *tensor_unfold(const Tensor *input, Conv2dParams params);
+
+Tensor *tensor_unfold2d(const Tensor *input, Conv2dParams params) {
+    Tensor *tmp = tensor_view(input);
+    if (!tensor_expand_shape(tmp, 4)) {
+        delete tmp;
+        return nullptr;
+    }
+    u32 N = tmp->shape[0], C = tmp->shape[1];
+    u32 H = tmp->shape[2], W = tmp->shape[3];
+    params.compute_output_size(H, W);
+    delete tmp;
+
+    u32 shape[MAX_NDIM] = {N, params.L_h * params.L_w,
+                           C * params.k_h * params.k_w};
+    Tensor *out = new Tensor(3, shape, input->on_gpu);
+    if (!tensor_unfold2d(out, input, params)) {
+        delete out;
+        return nullptr;
+    }
+    return out;
+}
+
+b32 tensor_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params) {
+    if (dst->ndim != 4) {
+        printf("tensor_fold2d: dst must be 4-dimensional [N,C,H,W]\n");
+        return false;
+    }
+    u32 N = dst->shape[0];
+    u32 C = dst->shape[1];
+    u32 H = dst->shape[2];
+    u32 W = dst->shape[3];
+    params.compute_output_size(H, W);
+    u32 expected_size = N * params.L_h * params.L_w * C * params.k_h * params.k_w;
+    if (col->size != expected_size) {
+        printf("tensor_fold2d: col has wrong size (got %llu, expected %u)\n",
+               (unsigned long long)col->size, expected_size);
+        return false;
+    }
+    switch (dst->on_gpu << 1 | col->on_gpu) {
+    case 0b00:
+        tensor_cpu_fold2d(dst, col, params);
+        return true;
+    case 0b11:
+        tensor_cuda_fold2d(dst, col, params);
+        return true;
+    default:
+        printf("tensor_fold2d: tensors must be on the same device\n");
+        return false;
+    }
+}
+
+// ---- comparison ----------------------------------------------------------
+
+b32 tensor_equals(const Tensor *a, const Tensor *b, f32 tol) {
+    if (!tensor_shape_eq(a, b))
+        return false;
+    switch (a->on_gpu << 1 | b->on_gpu) {
+    case 0b00:
+        return tensor_cpu_equals(a, b, tol);
+    case 0b11:
+        return tensor_cuda_equals(a, b, tol);
+    default:
+        printf("tensor_equals: tensors must be on the same device\n");
+        return false;
+    }
+}

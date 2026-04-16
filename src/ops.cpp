@@ -216,6 +216,73 @@ void MeanSquareErrorOp::backward(Tensor *grad_output) {
     delete scale;
 }
 
+function_var *Conv2dOp::make_output() {
+    u32 flags = FV_FLAG_NONE;
+    if ((inputs[0]->flags | inputs[1]->flags) & FV_FLAG_REQUIERES_GRAD)
+        flags |= FV_FLAG_REQUIERES_GRAD;
+
+    const function_var *input = inputs[0];
+    const function_var *W = inputs[1];
+    params.compute_output_size(input->n_rows(), input->n_cols());
+    const u32 output_shape[4] = {input->val->shape[0], W->val->shape[1],
+                                 params.L_h, params.L_w};
+
+    function_var *out = new function_var(
+        new Tensor(4, output_shape, input->val->on_gpu), flags);
+
+    out->grad_fn = this;
+    return out;
+}
+void Conv2dOp::forward(function_var *out) {
+    const Tensor *input = inputs[0]->val;
+    const Tensor *W = inputs[1]->val;
+
+    u32 N = input->shape[0];
+    u32 C = input->shape[1];
+    u32 C_out = W->shape[1];
+    u32 L = params.L_h * params.L_w;
+
+    // unfold: [N, C, H, W] → [N*L, C*kH*kW]
+    Tensor *col = tensor_unfold2d(input, params);
+    u32 col_shape[2] = {N * L, C * params.k_h * params.k_w};
+    tensor_reshape(col, col_shape, 2);
+    delete saved_col;
+    saved_col = col;
+
+    // W stored pre-transposed as [C*kH*kW, C_out] — matches nn_model Wt
+    // convention [N*L, C*kH*kW] @ [C*kH*kW, C_out] → [N*L, C_out]
+    Tensor *res = tensor_mat_mul(col, W);
+
+    // [N*L, C_out] → [N, L_h, L_w, C_out] → [N, C_out, L_h, L_w]
+    u32 res_shape[4] = {N, params.L_h, params.L_w, C_out};
+    tensor_reshape(res, res_shape, 4);
+    tensor_transpose(res, 1, 3); // [N, C_out, L_w, L_h]
+    tensor_transpose(res, 2, 3); // [N, C_out, L_h, L_w]
+
+    std::swap(out->val, res);
+    delete res;
+}
+
+void Conv2dOp::backward(Tensor *grad_output) {
+    function_var *input = inputs[0];
+    function_var *W = inputs[1];
+
+    // dInput =
+    if (input->flags & FV_FLAG_REQUIERES_GRAD) {
+        if (!input->grad || !tensor_shape_eq(input->grad, input->val)) {
+            delete input->grad;
+            input->grad = tensor_create_like(input->val);
+        }
+    }
+
+    // d_W =
+    if (W->flags & FV_FLAG_REQUIERES_GRAD) {
+        if (!W->grad || !tensor_shape_eq(W->grad, W->val)) {
+            delete W->grad;
+            W->grad = tensor_create_like(W->val);
+        }
+    }
+};
 // ── CrossEntropyWithLogitsOp ─────────────────────────────────────────────────
 
 function_var *CrossEntropyWithLogitsOp::make_output() {

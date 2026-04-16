@@ -1,2 +1,2 @@
 - Mirar const en funciones
-- Broadcast implementado mirar las ops tienen que usar broadcas_shape y tambien en tensor_add y el resto donde solo hay dos parametros y el out se crea en la funcion, tambien operadores para los element wise tensors que llamen a estas ultimas funciones
+- Mirar los nombres de los kernels en tensor_cuda y mirar tensor_copy kernel que funcione bien

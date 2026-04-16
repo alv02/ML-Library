@@ -13,21 +13,22 @@
 // Copied to the device so kernels can do multi-dimensional indexing without
 // accessing the host-side Tensor struct.
 struct TensorMeta {
-    u64 size;              // total number of elements
-    u32 ndim;              // number of dimensions
-    u32 shape[MAX_NDIM];   // size of each dimension
-    u64 stride[MAX_NDIM];  // stride per dimension (0 = broadcast that dim)
+    u64 size;             // total number of elements
+    u32 ndim;             // number of dimensions
+    u32 shape[MAX_NDIM];  // size of each dimension
+    u64 stride[MAX_NDIM]; // stride per dimension (0 = broadcast that dim)
 
     // Copies shape and strides directly from t.
     TensorMeta(const Tensor *t);
-    // Broadcast-expanded constructor: left-pads shape with 1s and strides with 0s
-    // to reach bcast_ndim. Dims where t->shape==1 also get stride=0 so kernels
-    // using offset_from() automatically repeat the same element there.
+    // Broadcast-expanded constructor: left-pads shape with 1s and strides with
+    // 0s to reach bcast_ndim. Dims where t->shape==1 also get stride=0 so
+    // kernels using offset_from() automatically repeat the same element there.
     TensorMeta(const Tensor *t, const u32 *bcast_shape, u32 bcast_ndim);
 
     ML_DEVICE u32 rows() const { return shape[ndim - 2]; }
     ML_DEVICE u32 cols() const { return shape[ndim - 1]; }
-    // Returns the flat offset for the element at (row, col) using the last two dims.
+    // Returns the flat offset for the element at (row, col) using the last two
+    // dims.
     ML_DEVICE u64 at(u64 row, u64 col) const {
         return row * stride[ndim - 2] + col * stride[ndim - 1];
     }
@@ -111,5 +112,12 @@ void tensor_cuda_he_init(Tensor *tensor);
 
 void tensor_cuda_index_select(Tensor *dst, const Tensor *src,
                               const u32 *indices, u32 n_indices, u32 dim);
+
+void tensor_cuda_unfold2d(Tensor *dst, const Tensor *src, Conv2dParams params);
+void tensor_cuda_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params);
+
+// ---- comparison ----------------------------------------------------------
+
+b32 tensor_cuda_equals(const Tensor *a, const Tensor *b, f32 tol);
 
 #endif // TENSOR_CUDA_HPP

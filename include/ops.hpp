@@ -38,6 +38,28 @@ struct ReluOp : function {
     void backward(Tensor *grad_output) override;
 };
 
+// inputs[0] = input  [N, C_in, H, W]
+// inputs[1] = weight [C_in*kH*kW, C_out]  (pre-transposed, matches Wt convention)
+// output             [N, C_out, L_h, L_w]
+// bias should be added separately via AddOp
+struct Conv2dOp : function {
+    Conv2dParams params;
+    Tensor *saved_col; // [N*L, C_in*kH*kW] — unfolded input saved for backward
+
+    Conv2dOp(function_var *input, function_var *weight, Conv2dParams params)
+        : params(params), saved_col(nullptr) {
+        n_inputs = 2;
+        inputs[0] = input;
+        inputs[1] = weight;
+    }
+
+    ~Conv2dOp() { delete saved_col; }
+
+    function_var *make_output() override;
+    void forward(function_var *out) override;
+    void backward(Tensor *grad_output) override;
+};
+
 struct MeanSquareErrorOp : function {
     u64 N; // number of elements in the broadcasted diff — set during forward()
 

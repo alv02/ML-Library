@@ -43,12 +43,21 @@ struct Tensor {
 };
 
 struct Conv2dParams {
-    u32 kernel_size_h, kernel_size_w;
+    u32 k_h, k_w;
     u32 stride_h, stride_w;
     u32 pad_h, pad_w;
+    f32 pad_constant;
+    u32 L_h = 0, L_w = 0; // output spatial dims, set by compute_output_size()
 
+    Conv2dParams() {}
     // Square kernel, same value for both dims
-    Conv2dParams(u32 k, u32 stride = 1, u32 pad = 0, u32 dil = 1);
+    Conv2dParams(u32 k, u32 stride = 1, u32 pad = 0, u32 dil = 1,
+                 f32 pad_constant = 0.0f);
+
+    void compute_output_size(u32 H, u32 W) {
+        L_h = (H + 2 * pad_h - k_h) / stride_h + 1;
+        L_w = (W + 2 * pad_w - k_w) / stride_w + 1;
+    }
 };
 
 // ---- file I/O / device transfers -----------------------------------------
@@ -114,6 +123,9 @@ void tensor_realloc(Tensor *t, const u32 *new_shape, u32 new_ndim);
 // Copies all elements from src into dst. Shapes must match. Handles CPU↔GPU
 // transfers.
 void tensor_copy(Tensor *dst, const Tensor *src);
+// If t is non-contiguous, copies its data into a new contiguous buffer and
+// frees the old one (if owned). No-op if already contiguous.
+void tensor_contiguous(Tensor *t);
 
 // ---- fill / clear --------------------------------------------------------
 
@@ -212,5 +224,15 @@ Tensor *tensor_index_select(const Tensor *src, const u32 *indices,
 // ---- spatial / patch operations ------------------------------------------
 
 b32 tensor_unfold2d(Tensor *out, const Tensor *input, Conv2dParams params);
-Tensor *tensor_unfold(const Tensor *input, Conv2dParams params);
+Tensor *tensor_unfold2d(const Tensor *input, Conv2dParams params);
+
+// Inverse of unfold2d: scatter-adds col [N*L, C*kH*kW] back into dst [N,C,H,W].
+// dst must be zeroed before calling. params must match the forward unfold call.
+b32 tensor_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params);
+
+// ---- comparison ----------------------------------------------------------
+
+// Returns true if a and b have the same shape and every element pair differs
+// by at most tol. Both tensors must be on CPU.
+b32 tensor_equals(const Tensor *a, const Tensor *b, f32 tol = 1e-5f);
 #endif

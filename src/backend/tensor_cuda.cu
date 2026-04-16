@@ -5,9 +5,11 @@
 static constexpr u32 TILE = 16;
 static constexpr u32 N_THREADS = 256;
 
-// ── Functors ──────────────────────────────────────────────────────────────────
-// Small device-callable structs passed as template parameters to generic kernels
-// so the compiler inlines the operation and generates a single fused kernel per op.
+// ── Functors
+// ────────────────────────────────────────────────────────────────── Small
+// device-callable structs passed as template parameters to generic kernels so
+// the compiler inlines the operation and generates a single fused kernel per
+// op.
 
 struct AddOp {
     __device__ f32 operator()(f32 a, f32 b) const { return a + b; }
@@ -65,15 +67,14 @@ __global__ void elementwise_unary(u64 size, f32 *out, const f32 *a, Op op) {
 // out_contig's contiguous strides. out_actual and a_meta carry the real
 // (potentially non-contiguous) strides used to compute physical offsets.
 template <typename Op>
-__global__ void elementwise_unary_strided(TensorMeta out_contig,
-                                          TensorMeta out_actual,
-                                          TensorMeta a_meta,
-                                          f32 *out, const f32 *a, Op op) {
+__global__ void
+elementwise_unary_strided(TensorMeta out_contig, TensorMeta out_actual,
+                          TensorMeta a_meta, f32 *out, const f32 *a, Op op) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= out_contig.size)
         return;
     u64 out_offset = out_contig.offset_from(workIdx, out_actual);
-    u64 a_offset   = out_contig.offset_from(workIdx, a_meta);
+    u64 a_offset = out_contig.offset_from(workIdx, a_meta);
     out[out_offset] = op(a[a_offset]);
 }
 
@@ -92,17 +93,16 @@ __global__ void elementwise_binary(u64 size, f32 *out, f32 *a, f32 *b, Op op) {
 // out's real (possibly non-contiguous) strides so the write lands at the
 // correct physical address. a_meta/b_meta use stride=0 on broadcast dims.
 template <typename Op>
-__global__ void elementwise_broadcast(const TensorMeta out_contig,
-                                      const TensorMeta out_actual,
-                                      const TensorMeta a_meta,
-                                      const TensorMeta b_meta, f32 *out,
-                                      const f32 *a, const f32 *b, Op op) {
+__global__ void
+elementwise_broadcast(const TensorMeta out_contig, const TensorMeta out_actual,
+                      const TensorMeta a_meta, const TensorMeta b_meta,
+                      f32 *out, const f32 *a, const f32 *b, Op op) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= out_contig.size)
         return;
     u64 out_offset = out_contig.offset_from(workIdx, out_actual);
-    u64 a_offset   = out_contig.offset_from(workIdx, a_meta);
-    u64 b_offset   = out_contig.offset_from(workIdx, b_meta);
+    u64 a_offset = out_contig.offset_from(workIdx, a_meta);
+    u64 b_offset = out_contig.offset_from(workIdx, b_meta);
     out[out_offset] = op(a[a_offset], b[b_offset]);
 }
 
@@ -121,14 +121,13 @@ __global__ void elementwise_binary(u64 size, f32 *out, const f32 *a, f32 b,
 template <typename Op>
 __global__ void elementwise_scalar_strided(TensorMeta out_contig,
                                            TensorMeta out_actual,
-                                           TensorMeta a_meta,
-                                           f32 *out, const f32 *a,
-                                           f32 scalar, Op op) {
+                                           TensorMeta a_meta, f32 *out,
+                                           const f32 *a, f32 scalar, Op op) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= out_contig.size)
         return;
     u64 out_offset = out_contig.offset_from(workIdx, out_actual);
-    u64 a_offset   = out_contig.offset_from(workIdx, a_meta);
+    u64 a_offset = out_contig.offset_from(workIdx, a_meta);
     out[out_offset] = op(a[a_offset], scalar);
 }
 
@@ -137,8 +136,8 @@ __global__ void elementwise_scalar_strided(TensorMeta out_contig,
 // Stride-aware D2D copy kernel. Same decomposition trick as the other strided
 // kernels: out_contig decomposes workIdx, out_actual and src_meta give the
 // physical write/read offsets.
-__global__ void tensor_copy_strided(TensorMeta out_contig, TensorMeta out_actual,
-                                    TensorMeta src_meta,
+__global__ void tensor_copy_strided(TensorMeta out_contig,
+                                    TensorMeta out_actual, TensorMeta src_meta,
                                     f32 *dst, const f32 *src) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= out_contig.size)
@@ -244,7 +243,8 @@ __global__ void tensor_sum(TensorMeta out_meta, TensorMeta tensor_meta,
 }
 
 // Same parallel tree reduction as tensor_sum_step but uses fmaxf instead of
-// addition. Identity element is -FLT_MAX so out-of-bounds threads don't affect the result.
+// addition. Identity element is -FLT_MAX so out-of-bounds threads don't affect
+// the result.
 __global__ void tensor_max_step(u64 size, f32 *out, f32 *tensor) {
     __shared__ f32 partial[N_THREADS];
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -321,13 +321,108 @@ __global__ void tensor_index_select(TensorMeta dst_meta, TensorMeta src_meta,
     dst[workIdx] = src[offset];
 }
 
+// dst shape: [N, L_h, L_w, C, kH, kW]
+// src_virtual carries virtual strides that map each dst dimension directly to
+// its contribution in the src address:
+//   dim 0 (N)   → src.stride[N]
+//   dim 1 (L_h) → stride_h * src.stride[H]
+//   dim 2 (L_w) → stride_w * src.stride[W]
+//   dim 3 (C)   → src.stride[C]
+//   dim 4 (kH)  → src.stride[H]
+//   dim 5 (kW)  → src.stride[W]
+// The padding is absorbed into the src pointer itself (shifted back by
+// pad_h*stride[H] + pad_w*stride[W]) so that kh=0/kw=0 maps to position
+// (-pad_h, -pad_w) in the image. The bounds check below discards those
+// accesses as zero before any invalid read occurs.
+__global__ void tensor_unfold2d(TensorMeta dst_meta, TensorMeta src_meta,
+                                Conv2dParams params, f32 *dst, const f32 *src) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (workIdx >= dst_meta.size)
+        return;
+
+    u64 remaining = workIdx;
+    u32 idx[6];
+    for (u32 i = 0; i < 6; i++) {
+        idx[i] = remaining / dst_meta.stride[i];
+        remaining -= idx[i] * dst_meta.stride[i];
+    }
+    u32 n = idx[0];
+    u32 lh = idx[1];
+    u32 lw = idx[2];
+    u32 c = idx[3];
+    u32 kh = idx[4];
+    u32 kw = idx[5];
+
+    i32 h = lh * params.stride_h + kh - params.pad_h;
+    i32 w = lw * params.stride_w + kw - params.pad_w;
+
+    if (h < 0 || h >= src_meta.shape[2] || w < 0 || w >= src_meta.shape[3]) {
+        dst[workIdx] = params.pad_constant;
+        return;
+    }
+    u64 offset = n * src_meta.stride[0] + // N
+                 c * src_meta.stride[1] + // C
+                 h * src_meta.stride[2] + // H
+                 w * src_meta.stride[3];  // W
+    dst[workIdx] = src[offset];
+}
+
+// Each thread owns one element of col [N, L_h, L_w, C, kH, kW].
+// Decomposes its workIdx into (n,lh,lw,c,kh,kw), computes the spatial (h,w),
+// and atomicAdd's its value into dst[n,c,h,w]. atomicAdd is required because
+// overlapping windows (stride < kernel size) map multiple col entries to the
+// same dst pixel.
+__global__ void tensor_fold2d(TensorMeta col_meta, TensorMeta dst_meta,
+                              Conv2dParams params, const f32 *col, f32 *dst) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (workIdx >= col_meta.size)
+        return;
+
+    u64 remaining = workIdx;
+    u32 idx[6];
+    for (u32 i = 0; i < 6; i++) {
+        idx[i] = remaining / col_meta.stride[i];
+        remaining -= idx[i] * col_meta.stride[i];
+    }
+    u32 n  = idx[0];
+    u32 lh = idx[1];
+    u32 lw = idx[2];
+    u32 c  = idx[3];
+    u32 kh = idx[4];
+    u32 kw = idx[5];
+
+    i32 h = (i32)(lh * params.stride_h + kh) - (i32)params.pad_h;
+    i32 w = (i32)(lw * params.stride_w + kw) - (i32)params.pad_w;
+
+    if (h < 0 || h >= (i32)dst_meta.shape[2] || w < 0 || w >= (i32)dst_meta.shape[3])
+        return;
+
+    u64 dst_off = (u64)n * dst_meta.stride[0] +
+                  (u64)c * dst_meta.stride[1] +
+                  (u64)h * dst_meta.stride[2] +
+                  (u64)w * dst_meta.stride[3];
+    atomicAdd(&dst[dst_off], col[workIdx]);
+}
+
+// ---- comparison ----------------------------------------------------------
+
+// Each thread checks one element pair. All threads that find a mismatch write
+// the same value (0), so races between them are harmless.
+__global__ void tensor_check_close(u64 size, u32 *ok, const f32 *a,
+                                   const f32 *b, f32 tol) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (workIdx < size && fabsf(a[workIdx] - b[workIdx]) > tol)
+        *ok = 0;
+}
+
 // ── Template dispatch helpers
 // ─────────────────────────────────────────────────
 
-// Builds a TensorMeta whose strides are contiguous row-major (i.e. the strides
-// you'd get from a freshly allocated tensor of the same shape). Used as the
-// decomposition base in offset_from() so workIdx → per-dim indices is always
-// a simple radix decomposition regardless of out's actual layout.
+// Builds a TensorMeta whose strides are contiguous row-major (i.e. the
+// strides you'd get from a freshly allocated tensor of the same shape).
+// Used as the decomposition base in offset_from() so workIdx → per-dim
+// indices is always a simple radix decomposition regardless of out's actual
+// layout.
 static TensorMeta make_contig_meta(const Tensor *t) {
     TensorMeta m(t);
     tensor_compute_strides(m.stride, m.shape, m.ndim);
@@ -339,20 +434,22 @@ static void cuda_elementwise_unary(Tensor *out, const Tensor *a, Op op) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(out->size, (u64)threads);
     if (tensor_is_contiguous(out) && tensor_is_contiguous(a)) {
-        elementwise_unary<<<blocks, threads>>>(out->size, out->data, a->data, op);
+        elementwise_unary<<<blocks, threads>>>(out->size, out->data, a->data,
+                                               op);
         return;
     }
     TensorMeta out_contig = make_contig_meta(out);
     TensorMeta out_actual(out);
     TensorMeta a_meta(a);
-    elementwise_unary_strided<<<blocks, threads>>>(out_contig, out_actual,
-                                                   a_meta, out->data, a->data, op);
+    elementwise_unary_strided<<<blocks, threads>>>(
+        out_contig, out_actual, a_meta, out->data, a->data, op);
 }
 
-// Fast path: all three tensors same shape and contiguous — plain flat kernel.
-// Strided path: builds a contiguous decomposition meta for out (out_contig) and
-// passes out's actual strides (out_actual) so the write goes to the right slot.
-// a_meta/b_meta are broadcast-expanded (stride=0 on dims where size==1).
+// Fast path: all three tensors same shape and contiguous — plain flat
+// kernel. Strided path: builds a contiguous decomposition meta for out
+// (out_contig) and passes out's actual strides (out_actual) so the write
+// goes to the right slot. a_meta/b_meta are broadcast-expanded (stride=0 on
+// dims where size==1).
 template <typename Op>
 static void cuda_elementwise_binary(Tensor *out, const Tensor *a,
                                     const Tensor *b, Op op) {
@@ -368,9 +465,9 @@ static void cuda_elementwise_binary(Tensor *out, const Tensor *a,
     TensorMeta out_actual(out);
     TensorMeta a_meta(a, out->shape, out->ndim);
     TensorMeta b_meta(b, out->shape, out->ndim);
-    elementwise_broadcast<<<blocks, threads>>>(out_contig, out_actual,
-                                               a_meta, b_meta,
-                                               out->data, a->data, b->data, op);
+    elementwise_broadcast<<<blocks, threads>>>(out_contig, out_actual, a_meta,
+                                               b_meta, out->data, a->data,
+                                               b->data, op);
 }
 
 template <typename Op>
@@ -386,9 +483,8 @@ static void cuda_elementwise_scalar(Tensor *out, const Tensor *a, f32 scalar,
     TensorMeta out_contig = make_contig_meta(out);
     TensorMeta out_actual(out);
     TensorMeta a_meta(a);
-    elementwise_scalar_strided<<<blocks, threads>>>(out_contig, out_actual,
-                                                    a_meta, out->data, a->data,
-                                                    scalar, op);
+    elementwise_scalar_strided<<<blocks, threads>>>(
+        out_contig, out_actual, a_meta, out->data, a->data, scalar, op);
 }
 
 // ── TensorMeta
@@ -408,7 +504,8 @@ TensorMeta::TensorMeta(const Tensor *t, const u32 *bcast_shape, u32 bcast_ndim)
 // ── Host functions
 // ────────────────────────────────────────────────────────────
 
-// ---- memory management (alloc / free / transfers) ------------------------
+// ---- memory management (alloc / free / transfers)
+// ------------------------
 
 void tensor_cuda_alloc(Tensor *tensor) {
     cudaMalloc(&tensor->data, sizeof(f32) * tensor->size);
@@ -443,7 +540,8 @@ Tensor *tensor_cuda_copy(const Tensor *t_gpu) {
 
 // ---- copy (into existing tensor) ----------------------------------------
 
-// D2D strided copy: handles non-contiguous dst and/or src on the same device.
+// D2D strided copy: handles non-contiguous dst and/or src on the same
+// device.
 static void cuda_copy_d2d_strided(Tensor *dst, const Tensor *src) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(dst->size, (u64)threads);
@@ -455,9 +553,11 @@ static void cuda_copy_d2d_strided(Tensor *dst, const Tensor *src) {
 }
 
 // Selects cudaMemcpyKind from the two on_gpu flags packed into a 2-bit key:
-//   bit1 = dst->on_gpu, bit0 = src->on_gpu → 00=H2H, 01=D2H, 10=H2D, 11=D2D.
-// For D2D with non-contiguous tensors the stride-aware kernel is used instead
-// of cudaMemcpy (which would copy the flat buffer in the wrong order).
+//   bit1 = dst->on_gpu, bit0 = src->on_gpu → 00=H2H, 01=D2H, 10=H2D,
+//   11=D2D.
+// For D2D with non-contiguous tensors the stride-aware kernel is used
+// instead of cudaMemcpy (which would copy the flat buffer in the wrong
+// order).
 void tensor_cuda_copy(Tensor *dst, const Tensor *src) {
     if (dst->on_gpu && src->on_gpu &&
         (!tensor_is_contiguous(dst) || !tensor_is_contiguous(src))) {
@@ -482,7 +582,8 @@ void tensor_cuda_copy(Tensor *dst, const Tensor *src) {
     cudaMemcpy(dst->data, src->data, src->size * sizeof(f32), kind);
 }
 
-// ---- fill / clear --------------------------------------------------------
+// ---- fill / clear
+// --------------------------------------------------------
 
 void tensor_cuda_fill(Tensor *tensor, f32 value) {
     u32 threads = N_THREADS;
@@ -494,7 +595,8 @@ void tensor_cuda_clear(Tensor *tensor) {
     cudaMemset(tensor->data, 0, sizeof(f32) * tensor->size);
 }
 
-// ---- activations (relu, exp) ---------------------------------------------
+// ---- activations (relu, exp)
+// ---------------------------------------------
 
 void tensor_cuda_relu(Tensor *dst, const Tensor *src) {
     cuda_elementwise_unary(dst, src, ReluFwdOp{});
@@ -508,8 +610,9 @@ void tensor_cuda_log(Tensor *dst, const Tensor *src) {
     cuda_elementwise_unary(dst, src, LogOp{});
 }
 
-// ---- elementwise binary (add / sub / mul / div) --------------------------
-// Validation is done by the dispatcher in tensor.cpp before calling here.
+// ---- elementwise binary (add / sub / mul / div)
+// -------------------------- Validation is done by the dispatcher in
+// tensor.cpp before calling here.
 
 void tensor_cuda_add(Tensor *out, const Tensor *a, const Tensor *b) {
     cuda_elementwise_binary(out, a, b, AddOp{});
@@ -535,7 +638,8 @@ void tensor_cuda_relu_backward(Tensor *out, const Tensor *grad,
     cuda_elementwise_binary(out, grad, in, ReluBackwardOp{});
 }
 
-// ---- scalar operations ---------------------------------------------------
+// ---- scalar operations
+// ---------------------------------------------------
 
 void tensor_cuda_add(Tensor *out, const Tensor *tensor, f32 scalar) {
     cuda_elementwise_scalar(out, tensor, scalar, AddOp{});
@@ -553,7 +657,8 @@ void tensor_cuda_div(Tensor *out, const Tensor *tensor, f32 scalar) {
     cuda_elementwise_scalar(out, tensor, scalar, DivOp{});
 }
 
-// ---- matrix multiply -----------------------------------------------------
+// ---- matrix multiply
+// -----------------------------------------------------
 
 void tensor_cuda_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
                          b32 clear_out) {
@@ -569,12 +674,14 @@ void tensor_cuda_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
                                                out->data, a->data, b->data);
 }
 
-// ---- reduction (sum, max, argmax) ----------------------------------------
+// ---- reduction (sum, max, argmax)
+// ----------------------------------------
 
 // Global reduction via repeated tensor_sum_step launches.
-// Each launch reduces the current size by N_THREADS× (one output per block).
-// Intermediate results are stored in temporary GPU tensors. Loop continues
-// until blocks==1, meaning a single block produced the final scalar in out.
+// Each launch reduces the current size by N_THREADS× (one output per
+// block). Intermediate results are stored in temporary GPU tensors. Loop
+// continues until blocks==1, meaning a single block produced the final
+// scalar in out.
 void tensor_cuda_sum(Tensor *out, const Tensor *tensor) {
     u32 threads = N_THREADS;
     u32 blocks = 0;
@@ -644,7 +751,8 @@ void tensor_cuda_argmax(Tensor *out, const Tensor *tensor, u32 dim) {
                                               tensor->data, dim);
 }
 
-// ---- initializing --------------------------------------------------------
+// ---- initializing
+// --------------------------------------------------------
 
 void tensor_cuda_he_init(Tensor *tensor) {
     curandGenerator_t gen;
@@ -656,7 +764,8 @@ void tensor_cuda_he_init(Tensor *tensor) {
     curandDestroyGenerator(gen);
 }
 
-// ---- indexing ------------------------------------------------------------
+// ---- indexing
+// ------------------------------------------------------------
 
 void tensor_cuda_index_select(Tensor *dst, const Tensor *src,
                               const u32 *indices, u32 n_indices, u32 dim) {
@@ -671,4 +780,66 @@ void tensor_cuda_index_select(Tensor *dst, const Tensor *src,
     tensor_index_select<<<blocks, threads>>>(
         dst_meta, src_meta, dst->data, src->data, indices_gpu, n_indices, dim);
     cudaFree(indices_gpu);
+}
+
+void tensor_cuda_unfold2d(Tensor *dst, const Tensor *src, Conv2dParams params) {
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(dst->size, u64(threads));
+    u32 N = src->shape[0];
+    u32 C = src->shape[1];
+    u32 H = src->shape[2];
+    u32 W = src->shape[3];
+
+    params.compute_output_size(H, W);
+    u32 L = params.L_h * params.L_w;
+
+    u32 shape[MAX_NDIM] = {N, params.L_h, params.L_w,
+                           C, params.k_h, params.k_w};
+    tensor_reshape(dst, shape, 6);
+
+    TensorMeta dst_meta(dst);
+    TensorMeta src_meta(src);
+
+    tensor_unfold2d<<<blocks, threads>>>(dst_meta, src_meta, params, dst->data,
+                                         src->data);
+    u32 shape_[MAX_NDIM] = {N, L, C * params.k_h * params.k_w};
+    tensor_reshape(dst, shape_, 3);
+}
+
+void tensor_cuda_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params) {
+    u32 N = dst->shape[0];
+    u32 C = dst->shape[1];
+    u32 H = dst->shape[2];
+    u32 W = dst->shape[3];
+    params.compute_output_size(H, W);
+
+    // reshape col to 6D so stride decomposition maps to (n,lh,lw,c,kh,kw)
+    Tensor *col6 = tensor_view(col);
+    u32 shape6[MAX_NDIM] = {N, params.L_h, params.L_w, C, params.k_h, params.k_w};
+    tensor_reshape(col6, shape6, 6);
+
+    TensorMeta col_meta(col6);
+    TensorMeta dst_meta(dst);
+
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(col6->size, u64(threads));
+    tensor_fold2d<<<blocks, threads>>>(col_meta, dst_meta, params, col6->data, dst->data);
+
+    delete col6;
+}
+
+// ---- comparison ----------------------------------------------------------
+
+b32 tensor_cuda_equals(const Tensor *a, const Tensor *b, f32 tol) {
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(a->size, (u64)threads);
+    u32 *ok_gpu;
+    cudaMalloc(&ok_gpu, sizeof(u32));
+    cudaMemset(ok_gpu, 1, sizeof(u32));
+    tensor_check_close<<<blocks, threads>>>(a->size, ok_gpu, a->data, b->data,
+                                            tol);
+    u32 ok_cpu;
+    cudaMemcpy(&ok_cpu, ok_gpu, sizeof(u32), cudaMemcpyDeviceToHost);
+    cudaFree(ok_gpu);
+    return (b32)ok_cpu;
 }

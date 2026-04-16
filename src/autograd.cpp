@@ -10,6 +10,8 @@ function_var::~function_var() {
     if (grad)
         delete grad;
 }
+u32 function_var::n_rows() const { return val->shape[ROW_DIM(val)]; }
+u32 function_var::n_cols() const { return val->shape[COL_DIM(val)]; }
 
 void topological_sort(Graph *graph, function_var *fv,
                       std::unordered_set<function_var *> &visited) {

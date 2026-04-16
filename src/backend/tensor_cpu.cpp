@@ -86,7 +86,8 @@ static void elementwise_binary(Tensor *out, const Tensor *a, const Tensor *b,
     tensorIterator b_iter(out->ndim, out->shape, b_strides);
 
     for (u64 i = 0; i < out->size; i++)
-        out->data[out_iter.next()] = fn(a->data[a_iter.next()], b->data[b_iter.next()]);
+        out->data[out_iter.next()] =
+            fn(a->data[a_iter.next()], b->data[b_iter.next()]);
 }
 
 void tensor_cpu_add(Tensor *out, const Tensor *a, const Tensor *b) {
@@ -119,7 +120,7 @@ void tensor_cpu_relu_backward(Tensor *out, const Tensor *grad,
 
 template <typename Fn>
 static void elementwise_scalar(Tensor *out, const Tensor *a, f32 scalar,
-                                Fn fn) {
+                               Fn fn) {
     if (tensor_is_contiguous(out) && tensor_is_contiguous(a)) {
         for (u64 i = 0; i < out->size; i++)
             out->data[i] = fn(a->data[i], scalar);
@@ -163,9 +164,10 @@ static inline u32 mat_cols(const Tensor *t) { return t->shape[COL_DIM(t)]; }
 // in memory so the inner loops can stream through cache lines.
 //
 //   nn: a row-major, b row-major — ikj order (streams b's rows in the k loop)
-//   nt: a row-major, b col-major — ijk order (streams b's columns in the k loop)
-//   tn: a col-major, b row-major — kij order (streams a's columns in the i loop)
-//   tt: a col-major, b col-major — jki order (streams both col-major matrices)
+//   nt: a row-major, b col-major — ijk order (streams b's columns in the k
+//   loop) tn: a col-major, b row-major — kij order (streams a's columns in the
+//   i loop) tt: a col-major, b col-major — jki order (streams both col-major
+//   matrices)
 
 static void _mm_nn(Tensor *out, const Tensor *a, const Tensor *b) {
     u32 M = mat_rows(a), N = mat_cols(a), P = mat_cols(b);
@@ -291,10 +293,12 @@ void tensor_cpu_max(Tensor *out, const Tensor *tensor, u32 dim) {
 //   in_it  — walks input with real strides (reads values).
 //   out_it — same shape but out_strides[dim]=0, collapses dim so all positions
 //            along it map to the same output slot (same stride=0 trick as sum).
-//   dim_it — all strides 0 except dim_strides[dim]=1, so its offset counts 0,1,2,...
+//   dim_it — all strides 0 except dim_strides[dim]=1, so its offset counts
+//   0,1,2,...
 //            as the iterator advances along that axis and 0 everywhere else.
 //            This gives the current index within the reduction dimension.
-// Whenever a new max is found the corresponding dim_it offset is stored as the index.
+// Whenever a new max is found the corresponding dim_it offset is stored as the
+// index.
 void tensor_cpu_argmax(Tensor *out, const Tensor *tensor, u32 dim) {
     Tensor *max_vals = new Tensor(out->ndim, out->shape, false);
     tensor_cpu_fill(max_vals, -__FLT_MAX__);
@@ -360,4 +364,101 @@ void tensor_cpu_index_select(Tensor *dst, const Tensor *src, const u32 *indices,
             memcpy(dst_ptr, src_ptr, inner_size * sizeof(f32));
         }
     }
+}
+
+// ---- comparison ----------------------------------------------------------
+
+b32 tensor_cpu_equals(const Tensor *a, const Tensor *b, f32 tol) {
+    tensorIterator a_iter(a->ndim, a->shape, a->stride);
+    tensorIterator b_iter(b->ndim, b->shape, b->stride);
+    for (u64 i = 0; i < a->size; i++)
+        if (fabsf(a->data[a_iter.next()] - b->data[b_iter.next()]) > tol)
+            return false;
+    return true;
+}
+
+// ---- spatial / patch operations ------------------------------------------
+
+void tensor_cpu_unfold2d(Tensor *dst, const Tensor *src, Conv2dParams params) {
+    u32 N = src->shape[0];
+    u32 C = src->shape[1];
+    u32 H = src->shape[2];
+    u32 W = src->shape[3];
+    u32 kH = params.k_h;
+    u32 kW = params.k_w;
+    params.compute_output_size(H, W);
+    u32 L = params.L_h * params.L_w;
+
+    u32 shape6[MAX_NDIM] = {N, params.L_h, params.L_w, C, kH, kW};
+    tensor_reshape(dst, shape6, 6);
+
+    for (u32 n = 0; n < N; n++)
+        for (u32 lh = 0; lh < params.L_h; lh++)
+            for (u32 lw = 0; lw < params.L_w; lw++)
+                for (u32 c = 0; c < C; c++)
+                    for (u32 kh = 0; kh < kH; kh++)
+                        for (u32 kw = 0; kw < kW; kw++) {
+                            i32 h = (i32)(lh * params.stride_h + kh) -
+                                    (i32)params.pad_h;
+                            i32 w = (i32)(lw * params.stride_w + kw) -
+                                    (i32)params.pad_w;
+                            u64 dst_off = (u64)n * dst->stride[0] +
+                                          (u64)lh * dst->stride[1] +
+                                          (u64)lw * dst->stride[2] +
+                                          (u64)c * dst->stride[3] +
+                                          (u64)kh * dst->stride[4] +
+                                          (u64)kw * dst->stride[5];
+                            if (h < 0 || (u32)h >= H || w < 0 || (u32)w >= W) {
+                                dst->data[dst_off] = params.pad_constant;
+                            } else {
+                                u64 src_off = (u64)n * src->stride[0] +
+                                              (u64)c * src->stride[1] +
+                                              (u64)h * src->stride[2] +
+                                              (u64)w * src->stride[3];
+                                dst->data[dst_off] = src->data[src_off];
+                            }
+                        }
+
+    u32 shape3[MAX_NDIM] = {N, L, C * kH * kW};
+    tensor_reshape(dst, shape3, 3);
+}
+
+void tensor_cpu_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params) {
+    u32 N = dst->shape[0];
+    u32 C = dst->shape[1];
+    u32 H = dst->shape[2];
+    u32 W = dst->shape[3];
+    u32 kH = params.k_h;
+    u32 kW = params.k_w;
+    params.compute_output_size(H, W);
+
+    // reshape col to 6D so strides match the unfold layout: [N, L_h, L_w, C, kH, kW]
+    Tensor *col6 = tensor_view(col);
+    u32 shape6[MAX_NDIM] = {N, params.L_h, params.L_w, C, kH, kW};
+    tensor_reshape(col6, shape6, 6);
+
+    for (u32 n = 0; n < N; n++)
+        for (u32 lh = 0; lh < params.L_h; lh++)
+            for (u32 lw = 0; lw < params.L_w; lw++)
+                for (u32 c = 0; c < C; c++)
+                    for (u32 kh = 0; kh < kH; kh++)
+                        for (u32 kw = 0; kw < kW; kw++) {
+                            i32 h = (i32)(lh * params.stride_h + kh) - (i32)params.pad_h;
+                            i32 w = (i32)(lw * params.stride_w + kw) - (i32)params.pad_w;
+                            if (h < 0 || (u32)h >= H || w < 0 || (u32)w >= W)
+                                continue;
+                            u64 col_off = (u64)n * col6->stride[0] +
+                                          (u64)lh * col6->stride[1] +
+                                          (u64)lw * col6->stride[2] +
+                                          (u64)c  * col6->stride[3] +
+                                          (u64)kh * col6->stride[4] +
+                                          (u64)kw * col6->stride[5];
+                            u64 dst_off = (u64)n * dst->stride[0] +
+                                          (u64)c * dst->stride[1] +
+                                          (u64)h * dst->stride[2] +
+                                          (u64)w * dst->stride[3];
+                            dst->data[dst_off] += col6->data[col_off];
+                        }
+
+    delete col6;
 }

@@ -1,5 +1,7 @@
 import numpy as np
 import os
+import torch
+import torch.nn.functional as F
 
 np.random.seed(42)
 
@@ -128,5 +130,145 @@ save_index_select("idx_select_dim1_multi",   a, [0, 2, 3], axis=1)
 b = np.random.randn(8, 16).astype(np.float32)
 save_index_select("idx_select_dim0_large",   b, [3, 7, 0, 5], axis=0)
 save_index_select("idx_select_dim1_large",   b, [0, 4, 8, 12, 15], axis=1)
+
+
+# ── tensor_unfold2d ───────────────────────────────────────────────────────────
+
+def save_unfold2d(dir_name, inp, kernel_hw, stride_hw=(1, 1), pad_hw=(0, 0)):
+    os.makedirs(dir_name, exist_ok=True)
+    # F.unfold returns [N, C*kH*kW, L]; transpose to [N, L, C*kH*kW]
+    out = F.unfold(torch.from_numpy(inp), kernel_size=kernel_hw,
+                   stride=stride_hw, padding=pad_hw).permute(0, 2, 1).contiguous().numpy()
+    np.save(f"{dir_name}/a.npy",   inp.astype(np.float32))
+    np.save(f"{dir_name}/out.npy", out.astype(np.float32))
+
+# 1×1×4×4 — simplest case, k=3×3, stride=1, pad=0
+a = np.arange(16, dtype=np.float32).reshape(1, 1, 4, 4)
+save_unfold2d("unfold2d_1c_4x4_k3s1", a, (3, 3))
+
+# 1×2×3×3 — multi-channel, k=2×2, stride=1, pad=0
+a = np.concatenate([
+    np.arange(9,  dtype=np.float32).reshape(1, 1, 3, 3),
+    np.arange(10, 19, dtype=np.float32).reshape(1, 1, 3, 3)
+], axis=1)
+save_unfold2d("unfold2d_2c_3x3_k2s1", a, (2, 2))
+
+# 2×1×4×4 — batch, k=3×3, stride=1, pad=0
+a = np.stack([
+    np.arange(16,       dtype=np.float32).reshape(1, 4, 4),
+    np.arange(100, 116, dtype=np.float32).reshape(1, 4, 4)
+]).reshape(2, 1, 4, 4)
+save_unfold2d("unfold2d_batch_4x4_k3s1", a, (3, 3))
+
+# stride tests (pad=0)
+# 1×1×6×6 — k=3×3, stride=2 → L=(6-3)/2+1=2, output [1,2,2,1,3,3]
+a = np.arange(36, dtype=np.float32).reshape(1, 1, 6, 6)
+save_unfold2d("unfold2d_1c_6x6_k3s2", a, (3, 3), stride_hw=(2, 2))
+
+# 1×1×5×5 — k=2×2, stride=2 → L=(5-2)/2+1=2, output [1,2,2,1,2,2]
+a = np.arange(25, dtype=np.float32).reshape(1, 1, 5, 5)
+save_unfold2d("unfold2d_1c_5x5_k2s2", a, (2, 2), stride_hw=(2, 2))
+
+# padding tests (stride=1)
+# 1×1×3×3 — k=3×3, pad=1 → L=(3+2-3)/1+1=3, output [1,3,3,1,3,3]
+a = np.arange(9, dtype=np.float32).reshape(1, 1, 3, 3)
+save_unfold2d("unfold2d_1c_3x3_k3p1", a, (3, 3), pad_hw=(1, 1))
+
+# 1×1×4×4 — k=3×3, pad=1 → L=(4+2-3)/1+1=4, output [1,4,4,1,3,3]
+a = np.arange(16, dtype=np.float32).reshape(1, 1, 4, 4)
+save_unfold2d("unfold2d_1c_4x4_k3p1", a, (3, 3), pad_hw=(1, 1))
+
+# stride + padding combined
+# 1×1×4×4 — k=3×3, stride=2, pad=1 → L=(4+2-3)/2+1=2, output [1,2,2,1,3,3]
+a = np.arange(16, dtype=np.float32).reshape(1, 1, 4, 4)
+save_unfold2d("unfold2d_1c_4x4_k3s2p1", a, (3, 3), stride_hw=(2, 2), pad_hw=(1, 1))
+
+# ── tensor_unfold2d non-contiguous input ─────────────────────────────────────
+# Input saved as [C, N, H, W] (N and C swapped). In C++ the test loads it and
+# calls tensor_transpose(0,1) to get a non-contiguous [N, C, H, W] view, then
+# runs unfold — expected output is identical to the contiguous version.
+
+def save_unfold2d_noncontig(dir_name, inp, kernel_hw, stride_hw=(1, 1), pad_hw=(0, 0)):
+    os.makedirs(dir_name, exist_ok=True)
+    out = F.unfold(torch.from_numpy(inp), kernel_size=kernel_hw,
+                   stride=stride_hw, padding=pad_hw).permute(0, 2, 1).contiguous().numpy()
+    # save a transposed as [C, N, H, W] so C++ can make it non-contiguous
+    np.save(f"{dir_name}/a.npy",   inp.transpose(1, 0, 2, 3).astype(np.float32))
+    np.save(f"{dir_name}/out.npy", out.astype(np.float32))
+
+# 1×2×3×3 — multi-channel (C=2, N=1): transpose gives [2,1,3,3]
+a = np.concatenate([
+    np.arange(9,  dtype=np.float32).reshape(1, 1, 3, 3),
+    np.arange(10, 19, dtype=np.float32).reshape(1, 1, 3, 3)
+], axis=1)
+save_unfold2d_noncontig("unfold2d_noncontig_2c_3x3_k2s1", a, (2, 2))
+
+# 2×1×4×4 — batch (N=2, C=1): transpose gives [1,2,4,4]
+a = np.stack([
+    np.arange(16,       dtype=np.float32).reshape(1, 4, 4),
+    np.arange(100, 116, dtype=np.float32).reshape(1, 4, 4)
+]).reshape(2, 1, 4, 4)
+save_unfold2d_noncontig("unfold2d_noncontig_batch_4x4_k3s1", a, (3, 3))
+
+# 2×3×4×4 — batch + multichannel (N=2, C=3): transpose gives [3,2,4,4]
+a = np.arange(96, dtype=np.float32).reshape(2, 3, 4, 4)
+save_unfold2d_noncontig("unfold2d_noncontig_2n3c_4x4_k3s1", a, (3, 3))
+
+# padding + non-contiguous
+a = np.arange(96, dtype=np.float32).reshape(2, 3, 4, 4)
+save_unfold2d_noncontig("unfold2d_noncontig_2n3c_4x4_k3p1", a, (3, 3), pad_hw=(1, 1))
+
+# ── tensor_fold2d ─────────────────────────────────────────────────────────────
+# Saves col [N*L, C*kH*kW] (a.npy) and expected folded output [N,C,H,W] (out.npy).
+# col is produced by unfolding inp so that fold(unfold(inp)) == expected, which
+# PyTorch computes via F.fold.
+
+def save_fold2d(dir_name, inp, kernel_hw, stride_hw=(1, 1), pad_hw=(0, 0)):
+    os.makedirs(dir_name, exist_ok=True)
+    N, C, H, W = inp.shape
+    t = torch.from_numpy(inp)
+    # F.unfold → [N, C*kH*kW, L]; transpose to [N, L, C*kH*kW] then flatten N*L
+    col_nckl = F.unfold(t, kernel_size=kernel_hw, stride=stride_hw, padding=pad_hw)
+    L = col_nckl.shape[2]
+    col_flat = col_nckl.permute(0, 2, 1).contiguous().reshape(N * L, -1)  # [N*L, C*kH*kW]
+    # F.fold expects [N, C*kH*kW, L]
+    out = F.fold(col_nckl, output_size=(H, W), kernel_size=kernel_hw,
+                 stride=stride_hw, padding=pad_hw)
+    np.save(f"{dir_name}/a.npy",   col_flat.numpy().astype(np.float32))
+    np.save(f"{dir_name}/out.npy", out.numpy().astype(np.float32))
+
+# 1×1×4×4  k=3 s=1 p=0
+a = np.arange(16, dtype=np.float32).reshape(1, 1, 4, 4)
+save_fold2d("fold2d_1c_4x4_k3s1", a, (3, 3))
+
+# 1×2×3×3  k=2 s=1 p=0  — multi-channel
+a = np.concatenate([
+    np.arange(9,  dtype=np.float32).reshape(1, 1, 3, 3),
+    np.arange(10, 19, dtype=np.float32).reshape(1, 1, 3, 3)
+], axis=1)
+save_fold2d("fold2d_2c_3x3_k2s1", a, (2, 2))
+
+# 2×1×4×4  k=3 s=1 p=0  — batch
+a = np.stack([
+    np.arange(16,       dtype=np.float32).reshape(1, 4, 4),
+    np.arange(100, 116, dtype=np.float32).reshape(1, 4, 4)
+]).reshape(2, 1, 4, 4)
+save_fold2d("fold2d_batch_4x4_k3s1", a, (3, 3))
+
+# 1×1×6×6  k=3 s=2 p=0  — stride, no overlap so fold == inverse of unfold
+a = np.arange(36, dtype=np.float32).reshape(1, 1, 6, 6)
+save_fold2d("fold2d_1c_6x6_k3s2", a, (3, 3), stride_hw=(2, 2))
+
+# 1×1×4×4  k=3 s=1 p=1  — padding
+a = np.arange(16, dtype=np.float32).reshape(1, 1, 4, 4)
+save_fold2d("fold2d_1c_4x4_k3p1", a, (3, 3), pad_hw=(1, 1))
+
+# 1×1×4×4  k=3 s=2 p=1  — stride + padding
+a = np.arange(16, dtype=np.float32).reshape(1, 1, 4, 4)
+save_fold2d("fold2d_1c_4x4_k3s2p1", a, (3, 3), stride_hw=(2, 2), pad_hw=(1, 1))
+
+# 2×3×4×4  k=3 s=1 p=0  — batch + multi-channel (overlapping windows, stress test)
+a = np.arange(96, dtype=np.float32).reshape(2, 3, 4, 4)
+save_fold2d("fold2d_2n3c_4x4_k3s1", a, (3, 3))
 
 print("Test data generated.")
