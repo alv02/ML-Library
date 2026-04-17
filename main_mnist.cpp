@@ -14,10 +14,10 @@ int main() {
 
     nn_model model(val_X, val_y, {256, 128, 10});
 
-    sgd optim(0.1f);
+    sgd optim(0.05f);
     optim.set_graph(model.graph);
 
-    DataLoader loader(val_X, val_y, 256);
+    DataLoader loader(val_X, val_y, 64);
 
     for (int epoch = 0; epoch < 20; epoch++) {
         loader.shuffle();

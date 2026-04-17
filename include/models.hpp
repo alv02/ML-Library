@@ -61,4 +61,57 @@ struct nn_model {
     void forward(const Tensor *val_X = nullptr, const Tensor *val_y = nullptr);
 };
 
+struct conv_layer_params {
+    u32 C_out;
+    Conv2dParams params;
+};
+
+struct cnn_model {
+    // Conv stage parameters
+    std::vector<function_var *> kernels; // [C_in*kH*kW, C_out]
+    std::vector<function_var *> conv_b;  // [1, C_out, 1, 1]
+
+    // Dense stage parameters
+    std::vector<function_var *> dense_Wt;
+    std::vector<function_var *> dense_b;
+
+    // Inputs / targets
+    function_var *X;
+    function_var *y;
+
+    // Conv stage intermediates
+    std::vector<function_var *> conv_out;    // after Conv2dOp
+    std::vector<function_var *> conv_biased; // after bias add
+    std::vector<function_var *> conv_relu;   // after relu
+
+    // Flatten
+    FlattenOp *op_flatten;
+    function_var *fv_flat;
+
+    // Dense stage intermediates
+    std::vector<function_var *> z;
+    std::vector<function_var *> zb;
+    std::vector<function_var *> a;
+
+    // Conv ops
+    std::vector<Conv2dOp *> op_conv;
+    std::vector<AddOp *> op_conv_add;
+    std::vector<ReluOp *> op_conv_relu;
+
+    // Dense ops
+    std::vector<MatMulOp *> op_matmul;
+    std::vector<AddOp *> op_add;
+    std::vector<ReluOp *> op_relu;
+
+    CrossEntropyWithLogitsOp *op_loss;
+    function_var *fv_loss;
+    Graph *graph;
+
+    cnn_model(Tensor *val_X, Tensor *val_y,
+              const std::vector<conv_layer_params> &conv_layers,
+              const std::vector<u32> &dense_sizes);
+    ~cnn_model();
+    void forward(const Tensor *val_X = nullptr, const Tensor *val_y = nullptr);
+};
+
 #endif

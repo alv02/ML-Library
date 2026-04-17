@@ -180,6 +180,8 @@ b32 tensor_reshape(Tensor *tensor, const u32 *shape, u32 ndim) {
     if (tensor->size != new_size)
         return false;
 
+    tensor_contiguous(tensor);
+
     for (u32 i = 0; i < ndim; i++)
         tensor->shape[i] = shape[i];
     tensor->ndim = ndim;
@@ -1211,7 +1213,8 @@ b32 tensor_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params) {
     u32 H = dst->shape[2];
     u32 W = dst->shape[3];
     params.compute_output_size(H, W);
-    u32 expected_size = N * params.L_h * params.L_w * C * params.k_h * params.k_w;
+    u32 expected_size =
+        N * params.L_h * params.L_w * C * params.k_h * params.k_w;
     if (col->size != expected_size) {
         printf("tensor_fold2d: col has wrong size (got %llu, expected %u)\n",
                (unsigned long long)col->size, expected_size);

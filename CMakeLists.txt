@@ -39,6 +39,10 @@ target_link_libraries(main PRIVATE mllib)
 add_executable(main_mnist main_mnist.cpp)
 target_link_libraries(main_mnist PRIVATE mllib)
 
+# ── CNN MNIST main ───────────────────────────────────────────────────────────
+add_executable(main_cnn_mnist main_cnn_mnist.cpp)
+target_link_libraries(main_cnn_mnist PRIVATE mllib)
+
 # ── Tests ─────────────────────────────────────────────────────────────────────
 enable_testing()
 

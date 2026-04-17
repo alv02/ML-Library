@@ -166,10 +166,13 @@ __global__ void mat_mul(TensorMeta out_meta, TensorMeta a_meta,
 // loaded cooperatively into shared memory (a_tile and b_tile) before the dot
 // product is accumulated. __syncthreads() ensures all threads have written
 // their tile element before anyone reads from it.
+// blocks: x=row_tiles (up to 2^31-1), y=col_tiles (≤65535, always small).
+// This avoids the 65535 grid.y limit for tall matrices like unfolded conv inputs.
 __global__ void mat_mul_tiled(TensorMeta out_meta, TensorMeta a_meta,
-                              TensorMeta b_meta, f32 *out, f32 *a, f32 *b) {
-    u64 myCol = threadIdx.x + blockIdx.x * blockDim.x;
-    u64 myRow = threadIdx.y + blockIdx.y * blockDim.y;
+                              TensorMeta b_meta, f32 *out, f32 *a, f32 *b,
+                              f32 beta) {
+    u64 myRow = threadIdx.y + blockIdx.x * blockDim.y;
+    u64 myCol = threadIdx.x + blockIdx.y * blockDim.x;
 
     __shared__ f32 a_tile[TILE * TILE];
     __shared__ f32 b_tile[TILE * TILE];
@@ -202,7 +205,8 @@ __global__ void mat_mul_tiled(TensorMeta out_meta, TensorMeta a_meta,
     }
 
     if (in_bounds)
-        out[out_meta.at(myRow, myCol)] = value;
+        out[out_meta.at(myRow, myCol)] =
+            value + beta * out[out_meta.at(myRow, myCol)];
 }
 
 // ---- reduction (sum, max, argmax) ----------------------------------------
@@ -384,23 +388,22 @@ __global__ void tensor_fold2d(TensorMeta col_meta, TensorMeta dst_meta,
         idx[i] = remaining / col_meta.stride[i];
         remaining -= idx[i] * col_meta.stride[i];
     }
-    u32 n  = idx[0];
+    u32 n = idx[0];
     u32 lh = idx[1];
     u32 lw = idx[2];
-    u32 c  = idx[3];
+    u32 c = idx[3];
     u32 kh = idx[4];
     u32 kw = idx[5];
 
     i32 h = (i32)(lh * params.stride_h + kh) - (i32)params.pad_h;
     i32 w = (i32)(lw * params.stride_w + kw) - (i32)params.pad_w;
 
-    if (h < 0 || h >= (i32)dst_meta.shape[2] || w < 0 || w >= (i32)dst_meta.shape[3])
+    if (h < 0 || h >= (i32)dst_meta.shape[2] || w < 0 ||
+        w >= (i32)dst_meta.shape[3])
         return;
 
-    u64 dst_off = (u64)n * dst_meta.stride[0] +
-                  (u64)c * dst_meta.stride[1] +
-                  (u64)h * dst_meta.stride[2] +
-                  (u64)w * dst_meta.stride[3];
+    u64 dst_off = (u64)n * dst_meta.stride[0] + (u64)c * dst_meta.stride[1] +
+                  (u64)h * dst_meta.stride[2] + (u64)w * dst_meta.stride[3];
     atomicAdd(&dst[dst_off], col[workIdx]);
 }
 
@@ -663,15 +666,16 @@ void tensor_cuda_div(Tensor *out, const Tensor *tensor, f32 scalar) {
 void tensor_cuda_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
                          b32 clear_out) {
     u32 threads = TILE;
-    u32 blocks_x = cuda::ceil_div(out->shape[1], threads);
-    u32 blocks_y = cuda::ceil_div(out->shape[0], threads);
+    u32 row_tiles = cuda::ceil_div(out->shape[0], threads);  // goes into x (large limit)
+    u32 col_tiles = cuda::ceil_div(out->shape[1], threads);  // goes into y (≤65535)
     dim3 threadsPerBlock(threads, threads);
-    dim3 blocks(blocks_x, blocks_y);
+    dim3 blocks(row_tiles, col_tiles);
     TensorMeta out_meta(out);
     TensorMeta a_meta(a);
     TensorMeta b_meta(b);
-    mat_mul_tiled<<<blocks, threadsPerBlock>>>(out_meta, a_meta, b_meta,
-                                               out->data, a->data, b->data);
+    f32 beta = clear_out ? 0.0f : 1.0f;
+    mat_mul_tiled<<<blocks, threadsPerBlock>>>(
+        out_meta, a_meta, b_meta, out->data, a->data, b->data, beta);
 }
 
 // ---- reduction (sum, max, argmax)
@@ -815,7 +819,8 @@ void tensor_cuda_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params) {
 
     // reshape col to 6D so stride decomposition maps to (n,lh,lw,c,kh,kw)
     Tensor *col6 = tensor_view(col);
-    u32 shape6[MAX_NDIM] = {N, params.L_h, params.L_w, C, params.k_h, params.k_w};
+    u32 shape6[MAX_NDIM] = {N, params.L_h, params.L_w,
+                            C, params.k_h, params.k_w};
     tensor_reshape(col6, shape6, 6);
 
     TensorMeta col_meta(col6);
@@ -823,7 +828,8 @@ void tensor_cuda_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params) {
 
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(col6->size, u64(threads));
-    tensor_fold2d<<<blocks, threads>>>(col_meta, dst_meta, params, col6->data, dst->data);
+    tensor_fold2d<<<blocks, threads>>>(col_meta, dst_meta, params, col6->data,
+                                       dst->data);
 
     delete col6;
 }

@@ -37,7 +37,8 @@ bool DataLoader::next(Tensor *&X_batch, Tensor *&y_batch) {
 // ── sgd
 // ───────────────────────────────────────────────────────────────────────
 
-sgd::sgd(f32 learning_rate) : lr(learning_rate), graph(nullptr) {}
+sgd::sgd(f32 learning_rate, f32 lambda)
+    : lr(learning_rate), lambda(lambda), graph(nullptr) {}
 
 sgd::~sgd() {}
 
@@ -48,6 +49,12 @@ void sgd::step() {
     }
     for (function_var *fv : graph->nodes) {
         if ((fv->flags & FV_FLAG_PARAMETER) && fv->grad) {
+            if (lambda > 0.0f) {
+                Tensor *reg = tensor_mul(fv->val, lambda);
+                tensor_add(fv->grad, fv->grad, reg);
+                delete reg;
+            }
+
             Tensor *tmp = tensor_mul(fv->grad, lr);
             tensor_sub(fv->val, fv->val, tmp);
             delete tmp;

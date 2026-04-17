@@ -39,21 +39,36 @@ struct ReluOp : function {
 };
 
 // inputs[0] = input  [N, C_in, H, W]
-// inputs[1] = weight [C_in*kH*kW, C_out]  (pre-transposed, matches Wt convention)
-// output             [N, C_out, L_h, L_w]
-// bias should be added separately via AddOp
+// inputs[1] = weight [C_in*kH*kW, C_out]  (pre-transposed, matches Wt
+// convention) output             [N, C_out, L_h, L_w] bias should be added
+// separately via AddOp
 struct Conv2dOp : function {
     Conv2dParams params;
     Tensor *saved_col; // [N*L, C_in*kH*kW] — unfolded input saved for backward
 
-    Conv2dOp(function_var *input, function_var *weight, Conv2dParams params)
+    Conv2dOp(function_var *input, function_var *kernels, Conv2dParams params)
         : params(params), saved_col(nullptr) {
         n_inputs = 2;
         inputs[0] = input;
-        inputs[1] = weight;
+        inputs[1] = kernels;
     }
 
     ~Conv2dOp() { delete saved_col; }
+
+    function_var *make_output() override;
+    void forward(function_var *out) override;
+    void backward(Tensor *grad_output) override;
+};
+
+// Flattens [N, ...] → [N, C*H*W]. Grad flows back by reshaping to saved shape.
+struct FlattenOp : function {
+    u32 saved_ndim;
+    u32 saved_shape[MAX_NDIM];
+
+    FlattenOp(function_var *input) {
+        n_inputs = 1;
+        inputs[0] = input;
+    }
 
     function_var *make_output() override;
     void forward(function_var *out) override;
