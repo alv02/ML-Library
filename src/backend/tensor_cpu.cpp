@@ -330,6 +330,29 @@ void tensor_cpu_argmax(Tensor *out, const Tensor *tensor, u32 dim) {
     delete max_vals;
 }
 
+// ---- scattering ----------------------------------------------------------
+void tensor_cpu_scatter_add(Tensor *out, const Tensor *src,
+                            const Tensor *indices, u32 dim) {
+    // out_strides: collapse dim to 0, gives the "base" flat offset ignoring dim
+    u64 out_strides[MAX_NDIM];
+    memcpy(out_strides, out->stride, out->ndim * sizeof(u64));
+    out_strides[dim] = 0;
+    u64 out_stride_dim = out->stride[dim];
+
+    tensorIterator src_it(src->ndim, src->shape, src->stride);
+    tensorIterator idx_it(indices->ndim, indices->shape, indices->stride);
+    tensorIterator out_it(src->ndim, src->shape,
+                          out_strides); // walks src shape
+
+    while (src_it.has_next()) {
+        u64 src_off = src_it.next();
+        u64 idx_off = idx_it.next();
+        u64 out_base = out_it.next();
+        u32 k = (u32)indices->data[idx_off]; // index along dim
+        out->data[out_base + k * out_stride_dim] += src->data[src_off];
+    }
+}
+
 // ---- initializing --------------------------------------------------------
 
 void tensor_cpu_he_init(Tensor *tensor) {
@@ -379,7 +402,8 @@ b32 tensor_cpu_equals(const Tensor *a, const Tensor *b, f32 tol) {
 
 // ---- spatial / patch operations ------------------------------------------
 
-void tensor_cpu_unfold2d(Tensor *dst, const Tensor *src, Conv2dParams params) {
+void tensor_cpu_unfold2d(Tensor *dst, const Tensor *src,
+                         Unfold2dParams params) {
     u32 N = src->shape[0];
     u32 C = src->shape[1];
     u32 H = src->shape[2];
@@ -423,7 +447,7 @@ void tensor_cpu_unfold2d(Tensor *dst, const Tensor *src, Conv2dParams params) {
     tensor_reshape(dst, shape3, 3);
 }
 
-void tensor_cpu_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params) {
+void tensor_cpu_fold2d(Tensor *dst, const Tensor *col, Unfold2dParams params) {
     u32 N = dst->shape[0];
     u32 C = dst->shape[1];
     u32 H = dst->shape[2];
@@ -432,7 +456,8 @@ void tensor_cpu_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params) {
     u32 kW = params.k_w;
     params.compute_output_size(H, W);
 
-    // reshape col to 6D so strides match the unfold layout: [N, L_h, L_w, C, kH, kW]
+    // reshape col to 6D so strides match the unfold layout: [N, L_h, L_w, C,
+    // kH, kW]
     Tensor *col6 = tensor_view(col);
     u32 shape6[MAX_NDIM] = {N, params.L_h, params.L_w, C, kH, kW};
     tensor_reshape(col6, shape6, 6);
@@ -443,14 +468,16 @@ void tensor_cpu_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params) {
                 for (u32 c = 0; c < C; c++)
                     for (u32 kh = 0; kh < kH; kh++)
                         for (u32 kw = 0; kw < kW; kw++) {
-                            i32 h = (i32)(lh * params.stride_h + kh) - (i32)params.pad_h;
-                            i32 w = (i32)(lw * params.stride_w + kw) - (i32)params.pad_w;
+                            i32 h = (i32)(lh * params.stride_h + kh) -
+                                    (i32)params.pad_h;
+                            i32 w = (i32)(lw * params.stride_w + kw) -
+                                    (i32)params.pad_w;
                             if (h < 0 || (u32)h >= H || w < 0 || (u32)w >= W)
                                 continue;
                             u64 col_off = (u64)n * col6->stride[0] +
                                           (u64)lh * col6->stride[1] +
                                           (u64)lw * col6->stride[2] +
-                                          (u64)c  * col6->stride[3] +
+                                          (u64)c * col6->stride[3] +
                                           (u64)kh * col6->stride[4] +
                                           (u64)kw * col6->stride[5];
                             u64 dst_off = (u64)n * dst->stride[0] +

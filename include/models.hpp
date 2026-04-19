@@ -63,7 +63,9 @@ struct nn_model {
 
 struct conv_layer_params {
     u32 C_out;
-    Conv2dParams params;
+    Unfold2dParams params;
+    bool pool = false;
+    Unfold2dParams pool_params = {};
 };
 
 struct cnn_model {
@@ -97,6 +99,8 @@ struct cnn_model {
     std::vector<Conv2dOp *> op_conv;
     std::vector<AddOp *> op_conv_add;
     std::vector<ReluOp *> op_conv_relu;
+    std::vector<MaxPool2dOp *> op_pool;
+    std::vector<function_var *> pool_out; // nullptr for layers without pooling
 
     // Dense ops
     std::vector<MatMulOp *> op_matmul;

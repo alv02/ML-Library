@@ -139,6 +139,29 @@ nn_model::~nn_model() {
     delete y;
 }
 
+void nn_model::forward(const Tensor *val_X, const Tensor *val_y) {
+    if (val_X) {
+        tensor_realloc(X->val, val_X->shape, val_X->ndim);
+        tensor_copy(X->val, val_X);
+    }
+    if (val_y) {
+        tensor_realloc(y->val, val_y->shape, val_y->ndim);
+        tensor_copy(y->val, val_y);
+    }
+    u32 n_layers = (u32)op_matmul.size();
+    for (u32 l = 0; l < n_layers; l++) {
+        op_matmul[l]->forward(z[l]);
+        bool is_last = (l == n_layers - 1);
+        if (!is_last) {
+            op_add[l]->forward(zb[l]);
+            op_relu[l]->forward(a[l]);
+        } else {
+            op_add[l]->forward(a[l]); // logits — no relu on last layer
+        }
+    }
+    op_loss->forward(fv_loss);
+}
+
 // ── cnn_model
 // ─────────────────────────────────────────────────────────────────
 
@@ -183,7 +206,16 @@ cnn_model::cnn_model(Tensor *val_X, Tensor *val_y,
         op_conv_relu.push_back(relu);
         conv_relu.push_back(relu->make_output());
 
-        cur = conv_relu[l];
+        if (spec.pool) {
+            MaxPool2dOp *pool = new MaxPool2dOp(conv_relu[l], spec.pool_params);
+            op_pool.push_back(pool);
+            pool_out.push_back(pool->make_output());
+            cur = pool_out[l];
+        } else {
+            op_pool.push_back(nullptr);
+            pool_out.push_back(nullptr);
+            cur = conv_relu[l];
+        }
         C_in = C_out;
     }
 
@@ -243,6 +275,12 @@ cnn_model::~cnn_model() {
         delete op;
     for (auto *op : op_conv_relu)
         delete op;
+    for (auto *op : op_pool)
+        if (op)
+            delete op;
+    for (auto *fv : pool_out)
+        if (fv)
+            delete fv;
     delete op_flatten;
     for (auto *op : op_matmul)
         delete op;
@@ -291,6 +329,8 @@ void cnn_model::forward(const Tensor *val_X, const Tensor *val_y) {
         op_conv[l]->forward(conv_out[l]);
         op_conv_add[l]->forward(conv_biased[l]);
         op_conv_relu[l]->forward(conv_relu[l]);
+        if (op_pool[l])
+            op_pool[l]->forward(pool_out[l]);
     }
     op_flatten->forward(fv_flat);
     u32 n_dense = (u32)op_matmul.size();
@@ -302,29 +342,6 @@ void cnn_model::forward(const Tensor *val_X, const Tensor *val_y) {
             op_relu[l]->forward(a[l]);
         } else {
             op_add[l]->forward(a[l]);
-        }
-    }
-    op_loss->forward(fv_loss);
-}
-
-void nn_model::forward(const Tensor *val_X, const Tensor *val_y) {
-    if (val_X) {
-        tensor_realloc(X->val, val_X->shape, val_X->ndim);
-        tensor_copy(X->val, val_X);
-    }
-    if (val_y) {
-        tensor_realloc(y->val, val_y->shape, val_y->ndim);
-        tensor_copy(y->val, val_y);
-    }
-    u32 n_layers = (u32)op_matmul.size();
-    for (u32 l = 0; l < n_layers; l++) {
-        op_matmul[l]->forward(z[l]);
-        bool is_last = (l == n_layers - 1);
-        if (!is_last) {
-            op_add[l]->forward(zb[l]);
-            op_relu[l]->forward(a[l]);
-        } else {
-            op_add[l]->forward(a[l]); // logits — no relu on last layer
         }
     }
     op_loss->forward(fv_loss);

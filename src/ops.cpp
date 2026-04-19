@@ -256,6 +256,96 @@ void Conv2dOp::backward(Tensor *grad_output) {
     }
 }
 
+// ── MaxPool2dOp ────────────────────────────────────────────────────────────
+
+function_var *MaxPool2dOp::make_output() {
+    const function_var *input = inputs[0];
+    u32 flags = FV_FLAG_NONE;
+    if ((input->flags) & FV_FLAG_REQUIERES_GRAD)
+        flags |= FV_FLAG_REQUIERES_GRAD;
+
+    params.compute_output_size(input->n_rows(), input->n_cols());
+    u32 N = input->val->shape[0];
+    u32 C = input->val->shape[1];
+
+    u32 shape[4] = {N, C, params.L_h, params.L_w};
+
+    function_var *out =
+        new function_var(new Tensor(4, shape, input->val->on_gpu), flags);
+
+    out->grad_fn = this;
+
+    return out;
+}
+
+void MaxPool2dOp::forward(function_var *out) {
+    const Tensor *input = inputs[0]->val;
+    u32 N = input->shape[0];
+    u32 C = input->shape[1];
+    params.compute_output_size(input->shape[2], input->shape[3]);
+    u32 L = params.L_h * params.L_w;
+    u32 K = params.k_h * params.k_w;
+
+    // [N, C, H, W] → [N, L, C*K]
+    Tensor *col = tensor_unfold2d(input, params);
+
+    // [N, L, C*K] → [N, L, C, K]
+    u32 shape4[4] = {N, L, C, K};
+    tensor_reshape(col, shape4, 4);
+
+    // save argmax indices [N, L, C, 1] for backward
+    delete saved_max_idx;
+    saved_max_idx = tensor_argmax(col, 3, true);
+
+    // max along K → [N, L, C]
+    Tensor *pooled = tensor_max(col, 3, false);
+    delete col;
+
+    // [N, L, C] → [N, L_h, L_w, C] → [N, C, L_h, L_w]
+    u32 shape_nlhwc[4] = {N, params.L_h, params.L_w, C};
+    tensor_reshape(pooled, shape_nlhwc, 4);
+    tensor_transpose(pooled, 1, 3); // [N, C, L_w, L_h]
+    tensor_transpose(pooled, 2, 3); // [N, C, L_h, L_w]
+
+    std::swap(out->val, pooled);
+    delete pooled;
+}
+
+void MaxPool2dOp::backward(Tensor *grad_output) {
+    function_var *input = inputs[0];
+    if (!(input->flags & FV_FLAG_REQUIERES_GRAD))
+        return;
+
+    if (!input->grad || !tensor_shape_eq(input->grad, input->val)) {
+        delete input->grad;
+        input->grad = tensor_create_like(input->val);
+    }
+
+    u32 N = input->val->shape[0];
+    u32 C = input->val->shape[1];
+    u32 K = params.k_h * params.k_w;
+    u32 L = params.L_h * params.L_w;
+
+    // Reverse forward transpose: [N, C, L_h, L_w] → [N, L, C, 1]
+    Tensor *g = tensor_view(grad_output);
+    tensor_transpose(g, 2, 3); // [N, C, L_w, L_h]
+    tensor_transpose(g, 1, 3); // [N, L_h, L_w, C]
+    u32 shape_nlc1[4] = {N, L, C, 1};
+    tensor_reshape(g, shape_nlc1, 4);
+
+    // route grads to max positions → [N, L, C, K]
+    Tensor *scattered = tensor_scatter_add(g, saved_max_idx, 3, K);
+    delete g;
+
+    // [N, L, C, K] → [N, L, C*K]
+    u32 shape_nlck[3] = {N, L, C * K};
+    tensor_reshape(scattered, shape_nlck, 3);
+
+    // fold2d accumulates into input->grad [N, C, H, W]
+    tensor_fold2d(input->grad, scattered, params);
+    delete scattered;
+}
+
 // ── FlattenOp ────────────────────────────────────────────────────────────────
 
 function_var *FlattenOp::make_output() {
@@ -273,7 +363,7 @@ function_var *FlattenOp::make_output() {
 }
 
 void FlattenOp::forward(function_var *out) {
-    Tensor *inp = inputs[0]->val;
+    const Tensor *inp = inputs[0]->val;
     saved_ndim = inp->ndim;
     // TODO: Use memcpy or some helper function
     for (u32 i = 0; i < inp->ndim; i++)

@@ -104,6 +104,9 @@ void tensor_cuda_max(Tensor *out, const Tensor *tensor);
 void tensor_cuda_max(Tensor *out, const Tensor *tensor, u32 dim);
 void tensor_cuda_argmax(Tensor *out, const Tensor *tensor, u32 dim);
 
+// ---- scattering ----------------------------------------------------------
+void tensor_cuda_scatter_add(Tensor *out, const Tensor *src,
+                             const Tensor *indices, u32 dim);
 // ---- initializing --------------------------------------------------------
 
 void tensor_cuda_he_init(Tensor *tensor);
@@ -113,8 +116,9 @@ void tensor_cuda_he_init(Tensor *tensor);
 void tensor_cuda_index_select(Tensor *dst, const Tensor *src,
                               const u32 *indices, u32 n_indices, u32 dim);
 
-void tensor_cuda_unfold2d(Tensor *dst, const Tensor *src, Conv2dParams params);
-void tensor_cuda_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params);
+void tensor_cuda_unfold2d(Tensor *dst, const Tensor *src,
+                          Unfold2dParams params);
+void tensor_cuda_fold2d(Tensor *dst, const Tensor *col, Unfold2dParams params);
 
 // ---- comparison ----------------------------------------------------------
 

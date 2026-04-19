@@ -167,7 +167,8 @@ __global__ void mat_mul(TensorMeta out_meta, TensorMeta a_meta,
 // product is accumulated. __syncthreads() ensures all threads have written
 // their tile element before anyone reads from it.
 // blocks: x=row_tiles (up to 2^31-1), y=col_tiles (≤65535, always small).
-// This avoids the 65535 grid.y limit for tall matrices like unfolded conv inputs.
+// This avoids the 65535 grid.y limit for tall matrices like unfolded conv
+// inputs.
 __global__ void mat_mul_tiled(TensorMeta out_meta, TensorMeta a_meta,
                               TensorMeta b_meta, f32 *out, f32 *a, f32 *b,
                               f32 beta) {
@@ -301,6 +302,24 @@ __global__ void tensor_argmax_kernel(TensorMeta out_meta,
     out[workIdx] = (f32)max_idx;
 }
 
+// ---- scattering ----------------------------------------------------------
+__global__ void tensor_scatter_add(TensorMeta out_meta,
+                                   TensorMeta out_base_meta,
+                                   TensorMeta indices_meta, TensorMeta src_meta,
+                                   TensorMeta src_contig, f32 *out,
+                                   f32 *indices, f32 *src, u32 dim) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (workIdx >= src_contig.size)
+        return;
+
+    u64 src_offset = src_contig.offset_from(workIdx, src_meta);
+    u64 out_base_offset = src_contig.offset_from(workIdx, out_base_meta);
+    u64 indices_offset = src_contig.offset_from(workIdx, indices_meta);
+    out_base_offset += (u32)indices[indices_offset] * out_meta.stride[dim];
+
+    atomicAdd(&out[out_base_offset], src[src_offset]);
+}
+
 // ---- indexing ------------------------------------------------------------
 
 // Each thread handles one output element. The flat output index (workIdx) is
@@ -338,18 +357,23 @@ __global__ void tensor_index_select(TensorMeta dst_meta, TensorMeta src_meta,
 // pad_h*stride[H] + pad_w*stride[W]) so that kh=0/kw=0 maps to position
 // (-pad_h, -pad_w) in the image. The bounds check below discards those
 // accesses as zero before any invalid read occurs.
-__global__ void tensor_unfold2d(TensorMeta dst_meta, TensorMeta src_meta,
-                                Conv2dParams params, f32 *dst, const f32 *src) {
+
+__global__ void tensor_unfold2d(TensorMeta dst_meta, // for index decomposition
+                                TensorMeta dst_meta_contig, // for writing
+                                TensorMeta src_meta, Unfold2dParams params,
+                                f32 *dst, const f32 *src) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= dst_meta.size)
         return;
 
+    // Decompose using CONTIGUOUS strides
     u64 remaining = workIdx;
     u32 idx[6];
     for (u32 i = 0; i < 6; i++) {
-        idx[i] = remaining / dst_meta.stride[i];
-        remaining -= idx[i] * dst_meta.stride[i];
+        idx[i] = remaining / dst_meta_contig.stride[i];
+        remaining -= idx[i] * dst_meta_contig.stride[i];
     }
+
     u32 n = idx[0];
     u32 lh = idx[1];
     u32 lw = idx[2];
@@ -360,15 +384,20 @@ __global__ void tensor_unfold2d(TensorMeta dst_meta, TensorMeta src_meta,
     i32 h = lh * params.stride_h + kh - params.pad_h;
     i32 w = lw * params.stride_w + kw - params.pad_w;
 
+    // Compute destination offset using ACTUAL strides
+    u64 dst_offset = n * dst_meta.stride[0] + lh * dst_meta.stride[1] +
+                     lw * dst_meta.stride[2] + c * dst_meta.stride[3] +
+                     kh * dst_meta.stride[4] + kw * dst_meta.stride[5];
+
     if (h < 0 || h >= src_meta.shape[2] || w < 0 || w >= src_meta.shape[3]) {
-        dst[workIdx] = params.pad_constant;
+        dst[dst_offset] = params.pad_constant;
         return;
     }
-    u64 offset = n * src_meta.stride[0] + // N
-                 c * src_meta.stride[1] + // C
-                 h * src_meta.stride[2] + // H
-                 w * src_meta.stride[3];  // W
-    dst[workIdx] = src[offset];
+
+    u64 src_offset = n * src_meta.stride[0] + c * src_meta.stride[1] +
+                     h * src_meta.stride[2] + w * src_meta.stride[3];
+
+    dst[dst_offset] = src[src_offset];
 }
 
 // Each thread owns one element of col [N, L_h, L_w, C, kH, kW].
@@ -376,8 +405,9 @@ __global__ void tensor_unfold2d(TensorMeta dst_meta, TensorMeta src_meta,
 // and atomicAdd's its value into dst[n,c,h,w]. atomicAdd is required because
 // overlapping windows (stride < kernel size) map multiple col entries to the
 // same dst pixel.
-__global__ void tensor_fold2d(TensorMeta col_meta, TensorMeta dst_meta,
-                              Conv2dParams params, const f32 *col, f32 *dst) {
+__global__ void tensor_fold2d(TensorMeta col_meta, TensorMeta col_meta_contig,
+                              TensorMeta dst_meta, Unfold2dParams params,
+                              const f32 *col, f32 *dst) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= col_meta.size)
         return;
@@ -385,8 +415,8 @@ __global__ void tensor_fold2d(TensorMeta col_meta, TensorMeta dst_meta,
     u64 remaining = workIdx;
     u32 idx[6];
     for (u32 i = 0; i < 6; i++) {
-        idx[i] = remaining / col_meta.stride[i];
-        remaining -= idx[i] * col_meta.stride[i];
+        idx[i] = remaining / col_meta_contig.stride[i];
+        remaining -= idx[i] * col_meta_contig.stride[i];
     }
     u32 n = idx[0];
     u32 lh = idx[1];
@@ -397,6 +427,9 @@ __global__ void tensor_fold2d(TensorMeta col_meta, TensorMeta dst_meta,
 
     i32 h = (i32)(lh * params.stride_h + kh) - (i32)params.pad_h;
     i32 w = (i32)(lw * params.stride_w + kw) - (i32)params.pad_w;
+    u64 col_offset = n * col_meta.stride[0] + lh * col_meta.stride[1] +
+                     lw * col_meta.stride[2] + c * col_meta.stride[3] +
+                     kh * col_meta.stride[4] + kw * col_meta.stride[5];
 
     if (h < 0 || h >= (i32)dst_meta.shape[2] || w < 0 ||
         w >= (i32)dst_meta.shape[3])
@@ -404,7 +437,7 @@ __global__ void tensor_fold2d(TensorMeta col_meta, TensorMeta dst_meta,
 
     u64 dst_off = (u64)n * dst_meta.stride[0] + (u64)c * dst_meta.stride[1] +
                   (u64)h * dst_meta.stride[2] + (u64)w * dst_meta.stride[3];
-    atomicAdd(&dst[dst_off], col[workIdx]);
+    atomicAdd(&dst[dst_off], col[col_offset]);
 }
 
 // ---- comparison ----------------------------------------------------------
@@ -543,16 +576,33 @@ Tensor *tensor_cuda_copy(const Tensor *t_gpu) {
 
 // ---- copy (into existing tensor) ----------------------------------------
 
-// D2D strided copy: handles non-contiguous dst and/or src on the same
-// device.
+// D2D strided copy: handles non-contiguous dst and/or src on the same device.
+//
+// Two paths:
+//   dst contiguous — iterate over src elements using src's ndim/strides, write
+//   dst at flat index workIdx. Passing src_contig as both out_contig and
+//   out_actual makes offset_from return workIdx for the dst address. This is
+//   the correct path when dst and src have different ndims (e.g. FlattenOp
+//   copies a 4D non-contiguous pool output into a 2D contiguous flat tensor).
+//
+//   dst non-contiguous — iterate using dst's ndim (same ndim as src in this
+//   codebase; this path is taken by tensor_contiguous which always preserves
+//   ndim).
 static void cuda_copy_d2d_strided(Tensor *dst, const Tensor *src) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(dst->size, (u64)threads);
-    TensorMeta dst_contig = make_contig_meta(dst);
-    TensorMeta dst_actual(dst);
-    TensorMeta src_meta(src);
-    tensor_copy_strided<<<blocks, threads>>>(dst_contig, dst_actual, src_meta,
-                                             dst->data, src->data);
+    if (tensor_is_contiguous(dst)) {
+        TensorMeta src_contig = make_contig_meta(src);
+        TensorMeta src_actual(src);
+        tensor_copy_strided<<<blocks, threads>>>(
+            src_contig, src_contig, src_actual, dst->data, src->data);
+    } else {
+        TensorMeta dst_contig = make_contig_meta(dst);
+        TensorMeta dst_actual(dst);
+        TensorMeta src_meta(src);
+        tensor_copy_strided<<<blocks, threads>>>(
+            dst_contig, dst_actual, src_meta, dst->data, src->data);
+    }
 }
 
 // Selects cudaMemcpyKind from the two on_gpu flags packed into a 2-bit key:
@@ -666,8 +716,10 @@ void tensor_cuda_div(Tensor *out, const Tensor *tensor, f32 scalar) {
 void tensor_cuda_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
                          b32 clear_out) {
     u32 threads = TILE;
-    u32 row_tiles = cuda::ceil_div(out->shape[0], threads);  // goes into x (large limit)
-    u32 col_tiles = cuda::ceil_div(out->shape[1], threads);  // goes into y (≤65535)
+    u32 row_tiles =
+        cuda::ceil_div(out->shape[0], threads); // goes into x (large limit)
+    u32 col_tiles =
+        cuda::ceil_div(out->shape[1], threads); // goes into y (≤65535)
     dim3 threadsPerBlock(threads, threads);
     dim3 blocks(row_tiles, col_tiles);
     TensorMeta out_meta(out);
@@ -755,8 +807,25 @@ void tensor_cuda_argmax(Tensor *out, const Tensor *tensor, u32 dim) {
                                               tensor->data, dim);
 }
 
-// ---- initializing
-// --------------------------------------------------------
+// ---- scattering ----------------------------------------------------------
+void tensor_cuda_scatter_add(Tensor *out, const Tensor *src,
+                             const Tensor *indices, u32 dim) {
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(src->size, u64(threads));
+
+    TensorMeta out_meta(out);
+    TensorMeta out_base_meta(out);
+    out_base_meta.stride[dim] = 0;
+    TensorMeta indices_meta(indices);
+    TensorMeta src_meta(src);
+    TensorMeta src_contig = make_contig_meta(src);
+
+    tensor_scatter_add<<<blocks, threads>>>(
+        out_meta, out_base_meta, indices_meta, src_meta, src_contig, out->data,
+        indices->data, src->data, dim);
+}
+
+// ---- initializing --------------------------------------------------------
 
 void tensor_cuda_he_init(Tensor *tensor) {
     curandGenerator_t gen;
@@ -786,7 +855,8 @@ void tensor_cuda_index_select(Tensor *dst, const Tensor *src,
     cudaFree(indices_gpu);
 }
 
-void tensor_cuda_unfold2d(Tensor *dst, const Tensor *src, Conv2dParams params) {
+void tensor_cuda_unfold2d(Tensor *dst, const Tensor *src,
+                          Unfold2dParams params) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(dst->size, u64(threads));
     u32 N = src->shape[0];
@@ -801,16 +871,18 @@ void tensor_cuda_unfold2d(Tensor *dst, const Tensor *src, Conv2dParams params) {
                            C, params.k_h, params.k_w};
     tensor_reshape(dst, shape, 6);
 
-    TensorMeta dst_meta(dst);
+    TensorMeta dst_meta = TensorMeta(dst);
+    TensorMeta dst_meta_contig = make_contig_meta(dst);
+
     TensorMeta src_meta(src);
 
-    tensor_unfold2d<<<blocks, threads>>>(dst_meta, src_meta, params, dst->data,
-                                         src->data);
+    tensor_unfold2d<<<blocks, threads>>>(dst_meta, dst_meta_contig, src_meta,
+                                         params, dst->data, src->data);
     u32 shape_[MAX_NDIM] = {N, L, C * params.k_h * params.k_w};
     tensor_reshape(dst, shape_, 3);
 }
 
-void tensor_cuda_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params) {
+void tensor_cuda_fold2d(Tensor *dst, const Tensor *col, Unfold2dParams params) {
     u32 N = dst->shape[0];
     u32 C = dst->shape[1];
     u32 H = dst->shape[2];
@@ -824,17 +896,19 @@ void tensor_cuda_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params) {
     tensor_reshape(col6, shape6, 6);
 
     TensorMeta col_meta(col6);
+    TensorMeta col_meta_contig = make_contig_meta(col6);
     TensorMeta dst_meta(dst);
 
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(col6->size, u64(threads));
-    tensor_fold2d<<<blocks, threads>>>(col_meta, dst_meta, params, col6->data,
-                                       dst->data);
+    tensor_fold2d<<<blocks, threads>>>(col_meta, col_meta_contig, dst_meta,
+                                       params, col6->data, dst->data);
 
     delete col6;
 }
 
-// ---- comparison ----------------------------------------------------------
+// ---- comparison
+// ----------------------------------------------------------
 
 b32 tensor_cuda_equals(const Tensor *a, const Tensor *b, f32 tol) {
     u32 threads = N_THREADS;

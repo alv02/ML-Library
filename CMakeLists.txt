@@ -32,16 +32,20 @@ find_package(CUDAToolkit REQUIRED)
 target_link_libraries(mllib PUBLIC CUDA::cudart CUDA::curand)
 
 # ── Main executable ───────────────────────────────────────────────────────────
-add_executable(main main.cpp)
-target_link_libraries(main PRIVATE mllib)
+add_executable(main_lr main_lr.cpp)
+target_link_libraries(main_lr PRIVATE mllib)
 
 # ── MNIST main ────────────────────────────────────────────────────────────────
-add_executable(main_mnist main_mnist.cpp)
-target_link_libraries(main_mnist PRIVATE mllib)
+add_executable(main_nn main_nn.cpp)
+target_link_libraries(main_nn PRIVATE mllib)
 
 # ── CNN MNIST main ───────────────────────────────────────────────────────────
-add_executable(main_cnn_mnist main_cnn_mnist.cpp)
-target_link_libraries(main_cnn_mnist PRIVATE mllib)
+add_executable(main_cnn main_cnn.cpp)
+target_link_libraries(main_cnn PRIVATE mllib)
+
+# ── Fashion MNIST with MaxPool ────────────────────────────────────────────────
+add_executable(main_cnn2 main_cnn2.cpp)
+target_link_libraries(main_cnn2 PRIVATE mllib)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 enable_testing()

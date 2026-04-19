@@ -271,4 +271,84 @@ save_fold2d("fold2d_1c_4x4_k3s2p1", a, (3, 3), stride_hw=(2, 2), pad_hw=(1, 1))
 a = np.arange(96, dtype=np.float32).reshape(2, 3, 4, 4)
 save_fold2d("fold2d_2n3c_4x4_k3s1", a, (3, 3))
 
+# ── tensor_scatter_add ───────────────────────────────────────────────────────
+# Saves src (a.npy), indices (b.npy), and expected output (out.npy).
+# src and indices have shape[dim] = 1; out has shape[dim] = K.
+
+def scatter_add_ref(src, indices, dim, K):
+    out_shape = list(src.shape)
+    out_shape[dim] = K
+    out = np.zeros(out_shape, dtype=np.float32)
+    idx = indices.astype(np.int32)
+    src_sq = src.squeeze(axis=dim)
+    idx_sq = idx.squeeze(axis=dim)
+    other_shapes = [np.arange(s) for i, s in enumerate(src.shape) if i != dim]
+    grids = np.meshgrid(*other_shapes, indexing='ij') if len(other_shapes) > 1 else other_shapes
+    out_idx = []
+    j = 0
+    for i in range(src.ndim):
+        if i == dim:
+            out_idx.append(idx_sq)
+        else:
+            out_idx.append(grids[j])
+            j += 1
+    np.add.at(out, tuple(out_idx), src_sq)
+    return out
+
+def save_scatter(dir_name, src, indices, dim, K):
+    os.makedirs(dir_name, exist_ok=True)
+    out = scatter_add_ref(src, indices, dim, K)
+    np.save(f"{dir_name}/a.npy",   src.astype(np.float32))
+    np.save(f"{dir_name}/b.npy",   indices.astype(np.float32))
+    np.save(f"{dir_name}/out.npy", out.astype(np.float32))
+
+# 2D, dim=1, src [4,1] → out [4,3]
+src = np.random.randn(4, 1).astype(np.float32)
+idx = np.random.randint(0, 3, size=(4, 1)).astype(np.float32)
+save_scatter("scatter_add_2d_dim1_k3", src, idx, dim=1, K=3)
+
+# 3D, dim=2, src [2,3,1] → out [2,3,4]
+src = np.random.randn(2, 3, 1).astype(np.float32)
+idx = np.random.randint(0, 4, size=(2, 3, 1)).astype(np.float32)
+save_scatter("scatter_add_3d_dim2_k4", src, idx, dim=2, K=4)
+
+# 4D, dim=3, src [2,4,3,1] → out [2,4,3,9]  (mimics MaxPool backward)
+src = np.random.randn(2, 4, 3, 1).astype(np.float32)
+idx = np.random.randint(0, 9, size=(2, 4, 3, 1)).astype(np.float32)
+save_scatter("scatter_add_4d_dim3_k9", src, idx, dim=3, K=9)
+
+# 4D, dim=1, src [2,1,3,4] → out [2,5,3,4]
+src = np.random.randn(2, 1, 3, 4).astype(np.float32)
+idx = np.random.randint(0, 5, size=(2, 1, 3, 4)).astype(np.float32)
+save_scatter("scatter_add_4d_dim1_k5", src, idx, dim=1, K=5)
+
+# ── MaxPool2d forward (full pipeline check) ───────────────────────────────────
+# We test the exact sequence MaxPool2dOp::forward performs:
+#   unfold2d → reshape[N,L,C,K] → max(dim=3) → reshape[N,Lh,Lw,C] →
+#   transpose(1,3) → transpose(2,3) → result [N,C,Lh,Lw]
+# We save input (a.npy) and expected output (out.npy).
+
+def save_maxpool2d(dir_name, inp, k, stride, pad):
+    os.makedirs(dir_name, exist_ok=True)
+    t = torch.from_numpy(inp)
+    out = torch.nn.functional.max_pool2d(t, kernel_size=k, stride=stride, padding=pad)
+    np.save(f"{dir_name}/a.npy",   inp.astype(np.float32))
+    np.save(f"{dir_name}/out.npy", out.numpy().astype(np.float32))
+
+# 1×1×4×4  pool k=2 s=2 p=0  → [1,1,2,2]
+a = np.arange(16, dtype=np.float32).reshape(1, 1, 4, 4)
+save_maxpool2d("maxpool_1c_4x4_k2s2", a, k=2, stride=2, pad=0)
+
+# 1×2×4×4  pool k=2 s=2 p=0  → [1,2,2,2]
+a = np.arange(32, dtype=np.float32).reshape(1, 2, 4, 4)
+save_maxpool2d("maxpool_2c_4x4_k2s2", a, k=2, stride=2, pad=0)
+
+# 2×3×6×6  pool k=2 s=2 p=0  → [2,3,3,3]
+a = np.random.randn(2, 3, 6, 6).astype(np.float32)
+save_maxpool2d("maxpool_2n3c_6x6_k2s2", a, k=2, stride=2, pad=0)
+
+# 2×4×6×6  pool k=3 s=1 p=0  → [2,4,4,4]
+a = np.random.randn(2, 4, 6, 6).astype(np.float32)
+save_maxpool2d("maxpool_2n4c_6x6_k3s1", a, k=3, stride=1, pad=0)
+
 print("Test data generated.")

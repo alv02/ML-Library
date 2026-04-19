@@ -55,6 +55,10 @@ void tensor_cpu_max(Tensor *out, const Tensor *tensor, u32 dim);
 // Returns the index (as f32) of the max value along dim.
 void tensor_cpu_argmax(Tensor *out, const Tensor *tensor, u32 dim);
 
+// ---- scattering ----------------------------------------------------------
+void tensor_cpu_scatter_add(Tensor *out, const Tensor *src,
+                            const Tensor *indices, u32 dim);
+
 // ---- initializing --------------------------------------------------------
 
 void tensor_cpu_he_init(Tensor *tensor);
@@ -66,8 +70,8 @@ void tensor_cpu_index_select(Tensor *dst, const Tensor *src, const u32 *indices,
 
 // ---- spatial / patch operations ------------------------------------------
 
-void tensor_cpu_unfold2d(Tensor *dst, const Tensor *src, Conv2dParams params);
-void tensor_cpu_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params);
+void tensor_cpu_unfold2d(Tensor *dst, const Tensor *src, Unfold2dParams params);
+void tensor_cpu_fold2d(Tensor *dst, const Tensor *col, Unfold2dParams params);
 
 // ---- comparison ----------------------------------------------------------
 

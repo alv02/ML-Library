@@ -43,10 +43,10 @@ struct ReluOp : function {
 // convention) output             [N, C_out, L_h, L_w] bias should be added
 // separately via AddOp
 struct Conv2dOp : function {
-    Conv2dParams params;
+    Unfold2dParams params;
     Tensor *saved_col; // [N*L, C_in*kH*kW] — unfolded input saved for backward
 
-    Conv2dOp(function_var *input, function_var *kernels, Conv2dParams params)
+    Conv2dOp(function_var *input, function_var *kernels, Unfold2dParams params)
         : params(params), saved_col(nullptr) {
         n_inputs = 2;
         inputs[0] = input;
@@ -55,6 +55,21 @@ struct Conv2dOp : function {
 
     ~Conv2dOp() { delete saved_col; }
 
+    function_var *make_output() override;
+    void forward(function_var *out) override;
+    void backward(Tensor *grad_output) override;
+};
+
+struct MaxPool2dOp : function {
+    Unfold2dParams params;
+    Tensor *saved_max_idx;
+
+    MaxPool2dOp(function_var *input, Unfold2dParams params)
+        : params(params), saved_max_idx(nullptr) {
+        n_inputs = 1;
+        inputs[0] = input;
+    }
+    ~MaxPool2dOp() { delete saved_max_idx; }
     function_var *make_output() override;
     void forward(function_var *out) override;
     void backward(Tensor *grad_output) override;

@@ -42,17 +42,17 @@ struct Tensor {
     }
 };
 
-struct Conv2dParams {
+struct Unfold2dParams {
     u32 k_h, k_w;
     u32 stride_h, stride_w;
     u32 pad_h, pad_w;
     f32 pad_constant;
     u32 L_h = 0, L_w = 0; // output spatial dims, set by compute_output_size()
 
-    Conv2dParams() {}
+    Unfold2dParams() {}
     // Square kernel, same value for both dims
-    Conv2dParams(u32 k, u32 stride = 1, u32 pad = 0, u32 dil = 1,
-                 f32 pad_constant = 0.0f);
+    Unfold2dParams(u32 k, u32 stride = 1, u32 pad = 0, u32 dil = 1,
+                   f32 pad_constant = 0.0f);
 
     void compute_output_size(u32 H, u32 W) {
         L_h = (H + 2 * pad_h - k_h) / stride_h + 1;
@@ -207,6 +207,13 @@ b32 tensor_argmax(Tensor *out, const Tensor *tensor, u32 dim,
                   b32 keep_dim = true);
 Tensor *tensor_argmax(const Tensor *tensor, u32 dim, b32 keep_dim = true);
 
+// ---- scattering ----------------------------------------------------------
+
+b32 tensor_scatter_add(Tensor *out, const Tensor *src, const Tensor *indices,
+                       u32 dim);
+Tensor *tensor_scatter_add(const Tensor *src, const Tensor *indices, u32 dim,
+                           u32 dim_size);
+
 // ---- initializing --------------------------------------------------------
 // He (Kaiming) normal init: fills with values ~ N(0, sqrt(2 / fan_in)).
 // fan_in is the product of all dims except the last (output features).
@@ -223,12 +230,12 @@ Tensor *tensor_index_select(const Tensor *src, const u32 *indices,
                             u32 n_indices, u32 dim);
 // ---- spatial / patch operations ------------------------------------------
 
-b32 tensor_unfold2d(Tensor *out, const Tensor *input, Conv2dParams params);
-Tensor *tensor_unfold2d(const Tensor *input, Conv2dParams params);
+b32 tensor_unfold2d(Tensor *out, const Tensor *input, Unfold2dParams params);
+Tensor *tensor_unfold2d(const Tensor *input, Unfold2dParams params);
 
 // Inverse of unfold2d: scatter-adds col [N*L, C*kH*kW] back into dst [N,C,H,W].
 // dst must be zeroed before calling. params must match the forward unfold call.
-b32 tensor_fold2d(Tensor *dst, const Tensor *col, Conv2dParams params);
+b32 tensor_fold2d(Tensor *dst, const Tensor *col, Unfold2dParams params);
 
 // ---- comparison ----------------------------------------------------------
 
