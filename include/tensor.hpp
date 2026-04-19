@@ -166,6 +166,9 @@ Tensor *tensor_relu_backward(const Tensor *grad, const Tensor *in);
 // Row-wise softmax: out[i] = exp(in[i]) / sum(exp(in[row])) for each row.
 b32 tensor_softmax(Tensor *out, const Tensor *in);
 Tensor *tensor_softmax(const Tensor *in);
+// Row-wise log-softmax via log-sum-exp — numerically stable, no log(0) NaN.
+b32 tensor_log_softmax(Tensor *out, const Tensor *in);
+Tensor *tensor_log_softmax(const Tensor *in);
 
 // ---- scalar operations ---------------------------------------------------
 // Same as the binary ops above but broadcasts a scalar across the whole tensor.

@@ -11,29 +11,31 @@ int main() {
     Tensor *test_val_X = tensor_load("data/X_test.npy", true);
     Tensor *test_val_y = tensor_load("data/y_test.npy", true);
 
-    // Reshape flat [N, 784] → [N, 1, 28, 28] for conv layers
-    u32 train_shape[4] = {val_X->shape[0], 1, 28, 28};
-    u32 test_shape[4] = {test_val_X->shape[0], 1, 28, 28};
-    tensor_reshape(val_X, train_shape, 4);
-    tensor_reshape(test_val_X, test_shape, 4);
-
     tensor_print(val_X);
 
-    // Conv1: [N,1,28,28] → [N,8,28,28]   (k=3, pad=1, stride=1)
-    // Conv2: [N,8,28,28] → [N,16,13,13]  (k=3, stride=2)
-    // Flatten → [N, 2704]
-    // Dense: 128 → 10
+    // Strided conv to halve spatial dims (no pool):
+    // Conv(3→32,  k=3,s=1,p=1): [N,32,32,32]
+    // Conv(32→64, k=3,s=2,p=1): [N,64,16,16]
+    // Conv(64→128,k=3,s=2,p=1): [N,128,8,8]
+    // Conv(128→256,k=3,s=2,p=1):[N,256,4,4]
+    // Flatten → [N,4096]
+    // Dense: 4096 → 512 → 10
     cnn_model model(
         val_X, val_y,
-        {{8, Unfold2dParams(3, 1, 1)}, {16, Unfold2dParams(3, 2, 0)}},
-        {128, 10});
+        {
+            {32,  Unfold2dParams(3, 1, 1)},
+            {64,  Unfold2dParams(3, 2, 1)},
+            {128, Unfold2dParams(3, 2, 1)},
+            {256, Unfold2dParams(3, 2, 1)},
+        },
+        {512, 10});
 
-    sgd optim(0.05f, 1e-4f);
+    sgd optim(0.01f, 1e-4f, 0.9f);
     optim.set_graph(model.graph);
 
     DataLoader loader(val_X, val_y, 64);
 
-    for (int epoch = 0; epoch < 20; epoch++) {
+    for (int epoch = 0; epoch < 50; epoch++) {
         loader.shuffle();
         Tensor *Xb, *yb;
         while (loader.next(Xb, yb)) {
@@ -45,16 +47,14 @@ int main() {
             delete yb;
         }
 
-        if (epoch % 2 == 0) {
+        if (epoch % 5 == 0) {
             Tensor *loss_cpu = tensor_to_cpu(model.fv_loss->val);
-            printf("Epoch %d loss: %f\n", epoch, loss_cpu->data[0]);
+            printf("Epoch %2d  loss: %.4f\n", epoch, loss_cpu->data[0]);
             delete loss_cpu;
         }
     }
 
-    // Batched test evaluation — avoids large intermediate tensors (col buffers
-    // for 10k samples at once would be ~750 MB in the second conv layer).
-    DataLoader test_loader(test_val_X, test_val_y, 512);
+    DataLoader test_loader(test_val_X, test_val_y, 256);
     f32 total_loss = 0.0f, total_acc = 0.0f;
     u32 n_test_batches = 0;
     Tensor *Xb_test = nullptr, *yb_test = nullptr;
@@ -71,7 +71,7 @@ int main() {
         vis_X = Xb_test; // keep last batch alive for visualization
         vis_y = yb_test;
     }
-    printf("Test loss: %f\n", total_loss / n_test_batches);
+    printf("\nTest loss:     %.4f\n", total_loss / n_test_batches);
     printf("Test accuracy: %.2f%%\n", total_acc / n_test_batches * 100.0f);
 
     printf("\n--- Wrong predictions ---\n");

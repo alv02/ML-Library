@@ -3,6 +3,7 @@
 
 #include "autograd.hpp"
 #include "tensor.hpp"
+#include <unordered_map>
 #include <vector>
 
 // ── DataLoader
@@ -34,9 +35,11 @@ struct DataLoader {
 struct sgd {
     f32 lr;
     f32 lambda;
+    f32 mu; // momentum coefficient (0 = plain SGD)
     Graph *graph; // non-owning
+    std::unordered_map<function_var *, Tensor *> velocity;
 
-    sgd(f32 learning_rate, f32 lambda = 0.0f);
+    sgd(f32 learning_rate, f32 lambda = 0.0f, f32 mu = 0.0f);
     ~sgd();
     void step();
     void zero_grad();

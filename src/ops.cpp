@@ -474,12 +474,10 @@ void CrossEntropyWithLogitsOp::forward(function_var *out) {
     N_batch = logits->ndim >= 2 ? logits->shape[0] : 1;
     tensor_realloc(saved_softmax, logits->shape, logits->ndim);
 
-    // softmax(logits) — numerically stable, saved for backward
+    // softmax saved for backward; log_softmax used for loss (avoids log(~0) NaN)
     tensor_softmax(saved_softmax, logits);
 
-    // loss = -sum(targets * log(softmax)) / N_batch
-    Tensor *log_probs = tensor_create_like(saved_softmax);
-    tensor_log(log_probs, saved_softmax);
+    Tensor *log_probs = tensor_log_softmax(logits);
     tensor_mul(log_probs, log_probs, targets);
     tensor_sum(out->val, log_probs);
     tensor_div(out->val, out->val, -(f32)N_batch);

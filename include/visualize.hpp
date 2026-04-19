@@ -4,20 +4,18 @@
 #include "tensor.hpp"
 
 // Print one example: ANSI-colored image + per-class softmax bar + true label.
-// All tensors are single-sample [1, ...] — any device.
-// img_h / img_w default to 28 for MNIST.
+// image must be [1, C, H, W] — any device.
 void visualize_example(const Tensor *image, const Tensor *logits,
-                       const Tensor *target,
-                       u32 img_h = 28, u32 img_w = 28);
+                       const Tensor *target);
 
 // Find and print up to n_examples correctly classified samples.
+// images must be [N, C, H, W].
 void visualize_correct(const Tensor *images, const Tensor *logits,
-                       const Tensor *targets, u32 n_examples,
-                       u32 img_h = 28, u32 img_w = 28);
+                       const Tensor *targets, u32 n_examples);
 
 // Find and print up to n_examples misclassified samples.
+// images must be [N, C, H, W].
 void visualize_wrong(const Tensor *images, const Tensor *logits,
-                     const Tensor *targets, u32 n_examples,
-                     u32 img_h = 28, u32 img_w = 28);
+                     const Tensor *targets, u32 n_examples);
 
 #endif // VISUALIZE_HPP

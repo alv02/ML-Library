@@ -37,10 +37,13 @@ bool DataLoader::next(Tensor *&X_batch, Tensor *&y_batch) {
 // ── sgd
 // ───────────────────────────────────────────────────────────────────────
 
-sgd::sgd(f32 learning_rate, f32 lambda)
-    : lr(learning_rate), lambda(lambda), graph(nullptr) {}
+sgd::sgd(f32 learning_rate, f32 lambda, f32 mu)
+    : lr(learning_rate), lambda(lambda), mu(mu), graph(nullptr) {}
 
-sgd::~sgd() {}
+sgd::~sgd() {
+    for (auto &[fv, v] : velocity)
+        delete v;
+}
 
 void sgd::step() {
     if (!graph) {
@@ -55,9 +58,24 @@ void sgd::step() {
                 delete reg;
             }
 
-            Tensor *tmp = tensor_mul(fv->grad, lr);
-            tensor_sub(fv->val, fv->val, tmp);
-            delete tmp;
+            if (mu > 0.0f) {
+                Tensor *&v = velocity[fv];
+                if (!v) {
+                    v = tensor_create_like(fv->val);
+                    tensor_clear(v);
+                }
+                // v = mu * v + grad
+                tensor_mul(v, v, mu);
+                tensor_add(v, v, fv->grad);
+                // param -= lr * v
+                Tensor *tmp = tensor_mul(v, lr);
+                tensor_sub(fv->val, fv->val, tmp);
+                delete tmp;
+            } else {
+                Tensor *tmp = tensor_mul(fv->grad, lr);
+                tensor_sub(fv->val, fv->val, tmp);
+                delete tmp;
+            }
         }
     }
 }

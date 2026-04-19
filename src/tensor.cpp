@@ -741,6 +741,50 @@ Tensor *tensor_softmax(const Tensor *in) {
     return out;
 }
 
+// ---- log_softmax ---------------------------------------------------------
+// log_softmax(x)_i = (x_i - max(x)) - log(sum(exp(x - max(x))))
+// Never computes log(~0) so it is free of NaN even for extreme logits.
+
+b32 tensor_log_softmax(Tensor *out, const Tensor *in) {
+    if (!tensor_shape_eq(out, in)) {
+        printf("tensor_log_softmax: shape mismatch\n");
+        return false;
+    }
+    if (out->on_gpu != in->on_gpu) {
+        printf("tensor_log_softmax: tensors must be on the same device\n");
+        return false;
+    }
+
+    u32 col_dim = COL_DIM(in);
+    u32 row_shape[MAX_NDIM];
+    memcpy(row_shape, in->shape, in->ndim * sizeof(u32));
+    row_shape[col_dim] = 1;
+
+    Tensor *row_max = new Tensor(in->ndim, row_shape, in->on_gpu);
+    Tensor *row_lse = new Tensor(in->ndim, row_shape, in->on_gpu); // log-sum-exp
+
+    tensor_max(row_max, in, col_dim, true);  // max(x)        [N,1]
+    tensor_sub(out, in, row_max);            // x - max(x)    [N,C]
+    tensor_exp(out, out);                    // exp(x-max)
+    tensor_sum(row_lse, out, col_dim, true); // sum(exp(x-max))
+    tensor_log(row_lse, row_lse);            // log(sum(...))
+    tensor_sub(out, in, row_max);            // x - max(x)
+    tensor_sub(out, out, row_lse);           // x - max(x) - log(sum(...))
+
+    delete row_max;
+    delete row_lse;
+    return true;
+}
+
+Tensor *tensor_log_softmax(const Tensor *in) {
+    Tensor *out = tensor_create_like(in);
+    if (!tensor_log_softmax(out, in)) {
+        delete out;
+        return nullptr;
+    }
+    return out;
+}
+
 // ---- add (scalar) --------------------------------------------------------
 
 b32 tensor_add(Tensor *out, const Tensor *a, f32 scalar) {
