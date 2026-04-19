@@ -1,3 +1,0 @@
-- Mirar const en funciones
-- Mirar los nombres de los kernels en tensor_cuda y mirar tensor_copy kernel que funcione bien
-- Optimizar cuda kernels, usar el nvidia profiler y ver que kernels tardan mas.
