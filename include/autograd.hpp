@@ -3,7 +3,7 @@
 
 #include "tensor.hpp"
 #include <vector>
-#define MAX_INPUTS 2
+#define MAX_INPUTS 3
 
 enum function_var_flags {
     FV_FLAG_NONE = 0,

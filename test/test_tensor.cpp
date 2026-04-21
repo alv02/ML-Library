@@ -275,6 +275,44 @@ static void test_maxpool2d(const char *name, const char *dir,
     delete input; delete exp; delete pooled; delete out_cpu;
 }
 
+static void test_welford_mean_var(const char *name, const char *dir, u32 dim) {
+    char pa[256], pmean[256], pvar[256];
+    snprintf(pa,    sizeof(pa),    "../data/test/%s/a.npy",    dir);
+    snprintf(pmean, sizeof(pmean), "../data/test/%s/mean.npy", dir);
+    snprintf(pvar,  sizeof(pvar),  "../data/test/%s/var.npy",  dir);
+
+    Tensor *a        = tensor_load(pa,    g_on_gpu);
+    Tensor *exp_mean = tensor_load(pmean, false);
+    Tensor *exp_var  = tensor_load(pvar,  false);
+
+    if (!a || !exp_mean || !exp_var) {
+        printf("  [%sFAIL%s] %s — could not load data files\n", RED, RESET, name);
+        failed++;
+        delete a; delete exp_mean; delete exp_var;
+        return;
+    }
+
+    u32 mean_shape[1] = { a->shape[dim] };
+    Tensor *got_mean = new Tensor(1, mean_shape, g_on_gpu);
+    Tensor *got_var  = new Tensor(1, mean_shape, g_on_gpu);
+
+    tensor_welford_mean_var(got_mean, got_var, a, dim);
+    sync();
+
+    Tensor *mean_cpu = tensor_to_cpu(got_mean);
+    Tensor *var_cpu  = tensor_to_cpu(got_var);
+
+    char mean_label[300], var_label[300];
+    snprintf(mean_label, sizeof(mean_label), "%s [mean]", name);
+    snprintf(var_label,  sizeof(var_label),  "%s [var]",  name);
+    check_tensors(mean_label, mean_cpu, exp_mean, 1e-4f);
+    check_tensors(var_label,  var_cpu,  exp_var,  1e-4f);
+
+    delete a; delete exp_mean; delete exp_var;
+    delete got_mean; delete got_var;
+    delete mean_cpu; delete var_cpu;
+}
+
 static void test_scatter_add(const char *name, const char *dir, u32 dim,
                              u32 K) {
     char pa[256], pb[256], pout[256];
@@ -506,6 +544,13 @@ int main(int argc, char **argv) {
     test_maxpool2d("1×2×4×4 k=2 s=2 p=0 → [1,2,2,2]",   "maxpool_2c_4x4_k2s2",    Unfold2dParams(2, 2, 0));
     test_maxpool2d("2×3×6×6 k=2 s=2 p=0 → [2,3,3,3]",   "maxpool_2n3c_6x6_k2s2",  Unfold2dParams(2, 2, 0));
     test_maxpool2d("2×4×6×6 k=3 s=1 p=0 → [2,4,4,4]",   "maxpool_2n4c_6x6_k3s1",  Unfold2dParams(3, 1, 0));
+
+    printf("\n-- tensor_welford_mean_var --\n");
+    test_welford_mean_var("2D   dim=0 (4,3)→(3)",              "welford_2d_dim0",          0);
+    test_welford_mean_var("4D   dim=1 (2,4,3,3)→(4)",          "welford_4d_2n4c_3x3",      1);
+    test_welford_mean_var("4D   dim=1 (4,8,6,6)→(8)",          "welford_4d_4n8c_6x6",      1);
+    test_welford_mean_var("4D   dim=1 (8,16,8,8)→(16)",        "welford_4d_8n16c_8x8",     1);
+    test_welford_mean_var("4D   dim=1 (16,32,16,16)→(32)",     "welford_4d_16n32c_16x16",  1);
 
     printf("\n-- tensor_scatter_add --\n");
     test_scatter_add("2D  dim=1 k=3  [4,1]→[4,3]",         "scatter_add_2d_dim1_k3",  1, 3);

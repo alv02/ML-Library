@@ -145,6 +145,8 @@ b32 tensor_exp(Tensor *dst, const Tensor *src);
 Tensor *tensor_exp(const Tensor *src);
 b32 tensor_log(Tensor *dst, const Tensor *src);
 Tensor *tensor_log(const Tensor *src);
+b32 tensor_sqrt(Tensor *dst, const Tensor *src);
+Tensor *tensor_sqrt(const Tensor *src);
 
 // ---- elementwise binary (add / sub / mul / div) --------------------------
 // All ops support broadcasting (NumPy rules). Same two-overload pattern as
@@ -209,6 +211,9 @@ Tensor *tensor_max(const Tensor *tensor, u32 dim, b32 keep_dim = true);
 b32 tensor_argmax(Tensor *out, const Tensor *tensor, u32 dim,
                   b32 keep_dim = true);
 Tensor *tensor_argmax(const Tensor *tensor, u32 dim, b32 keep_dim = true);
+
+b32 tensor_welford_mean_var(Tensor *mean, Tensor *var, const Tensor *src,
+                            u32 dim);
 
 // ---- scattering ----------------------------------------------------------
 

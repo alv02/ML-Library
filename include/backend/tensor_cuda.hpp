@@ -73,6 +73,7 @@ void tensor_cuda_clear(Tensor *tensor);
 void tensor_cuda_relu(Tensor *dst, const Tensor *src);
 void tensor_cuda_exp(Tensor *dst, const Tensor *src);
 void tensor_cuda_log(Tensor *dst, const Tensor *src);
+void tensor_cuda_sqrt(Tensor *dst, const Tensor *src);
 
 // ---- elementwise binary (add / sub / mul / div) --------------------------
 
@@ -100,6 +101,8 @@ void tensor_cuda_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
 
 void tensor_cuda_sum(Tensor *out, const Tensor *tensor);
 void tensor_cuda_sum(Tensor *out, const Tensor *tensor, u32 dim);
+void tensor_cuda_welford_mean_var(Tensor *mean, Tensor *var, const Tensor *src,
+                                  u32 dim);
 void tensor_cuda_max(Tensor *out, const Tensor *tensor);
 void tensor_cuda_max(Tensor *out, const Tensor *tensor, u32 dim);
 void tensor_cuda_argmax(Tensor *out, const Tensor *tensor, u32 dim);

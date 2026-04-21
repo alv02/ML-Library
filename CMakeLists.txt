@@ -23,6 +23,7 @@ add_library(mllib
     src/visualize.cpp
     src/backend/tensor_cpu.cpp
     src/backend/tensor_cuda.cu
+    src/backend/cuda_mem_arena.cpp
 )
 
 target_include_directories(mllib PUBLIC include)
@@ -46,6 +47,10 @@ target_link_libraries(main_cnn PRIVATE mllib)
 # ── Fashion MNIST with MaxPool ────────────────────────────────────────────────
 add_executable(main_cnn2 main_cnn2.cpp)
 target_link_libraries(main_cnn2 PRIVATE mllib)
+
+# ── CIFAR-10 VGG-B with BatchNorm ────────────────────────────────────────────
+add_executable(main_cnn3 main_cnn3.cpp)
+target_link_libraries(main_cnn3 PRIVATE mllib)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 enable_testing()

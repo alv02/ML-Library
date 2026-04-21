@@ -507,6 +507,33 @@ Tensor *tensor_log(const Tensor *src) {
     return dst;
 }
 
+b32 tensor_sqrt(Tensor *dst, const Tensor *src) {
+    if (!tensor_shape_eq(dst, src)) {
+        printf("tensor_sqrt: shape mismatch\n");
+        return false;
+    }
+    switch ((dst->on_gpu << 1) | src->on_gpu) {
+    case 0b00:
+        tensor_cpu_sqrt(dst, src);
+        return true;
+    case 0b11:
+        tensor_cuda_sqrt(dst, src);
+        return true;
+    default:
+        printf("tensor_sqrt: tensors must be on the same device\n");
+        return false;
+    }
+}
+
+Tensor *tensor_sqrt(const Tensor *src) {
+    Tensor *dst = tensor_create_like(src);
+    if (!tensor_sqrt(dst, src)) {
+        delete dst;
+        return nullptr;
+    }
+    return dst;
+}
+
 // ---- add -----------------------------------------------------------------
 
 b32 tensor_add(Tensor *out, const Tensor *a, const Tensor *b) {
@@ -1130,6 +1157,34 @@ Tensor *tensor_argmax(const Tensor *tensor, u32 dim, b32 keep_dim) {
         return nullptr;
     }
     return out;
+}
+
+// ---- welford mean+var -----------------------------------------------------
+
+b32 tensor_welford_mean_var(Tensor *mean, Tensor *var, const Tensor *src,
+                            u32 dim) {
+    if (dim >= src->ndim) {
+        printf("tensor_welford_mean_var: dim %u out of range (ndim=%u)\n", dim,
+               src->ndim);
+        return false;
+    }
+    if (mean->size != src->shape[dim] || var->size != src->shape[dim]) {
+        printf("tensor_welford_mean_var: mean and var must have size=%u "
+               "(shape[dim])\n",
+               src->shape[dim]);
+        return false;
+    }
+    switch ((mean->on_gpu << 1) | src->on_gpu) {
+    case 0b00:
+        printf("tensor_welford_mean_var: CPU not supported yet\n");
+        return false;
+    case 0b11:
+        tensor_cuda_welford_mean_var(mean, var, src, dim);
+        return true;
+    default:
+        printf("tensor_welford_mean_var: tensors must be on the same device\n");
+        return false;
+    }
 }
 
 // ---- scattering -----------------------------------------------------------

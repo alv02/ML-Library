@@ -18,6 +18,7 @@ void tensor_cpu_clear(Tensor *tensor);
 void tensor_cpu_relu(Tensor *dst, const Tensor *src);
 void tensor_cpu_exp(Tensor *dst, const Tensor *src);
 void tensor_cpu_log(Tensor *dst, const Tensor *src);
+void tensor_cpu_sqrt(Tensor *dst, const Tensor *src);
 
 // ---- elementwise binary (add / sub / mul / div) --------------------------
 

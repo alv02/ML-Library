@@ -59,6 +59,10 @@ void tensor_cpu_log(Tensor *dst, const Tensor *src) {
     elementwise_unary(dst, src, [](f32 x) { return std::log(x); });
 }
 
+void tensor_cpu_sqrt(Tensor *dst, const Tensor *src) {
+    elementwise_unary(dst, src, [](f32 x) { return std::sqrt(x); });
+}
+
 // ---- elementwise binary (add / sub / mul / div) --------------------------
 // Validation is done by the dispatcher in tensor.cpp before calling here.
 

@@ -351,4 +351,31 @@ save_maxpool2d("maxpool_2n3c_6x6_k2s2", a, k=2, stride=2, pad=0)
 a = np.random.randn(2, 4, 6, 6).astype(np.float32)
 save_maxpool2d("maxpool_2n4c_6x6_k3s1", a, k=3, stride=1, pad=0)
 
+
+# ── tensor_welford_mean_var ───────────────────────────────────────────────────
+def save_welford(dir_name, inp, dim):
+    os.makedirs(dir_name, exist_ok=True)
+    t = torch.from_numpy(inp.astype(np.float32))
+    all_dims = list(range(t.ndim))
+    all_dims.remove(dim)
+    var, mean = torch.var_mean(t, dim=all_dims, unbiased=True)
+    np.save(f"{dir_name}/a.npy",    inp.astype(np.float32))
+    np.save(f"{dir_name}/mean.npy", mean.numpy().astype(np.float32))
+    np.save(f"{dir_name}/var.npy",  var.numpy().astype(np.float32))
+
+a = np.random.randn(4, 3).astype(np.float32)
+save_welford("welford_2d_dim0", a, dim=0)
+
+a = np.random.randn(2, 4, 3, 3).astype(np.float32)
+save_welford("welford_4d_2n4c_3x3", a, dim=1)
+
+a = np.random.randn(4, 8, 6, 6).astype(np.float32)
+save_welford("welford_4d_4n8c_6x6", a, dim=1)
+
+a = np.random.randn(8, 16, 8, 8).astype(np.float32)
+save_welford("welford_4d_8n16c_8x8", a, dim=1)
+
+a = np.random.randn(16, 32, 16, 16).astype(np.float32)
+save_welford("welford_4d_16n32c_16x16", a, dim=1)
+
 print("Test data generated.")

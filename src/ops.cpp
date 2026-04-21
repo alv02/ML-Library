@@ -389,6 +389,158 @@ void FlattenOp::backward(Tensor *grad_output) {
     delete grad_reshaped;
 }
 
+// ── BatchNormOp ────────────────────────────────────────────────────────────
+
+function_var *BatchNormOp::make_output() {
+    const function_var *input = inputs[0];
+    const function_var *gamma = inputs[1];
+    const function_var *beta  = inputs[2];
+    u32 flags =
+        ((input->flags | gamma->flags | beta->flags) & FV_FLAG_REQUIERES_GRAD)
+            ? FV_FLAG_REQUIERES_GRAD
+            : FV_FLAG_NONE;
+
+    function_var *out = new function_var(tensor_create_like(input->val), flags);
+    out->grad_fn = this;
+    return out;
+}
+
+void BatchNormOp::forward(function_var *out) {
+    const Tensor *inp   = inputs[0]->val;
+    const Tensor *gamma = inputs[1]->val;
+    const Tensor *beta  = inputs[2]->val;
+    bool on_gpu = inp->on_gpu;
+    u32 C      = inp->shape[1];
+    u32 c4[4]  = { 1, C, 1, 1 };
+
+    Tensor *mean = new Tensor(4, c4, on_gpu);
+    Tensor *var  = new Tensor(4, c4, on_gpu);
+    Tensor *xhat = tensor_create_like(inp);
+    delete saved_mean; saved_mean = mean;
+    delete saved_var;  saved_var  = var;
+    delete saved_xhat; saved_xhat = xhat;
+
+    tensor_welford_mean_var(saved_mean, saved_var, inp, 1);
+
+    // xhat = (inp - mean) / sqrt(var + eps)
+    tensor_sub(saved_xhat, inp, saved_mean);
+    Tensor *denom = tensor_add(saved_var, eps);
+    tensor_sqrt(denom, denom);
+    tensor_div(saved_xhat, saved_xhat, denom);
+    delete denom;
+
+    // y = gamma * xhat + beta  (gamma/beta [C] → view as [1,C,1,1])
+    Tensor *g = tensor_view(gamma);
+    Tensor *b = tensor_view(beta);
+    tensor_reshape(g, c4, 4);
+    tensor_reshape(b, c4, 4);
+
+    tensor_realloc(out->val, inp->shape, inp->ndim);
+    tensor_mul(out->val, saved_xhat, g);
+    tensor_add(out->val, out->val, b);
+    delete g;
+    delete b;
+}
+
+void BatchNormOp::backward(Tensor *grad_output) {
+    function_var *fv_inp   = inputs[0];
+    function_var *fv_gamma = inputs[1];
+    function_var *fv_beta  = inputs[2];
+
+    const Tensor *inp   = fv_inp->val;
+    const Tensor *gamma = fv_gamma->val;
+
+    u32 N = inp->shape[0], C = inp->shape[1],
+        H = inp->shape[2], W = inp->shape[3];
+    f32 m      = (f32)(N * H * W);
+    bool on_gpu = inp->on_gpu;
+    u32 c4[4]      = { 1, C, 1, 1 };
+    u32 c_shape[1] = { C };
+
+    // std = sqrt(var + eps)  [1,C,1,1]
+    Tensor *std_dev = tensor_add(saved_var, eps);
+    tensor_sqrt(std_dev, std_dev);
+
+    // reduces [N,C,H,W] → [1,C,1,1] by summing over N, H, W
+    auto reduce_nhw = [&](const Tensor *t) -> Tensor * {
+        u32 s1[4] = {N, C, H, 1}, s2[4] = {N, C, 1, 1}, s3[4] = {1, C, 1, 1};
+        Tensor *a = new Tensor(4, s1, on_gpu);
+        Tensor *b = new Tensor(4, s2, on_gpu);
+        Tensor *c = new Tensor(4, s3, on_gpu);
+        tensor_sum(a, t, 3, true);
+        tensor_sum(b, a, 2, true);
+        tensor_sum(c, b, 0, true);
+        delete a;
+        delete b;
+        return c;
+    };
+
+    // d_xhat = grad_output * gamma  [N,C,H,W]
+    Tensor *g_view = tensor_view(gamma);
+    tensor_reshape(g_view, c4, 4);
+    Tensor *d_xhat = tensor_mul(grad_output, g_view);
+    delete g_view;
+
+    // d_beta = sum(grad_output, N,H,W)  → [C]
+    if (fv_beta->flags & FV_FLAG_REQUIERES_GRAD) {
+        if (!fv_beta->grad || !tensor_shape_eq(fv_beta->grad, fv_beta->val)) {
+            delete fv_beta->grad;
+            fv_beta->grad = tensor_create_like(fv_beta->val);
+        }
+        Tensor *db = reduce_nhw(grad_output);
+        tensor_reshape(db, c_shape, 1);
+        tensor_add(fv_beta->grad, fv_beta->grad, db);
+        delete db;
+    }
+
+    // d_gamma = sum(grad_output * xhat, N,H,W)  → [C]
+    if (fv_gamma->flags & FV_FLAG_REQUIERES_GRAD) {
+        if (!fv_gamma->grad || !tensor_shape_eq(fv_gamma->grad, fv_gamma->val)) {
+            delete fv_gamma->grad;
+            fv_gamma->grad = tensor_create_like(fv_gamma->val);
+        }
+        Tensor *tmp = tensor_mul(grad_output, saved_xhat);
+        Tensor *dg  = reduce_nhw(tmp);
+        delete tmp;
+        tensor_reshape(dg, c_shape, 1);
+        tensor_add(fv_gamma->grad, fv_gamma->grad, dg);
+        delete dg;
+    }
+
+    // d_x = (1/std) * (d_xhat - (1/m)*sum(d_xhat) - xhat*(1/m)*sum(d_xhat*xhat))
+    if (fv_inp->flags & FV_FLAG_REQUIERES_GRAD) {
+        if (!fv_inp->grad || !tensor_shape_eq(fv_inp->grad, inp)) {
+            delete fv_inp->grad;
+            fv_inp->grad = tensor_create_like(inp);
+        }
+
+        // (1/m) * sum(d_xhat)  [1,C,1,1]
+        Tensor *mean_dxhat = reduce_nhw(d_xhat);
+        tensor_div(mean_dxhat, mean_dxhat, m);
+
+        // xhat * (1/m) * sum(d_xhat * xhat)  [N,C,H,W]
+        Tensor *tmp          = tensor_mul(d_xhat, saved_xhat);
+        Tensor *mean_dxhat_x = reduce_nhw(tmp);
+        delete tmp;
+        tensor_div(mean_dxhat_x, mean_dxhat_x, m);
+        Tensor *xhat_term = tensor_mul(saved_xhat, mean_dxhat_x);
+        delete mean_dxhat_x;
+
+        // dx = (d_xhat - mean_dxhat - xhat_term) / std
+        Tensor *dx = tensor_sub(d_xhat, mean_dxhat);
+        delete mean_dxhat;
+        tensor_sub(dx, dx, xhat_term);
+        delete xhat_term;
+        tensor_div(dx, dx, std_dev);
+
+        tensor_add(fv_inp->grad, fv_inp->grad, dx);
+        delete dx;
+    }
+
+    delete d_xhat;
+    delete std_dev;
+}
+
 // ── MeanSquareErrorOp ────────────────────────────────────────────────────────
 
 function_var *MeanSquareErrorOp::make_output() {

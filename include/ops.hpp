@@ -90,6 +90,36 @@ struct FlattenOp : function {
     void backward(Tensor *grad_output) override;
 };
 
+// inputs[0] = input [N, C, H, W]
+// inputs[1] = gamma [C]   (scale)
+// inputs[2] = beta  [C]   (shift)
+// output             [N, C, H, W]
+struct BatchNormOp : function {
+    f32 eps;
+    Tensor *saved_mean; // [1,C,1,1] — per-channel mean, broadcast-ready
+    Tensor *saved_var;  // [1,C,1,1] — per-channel Bessel-corrected variance
+    Tensor *saved_xhat; // [N, C, H, W] — normalized input, needed for d_gamma
+
+    BatchNormOp(function_var *input, function_var *gamma, function_var *beta,
+                f32 eps = 1e-5f)
+        : eps(eps), saved_mean(nullptr), saved_var(nullptr), saved_xhat(nullptr) {
+        n_inputs = 3;
+        inputs[0] = input;
+        inputs[1] = gamma;
+        inputs[2] = beta;
+    }
+
+    ~BatchNormOp() {
+        delete saved_mean;
+        delete saved_var;
+        delete saved_xhat;
+    }
+
+    function_var *make_output() override;
+    void forward(function_var *out) override;
+    void backward(Tensor *grad_output) override;
+};
+
 struct MeanSquareErrorOp : function {
     u64 N; // number of elements in the broadcasted diff — set during forward()
 

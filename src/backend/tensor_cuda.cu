@@ -41,6 +41,9 @@ struct ExpOp {
 struct LogOp {
     __device__ f32 operator()(f32 x) const { return logf(x); }
 };
+struct SqrtOp {
+    __device__ f32 operator()(f32 x) const { return sqrtf(x); }
+};
 
 // ── Kernels
 // ───────────────────────────────────────────────────────────────────
@@ -229,6 +232,52 @@ __global__ void tensor_sum_step(u64 size, f32 *out, f32 *tensor) {
     }
     if (threadIdx.x == 0)
         out[blockIdx.x] = partial[0];
+}
+
+__global__ void welford_mean_var(f32 *mean, f32 *var, const f32 *src,
+                                 u64 stride_dim, TensorMeta meta_contig,
+                                 TensorMeta meta_src, u64 other_dims_size) {
+    __shared__ u32 partial_n[N_THREADS];
+    __shared__ f32 partial_mu[N_THREADS];
+    __shared__ f32 partial_M2[N_THREADS];
+
+    u32 c = blockIdx.x;
+    u64 base = c * stride_dim;
+    f32 mu = 0.0f, M2 = 0.0f;
+    u32 n = 0;
+
+    for (u64 i = threadIdx.x; i < other_dims_size; i += blockDim.x) {
+        f32 x = src[base + meta_contig.offset_from(i, meta_src)];
+        n++;
+        f32 delta = x - mu;
+        mu += delta / n;
+        M2 += delta * (delta - delta / n);
+    }
+
+    partial_n[threadIdx.x] = n;
+    partial_mu[threadIdx.x] = mu;
+    partial_M2[threadIdx.x] = M2;
+    __syncthreads();
+
+    for (u32 s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            u32 na = partial_n[threadIdx.x], nb = partial_n[threadIdx.x + s];
+            f32 ua = partial_mu[threadIdx.x], ub = partial_mu[threadIdx.x + s];
+            f32 ma = partial_M2[threadIdx.x], mb = partial_M2[threadIdx.x + s];
+            u32 nc = na + nb;
+            f32 delta = ub - ua;
+            partial_n[threadIdx.x] = nc;
+            partial_mu[threadIdx.x] = ua + delta * ((f32)nb / nc);
+            partial_M2[threadIdx.x] =
+                ma + mb + delta * delta * ((f32)na * nb / nc);
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        mean[c] = partial_mu[0];
+        var[c] = partial_M2[0] / (f32)(partial_n[0] - 1); // Bessel-corrected
+    }
 }
 
 // Each thread owns one output element (one position in the reduced tensor).
@@ -663,6 +712,10 @@ void tensor_cuda_log(Tensor *dst, const Tensor *src) {
     cuda_elementwise_unary(dst, src, LogOp{});
 }
 
+void tensor_cuda_sqrt(Tensor *dst, const Tensor *src) {
+    cuda_elementwise_unary(dst, src, SqrtOp{});
+}
+
 // ---- elementwise binary (add / sub / mul / div)
 // -------------------------- Validation is done by the dispatcher in
 // tensor.cpp before calling here.
@@ -768,6 +821,30 @@ void tensor_cuda_sum(Tensor *out, const Tensor *tensor, u32 dim) {
     TensorMeta tensor_meta(tensor);
     tensor_sum<<<blocks, threads>>>(out_meta, tensor_meta, out->data,
                                     tensor->data, dim);
+}
+
+void tensor_cuda_welford_mean_var(Tensor *mean, Tensor *var, const Tensor *src,
+                                  u32 dim) {
+    u64 other_dims_size = src->size / src->shape[dim];
+
+    TensorMeta meta_contig(src);
+    TensorMeta meta_src(src);
+    meta_contig.ndim = meta_src.ndim = src->ndim - 1;
+    meta_contig.size = meta_src.size = other_dims_size;
+    for (u32 d = 0, o = 0; d < src->ndim; d++) {
+        if (d == dim)
+            continue;
+        meta_contig.shape[o] = src->shape[d];
+        meta_src.shape[o] = src->shape[d];
+        meta_src.stride[o] = src->stride[d];
+        o++;
+    }
+    tensor_compute_strides(meta_contig.stride, meta_contig.shape,
+                           meta_contig.ndim);
+
+    welford_mean_var<<<src->shape[dim], N_THREADS>>>(
+        mean->data, var->data, src->data, src->stride[dim], meta_contig,
+        meta_src, other_dims_size);
 }
 
 void tensor_cuda_max(Tensor *out, const Tensor *tensor) {

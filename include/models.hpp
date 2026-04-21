@@ -66,6 +66,7 @@ struct conv_layer_params {
     Unfold2dParams params;
     bool pool = false;
     Unfold2dParams pool_params = {};
+    bool bn = false;
 };
 
 struct cnn_model {
@@ -86,6 +87,13 @@ struct cnn_model {
     std::vector<function_var *> conv_biased; // after bias add
     std::vector<function_var *> conv_relu;   // after relu
 
+    // BatchNorm parameters (nullptr for layers without BN)
+    std::vector<function_var *> bn_gamma; // [C_out]
+    std::vector<function_var *> bn_beta;  // [C_out]
+
+    // Conv stage intermediates (BN)
+    std::vector<function_var *> bn_out; // nullptr for layers without BN
+
     // Flatten
     FlattenOp *op_flatten;
     function_var *fv_flat;
@@ -98,6 +106,7 @@ struct cnn_model {
     // Conv ops
     std::vector<Conv2dOp *> op_conv;
     std::vector<AddOp *> op_conv_add;
+    std::vector<BatchNormOp *> op_bn; // nullptr for layers without BN
     std::vector<ReluOp *> op_conv_relu;
     std::vector<MaxPool2dOp *> op_pool;
     std::vector<function_var *> pool_out; // nullptr for layers without pooling

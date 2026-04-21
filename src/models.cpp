@@ -202,7 +202,31 @@ cnn_model::cnn_model(Tensor *val_X, Tensor *val_y,
         op_conv_add.push_back(add_b);
         conv_biased.push_back(add_b->make_output());
 
-        ReluOp *relu = new ReluOp(conv_biased[l]);
+        function_var *pre_relu = conv_biased[l];
+        if (spec.bn) {
+            u32 gamma_shape[1] = {C_out};
+            auto *gamma =
+                new function_var(new Tensor(1, gamma_shape, on_gpu),
+                                 FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
+            auto *beta =
+                new function_var(new Tensor(1, gamma_shape, on_gpu),
+                                 FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
+            tensor_fill(gamma->val, 1.0f);
+            bn_gamma.push_back(gamma);
+            bn_beta.push_back(beta);
+
+            BatchNormOp *bn = new BatchNormOp(conv_biased[l], gamma, beta);
+            op_bn.push_back(bn);
+            bn_out.push_back(bn->make_output());
+            pre_relu = bn_out.back();
+        } else {
+            bn_gamma.push_back(nullptr);
+            bn_beta.push_back(nullptr);
+            op_bn.push_back(nullptr);
+            bn_out.push_back(nullptr);
+        }
+
+        ReluOp *relu = new ReluOp(pre_relu);
         op_conv_relu.push_back(relu);
         conv_relu.push_back(relu->make_output());
 
@@ -273,6 +297,9 @@ cnn_model::~cnn_model() {
         delete op;
     for (auto *op : op_conv_add)
         delete op;
+    for (auto *op : op_bn)
+        if (op)
+            delete op;
     for (auto *op : op_conv_relu)
         delete op;
     for (auto *op : op_pool)
@@ -293,6 +320,15 @@ cnn_model::~cnn_model() {
         delete fv;
     for (auto *fv : conv_b)
         delete fv;
+    for (auto *fv : bn_gamma)
+        if (fv)
+            delete fv;
+    for (auto *fv : bn_beta)
+        if (fv)
+            delete fv;
+    for (auto *fv : bn_out)
+        if (fv)
+            delete fv;
     for (auto *fv : dense_Wt)
         delete fv;
     for (auto *fv : dense_b)
@@ -328,6 +364,8 @@ void cnn_model::forward(const Tensor *val_X, const Tensor *val_y) {
     for (u32 l = 0; l < n_conv; l++) {
         op_conv[l]->forward(conv_out[l]);
         op_conv_add[l]->forward(conv_biased[l]);
+        if (op_bn[l])
+            op_bn[l]->forward(bn_out[l]);
         op_conv_relu[l]->forward(conv_relu[l]);
         if (op_pool[l])
             op_pool[l]->forward(pool_out[l]);
