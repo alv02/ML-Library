@@ -4,6 +4,8 @@
 #include "string.h"
 #include <bits/stdc++.h>
 #include <cstdlib>
+#include <cuda_runtime.h>
+
 using namespace std;
 
 // ---- Tensor constructors / destructor ------------------------------------
@@ -13,11 +15,35 @@ Tensor::Tensor(u32 ndim, const u32 *shape, b32 on_gpu) {
     this->on_gpu = on_gpu;
     this->size = 1;
     this->owns_data = true;
+    this->can_modify = true;
 
-    for (u32 i = 0; i < ndim; i++)
-        this->shape[i] = shape[i];
+    memcpy(this->shape, shape, ndim * sizeof(u32));
 
     this->size = tensor_compute_strides(this->stride, this->shape, ndim);
+
+    if (on_gpu) {
+        tensor_cuda_alloc(this);
+    } else {
+        // TODO: tensor_cpu_alloc
+        this->data = (f32 *)malloc(this->size * sizeof(f32));
+        memset(this->data, 0, this->size * sizeof(f32));
+    }
+}
+
+Tensor::Tensor(u32 ndim, const u32 *shape, const u64 *stride, b32 on_gpu) {
+    this->ndim = ndim;
+    this->on_gpu = on_gpu;
+    this->owns_data = true;
+    this->can_modify = true;
+
+    memcpy(this->shape, shape, ndim * sizeof(u32));
+    memcpy(this->stride, stride, ndim * sizeof(u64));
+
+    // Size is the total element count — compute from shape, not strides,
+    // since strides may be non-contiguous (e.g. transposed).
+    this->size = 1;
+    for (u32 i = 0; i < ndim; i++)
+        this->size *= shape[i];
 
     if (on_gpu) {
         tensor_cuda_alloc(this);
@@ -33,9 +59,10 @@ Tensor::Tensor(const Tensor *src) {
     ndim = src->ndim;
     on_gpu = src->on_gpu;
     owns_data = false;
+    can_modify = true;
 
-    memcpy(shape, src->shape, MAX_NDIM * sizeof(u32));
-    memcpy(stride, src->stride, MAX_NDIM * sizeof(u64));
+    memcpy(shape, src->shape, ndim * sizeof(u32));
+    memcpy(stride, src->stride, ndim * sizeof(u64));
 }
 
 Tensor::~Tensor() {
@@ -117,25 +144,95 @@ Tensor *tensor_load(const char *filename, b32 on_gpu) {
     if (!on_gpu)
         return tensor;
 
-    Tensor *gpu = tensor_cuda_to_gpu(tensor);
+    Tensor *gpu = tensor_to_gpu(tensor);
     delete tensor;
     return gpu;
 }
 
+b32 tensor_copy(Tensor *dst, const Tensor *src) {
+    if (!tensor_shape_eq(dst, src)) {
+        printf("tensor_copy: shape mismatch\n");
+        return false;
+    }
+    switch ((dst->on_gpu << 1) | src->on_gpu) {
+    case 0b00:
+        tensor_cpu_copy(dst, src);
+        return true;
+    case 0b11:
+        tensor_cuda_copy(dst, src);
+        return true;
+    default:
+        printf("tensor_copy: tensors must be on the same device\n");
+        return false;
+    }
+}
+
 Tensor *tensor_to_gpu(const Tensor *t) {
-    if (t->on_gpu)
-        return tensor_cuda_copy(t);
-    return tensor_cuda_to_gpu(t);
+    Tensor *dst = new Tensor(t->ndim, t->shape, t->stride, true);
+    cudaMemcpyKind kind =
+        t->on_gpu ? cudaMemcpyDeviceToDevice : cudaMemcpyHostToDevice;
+    cudaMemcpy(dst->data, t->data, t->size * sizeof(f32), kind);
+    return dst;
 }
 
 Tensor *tensor_to_cpu(const Tensor *t) {
-    if (!t->on_gpu) {
-        Tensor *copy = new Tensor(t->ndim, t->shape, false);
-        memcpy(copy->stride, t->stride, t->ndim * sizeof(u64));
-        memcpy(copy->data, t->data, t->size * sizeof(f32));
-        return copy;
+    Tensor *dst = new Tensor(t->ndim, t->shape, t->stride, false);
+    cudaMemcpyKind kind =
+        t->on_gpu ? cudaMemcpyDeviceToHost : cudaMemcpyHostToHost;
+    cudaMemcpy(dst->data, t->data, t->size * sizeof(f32), kind);
+    return dst;
+}
+
+// ---- realloc -------------------------------------------------------------
+
+void tensor_realloc(Tensor *t, const u32 *new_shape, u32 new_ndim) {
+    if (t->ndim == new_ndim) {
+        bool same = true;
+        for (u32 i = 0; i < new_ndim; i++)
+            if (t->shape[i] != new_shape[i]) {
+                same = false;
+                break;
+            }
+        if (same)
+            return;
     }
-    return tensor_cuda_to_cpu(t);
+
+    if (t->owns_data) {
+        if (t->on_gpu)
+            tensor_cuda_free(t);
+        else
+            free(t->data);
+    }
+
+    t->ndim = new_ndim;
+    for (u32 i = 0; i < new_ndim; i++)
+        t->shape[i] = new_shape[i];
+    t->size = tensor_compute_strides(t->stride, t->shape, new_ndim);
+
+    t->owns_data = true;
+    if (t->on_gpu) {
+        tensor_cuda_alloc(t);
+    } else {
+        t->data = (f32 *)malloc(t->size * sizeof(f32));
+        memset(t->data, 0, t->size * sizeof(f32));
+    }
+}
+
+void tensor_contiguous(Tensor *t) {
+    if (tensor_is_contiguous(t))
+        return;
+
+    if (t->on_gpu) {
+        tensor_cuda_contiguous(t);
+    } else {
+        tensor_cpu_contigous(t);
+    }
+}
+
+Tensor *tensor_view(const Tensor *src) { return new Tensor(src); }
+
+Tensor *tensor_create_like(const Tensor *src) {
+    return new Tensor(src->ndim, src->shape, src->on_gpu);
 }
 
 // ---- Metadata / shape helpers (device-independent) -----------------------
@@ -187,12 +284,6 @@ b32 tensor_reshape(Tensor *tensor, const u32 *shape, u32 ndim) {
     tensor->ndim = ndim;
     tensor_compute_strides(tensor->stride, tensor->shape, ndim);
     return true;
-}
-
-Tensor *tensor_view(const Tensor *src) { return new Tensor(src); }
-
-Tensor *tensor_create_like(const Tensor *src) {
-    return new Tensor(src->ndim, src->shape, src->on_gpu);
 }
 
 void tensor_print(const Tensor *tensor) {
@@ -340,72 +431,6 @@ static b32 check_broadcast(const Tensor *out, const Tensor *a, const Tensor *b,
         }
     }
     return true;
-}
-
-// ---- realloc -------------------------------------------------------------
-
-void tensor_realloc(Tensor *t, const u32 *new_shape, u32 new_ndim) {
-    if (t->ndim == new_ndim) {
-        bool same = true;
-        for (u32 i = 0; i < new_ndim; i++)
-            if (t->shape[i] != new_shape[i]) {
-                same = false;
-                break;
-            }
-        if (same)
-            return;
-    }
-
-    if (t->owns_data) {
-        if (t->on_gpu)
-            tensor_cuda_free(t);
-        else
-            free(t->data);
-    }
-
-    t->ndim = new_ndim;
-    for (u32 i = 0; i < new_ndim; i++)
-        t->shape[i] = new_shape[i];
-    t->size = tensor_compute_strides(t->stride, t->shape, new_ndim);
-
-    t->owns_data = true;
-    if (t->on_gpu) {
-        tensor_cuda_alloc(t);
-    } else {
-        t->data = (f32 *)malloc(t->size * sizeof(f32));
-        memset(t->data, 0, t->size * sizeof(f32));
-    }
-}
-
-// ---- copy ----------------------------------------------------------------
-
-void tensor_copy(Tensor *dst, const Tensor *src) {
-    switch ((dst->on_gpu << 1) | src->on_gpu) {
-    case 0b00:
-        tensor_cpu_copy(dst, src);
-        break;
-    default:
-        tensor_cuda_copy(dst, src);
-        break;
-    }
-}
-
-void tensor_contiguous(Tensor *t) {
-    if (tensor_is_contiguous(t))
-        return;
-    Tensor *tmp = new Tensor(t->ndim, t->shape, t->on_gpu);
-    tensor_copy(tmp, t);
-    if (t->owns_data) {
-        if (t->on_gpu)
-            tensor_cuda_free(t);
-        else
-            free(t->data);
-    }
-    t->data = tmp->data;
-    memcpy(t->stride, tmp->stride, t->ndim * sizeof(u64));
-    t->owns_data = true;
-    tmp->owns_data = false;
-    delete tmp;
 }
 
 // ---- fill / clear --------------------------------------------------------
@@ -788,7 +813,8 @@ b32 tensor_log_softmax(Tensor *out, const Tensor *in) {
     row_shape[col_dim] = 1;
 
     Tensor *row_max = new Tensor(in->ndim, row_shape, in->on_gpu);
-    Tensor *row_lse = new Tensor(in->ndim, row_shape, in->on_gpu); // log-sum-exp
+    Tensor *row_lse =
+        new Tensor(in->ndim, row_shape, in->on_gpu); // log-sum-exp
 
     tensor_max(row_max, in, col_dim, true);  // max(x)        [N,1]
     tensor_sub(out, in, row_max);            // x - max(x)    [N,C]
@@ -1176,8 +1202,8 @@ b32 tensor_welford_mean_var(Tensor *mean, Tensor *var, const Tensor *src,
     }
     switch ((mean->on_gpu << 1) | src->on_gpu) {
     case 0b00:
-        printf("tensor_welford_mean_var: CPU not supported yet\n");
-        return false;
+        tensor_cpu_welford_mean_var(mean, var, src, dim);
+        return true;
     case 0b11:
         tensor_cuda_welford_mean_var(mean, var, src, dim);
         return true;
@@ -1304,7 +1330,8 @@ Unfold2dParams::Unfold2dParams(u32 k, u32 stride, u32 pad, u32 dil,
 // ---- spatial / patch operations ------------------------------------------
 b32 tensor_unfold2d(Tensor *out, const Tensor *input, Unfold2dParams params) {
     if (input->ndim != 4) {
-        printf("tensor_unfold2d: input must be 4-dimensional [N,C,H,W], got %u dims\n",
+        printf("tensor_unfold2d: input must be 4-dimensional [N,C,H,W], got %u "
+               "dims\n",
                input->ndim);
         return false;
     }
@@ -1338,7 +1365,8 @@ b32 tensor_unfold2d(Tensor *out, const Tensor *input, Unfold2dParams params) {
 
 Tensor *tensor_unfold2d(const Tensor *input, Unfold2dParams params) {
     if (input->ndim != 4) {
-        printf("tensor_unfold2d: input must be 4-dimensional [N,C,H,W], got %u dims\n",
+        printf("tensor_unfold2d: input must be 4-dimensional [N,C,H,W], got %u "
+               "dims\n",
                input->ndim);
         return nullptr;
     }

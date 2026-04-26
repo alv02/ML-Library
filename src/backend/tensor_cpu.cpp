@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <random>
+#include <vector>
 
 // ---- copy ----------------------------------------------------------------
 
@@ -11,10 +12,22 @@ void tensor_cpu_copy(Tensor *dst, const Tensor *src) {
         memcpy(dst->data, src->data, src->size * sizeof(f32));
         return;
     }
-    tensorIterator dst_iter(dst->ndim, dst->shape, dst->stride);
-    tensorIterator src_iter(src->ndim, src->shape, src->stride);
-    for (u64 i = 0; i < dst->size; i++)
-        dst->data[dst_iter.next()] = src->data[src_iter.next()];
+    tensorIterator dst_it(dst->ndim, dst->shape, dst->stride);
+    tensorIterator src_it(src->ndim, src->shape, src->stride);
+    while (src_it.has_next())
+        dst->data[dst_it.next()] = src->data[src_it.next()];
+}
+
+void tensor_cpu_contigous(Tensor *t) {
+    Tensor *temp_contig = tensor_create_like(t);
+
+    tensorIterator src_iter(t->ndim, t->shape, t->stride);
+    for (u64 i = 0; i < temp_contig->size; i++)
+        temp_contig->data[i] = t->data[src_iter.next()];
+
+    memcpy(t->data, temp_contig->data, t->size * sizeof(f32));
+    tensor_compute_strides(t->stride, t->shape, t->ndim);
+    delete temp_contig;
 }
 
 // ---- fill / clear --------------------------------------------------------
@@ -332,6 +345,38 @@ void tensor_cpu_argmax(Tensor *out, const Tensor *tensor, u32 dim) {
     }
 
     delete max_vals;
+}
+
+// ---- welford mean+var ----------------------------------------------------
+
+void tensor_cpu_welford_mean_var(Tensor *mean, Tensor *var, const Tensor *src,
+                                  u32 dim) {
+    u32 C = src->shape[dim];
+
+    std::vector<f32> mu(C, 0.0f), M2(C, 0.0f);
+    std::vector<u32> n(C, 0);
+
+    // stride=1 on dim, 0 on all others: ch_it.next() returns the channel
+    // index c for each element — same stride=0 trick as tensor_cpu_sum.
+    u64 ch_strides[MAX_NDIM] = {};
+    ch_strides[dim] = 1;
+
+    tensorIterator in_it(src->ndim, src->shape, src->stride);
+    tensorIterator ch_it(src->ndim, src->shape, ch_strides);
+
+    while (in_it.has_next()) {
+        u32 c = (u32)ch_it.next();
+        f32 x = src->data[in_it.next()];
+        n[c]++;
+        f32 delta = x - mu[c];
+        mu[c] += delta / (f32)n[c];
+        M2[c] += delta * (x - mu[c]);
+    }
+
+    for (u32 c = 0; c < C; c++) {
+        mean->data[c] = mu[c];
+        var->data[c]  = M2[c] / (f32)(n[c] - 1); // Bessel-corrected
+    }
 }
 
 // ---- scattering ----------------------------------------------------------

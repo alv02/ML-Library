@@ -214,44 +214,37 @@ void Conv2dOp::backward(Tensor *grad_output) {
     u32 C_out = kernels->val->shape[1];
     u32 L = params.L_h * params.L_w;
 
-    // Reshapes grad_output [N, C_out, L_h, L_w] → [N*L, C_out]
-    auto flat_grad = [&]() -> Tensor * {
-        const u32 shape3[3] = {N, C_out, L};
-        Tensor *g = tensor_view(grad_output);
-        tensor_reshape(g, shape3, 3);
-        tensor_transpose(g, 1, 2);
-        const u32 shape2[2] = {N * L, C_out};
-        tensor_reshape(g, shape2, 2);
-        return g;
-    };
+    // Reshape grad_output [N, C_out, L_h, L_w] → [N*L, C_out] in-place
+    const u32 shape3[3] = {N, C_out, L};
+    tensor_reshape(grad_output, shape3, 3);
+    tensor_transpose(grad_output, 1, 2);
+    tensor_contiguous(grad_output);
+    const u32 shape2[2] = {N * L, C_out};
+    tensor_reshape(grad_output, shape2, 2);
 
-    // dInput = flat_grad @ kernels^T  →  fold2d  →  [N, C, H, W]
+    // dInput = grad_output @ kernels^T  →  fold2d  →  [N, C, H, W]
     if (input->flags & FV_FLAG_REQUIERES_GRAD) {
         if (!input->grad || !tensor_shape_eq(input->grad, input->val)) {
             delete input->grad;
             input->grad = tensor_create_like(input->val);
         }
-        Tensor *g = flat_grad();
         Tensor *kernels_t = tensor_view(kernels->val);
         tensor_transpose(kernels_t, 0, 1);
-        Tensor *col = tensor_mat_mul(g, kernels_t);
+        Tensor *col = tensor_mat_mul(grad_output, kernels_t);
         tensor_fold2d(input->grad, col, params);
-        delete g;
         delete kernels_t;
         delete col;
     }
 
-    // dW = col^T @ flat_grad  →  [C*kH*kW, C_out]
+    // dW = col^T @ grad_output  →  [C*kH*kW, C_out]
     if (kernels->flags & FV_FLAG_REQUIERES_GRAD) {
         if (!kernels->grad || !tensor_shape_eq(kernels->grad, kernels->val)) {
             delete kernels->grad;
             kernels->grad = tensor_create_like(kernels->val);
         }
-        Tensor *g = flat_grad();
         Tensor *col_t = tensor_view(saved_col);
         tensor_transpose(col_t, 0, 1);
-        tensor_mat_mul(kernels->grad, col_t, g, false);
-        delete g;
+        tensor_mat_mul(kernels->grad, col_t, grad_output, false);
         delete col_t;
     }
 }
@@ -327,15 +320,14 @@ void MaxPool2dOp::backward(Tensor *grad_output) {
     u32 L = params.L_h * params.L_w;
 
     // Reverse forward transpose: [N, C, L_h, L_w] → [N, L, C, 1]
-    Tensor *g = tensor_view(grad_output);
-    tensor_transpose(g, 2, 3); // [N, C, L_w, L_h]
-    tensor_transpose(g, 1, 3); // [N, L_h, L_w, C]
+    tensor_transpose(grad_output, 2, 3);
+    tensor_transpose(grad_output, 1, 3);
+    tensor_contiguous(grad_output);
     u32 shape_nlc1[4] = {N, L, C, 1};
-    tensor_reshape(g, shape_nlc1, 4);
+    tensor_reshape(grad_output, shape_nlc1, 4);
 
     // route grads to max positions → [N, L, C, K]
-    Tensor *scattered = tensor_scatter_add(g, saved_max_idx, 3, K);
-    delete g;
+    Tensor *scattered = tensor_scatter_add(grad_output, saved_max_idx, 3, K);
 
     // [N, L, C, K] → [N, L, C*K]
     u32 shape_nlck[3] = {N, L, C * K};
@@ -365,14 +357,17 @@ function_var *FlattenOp::make_output() {
 void FlattenOp::forward(function_var *out) {
     const Tensor *inp = inputs[0]->val;
     saved_ndim = inp->ndim;
-    // TODO: Use memcpy or some helper function
-    for (u32 i = 0; i < inp->ndim; i++)
-        saved_shape[i] = inp->shape[i];
+    memcpy(saved_shape, inp->shape, inp->ndim * sizeof(u32));
     u32 N = inp->shape[0];
     u32 flat = (u32)(inp->size / N);
     u32 flat_shape[2] = {N, flat};
     tensor_realloc(out->val, flat_shape, 2);
+
+    // Temporarily reshape out->val to inp's shape so tensor_copy sees matching
+    // shapes (handles inp's strides), then reshape back to [N, flat].
+    tensor_reshape(out->val, inp->shape, inp->ndim);
     tensor_copy(out->val, inp);
+    tensor_reshape(out->val, flat_shape, 2);
 }
 
 void FlattenOp::backward(Tensor *grad_output) {

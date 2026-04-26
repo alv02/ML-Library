@@ -55,14 +55,8 @@ struct TensorMeta {
 
 void tensor_cuda_alloc(Tensor *tensor);
 void tensor_cuda_free(Tensor *tensor);
-Tensor *tensor_cuda_to_gpu(const Tensor *t_cpu);
-Tensor *tensor_cuda_to_cpu(const Tensor *t_gpu);
-Tensor *tensor_cuda_copy(const Tensor *t_gpu);
-
-// ---- copy (into existing tensor) ----------------------------------------
-
 void tensor_cuda_copy(Tensor *dst, const Tensor *src);
-
+void tensor_cuda_contiguous(Tensor *t);
 // ---- fill / clear --------------------------------------------------------
 
 void tensor_cuda_fill(Tensor *tensor, f32 value);

@@ -2,6 +2,7 @@
 #define TENSOR_HPP
 
 #define MAX_NDIM 8
+#include "backend/cuda_mem_arena.hpp"
 #include "base.hpp"
 
 #define ROW_DIM(t) ((t)->ndim - 2)
@@ -15,11 +16,12 @@ struct Tensor {
     u32 ndim;             // number of active dimensions
     u64 size;             // total number of elements (product of shape)
     b32 on_gpu;           // true if data lives on the GPU
-    b32 owns_data; // if false, data is borrowed (view) — destructor won't free
-                   // it
+    b32 owns_data;  // if false, destructor won't free data (borrowed/arena)
+    b32 can_modify; // if false, writing to this tensor is an error
 
     // Allocates a zero-filled buffer of the given shape on CPU or GPU.
     Tensor(u32 ndim, const u32 *shape, b32 on_gpu);
+    Tensor(u32 ndim, const u32 *shape, const u64 *stride, b32 on_gpu);
     // Creates a view: shares the same data pointer, owns_data=false.
     Tensor(const Tensor *src);
     ~Tensor();
@@ -65,10 +67,23 @@ struct Unfold2dParams {
 // Loads a .npy file (version 1, float32, C-order) into a new Tensor.
 // If on_gpu=true the data is transferred to the GPU after loading.
 Tensor *tensor_load(const char *filename, b32 on_gpu);
-// Returns a new GPU copy of t (no-op copy if already on GPU).
+// Copies elements from src into dst. Shapes must match, both tensors must be
+// on the same device. Handles non-contiguous strides on both sides.
+b32 tensor_copy(Tensor *dst, const Tensor *src);
+// Returns a new GPU tensor with the same data and layout as t.
+// Works whether t is on CPU (H2D) or GPU (D2D).
 Tensor *tensor_to_gpu(const Tensor *t);
-// Returns a new CPU copy of t (no-op copy if already on CPU).
+// Returns a new CPU tensor with the same data and layout as t.
+// Works whether t is on GPU (D2H) or CPU (H2H).
 Tensor *tensor_to_cpu(const Tensor *t);
+
+void tensor_realloc(Tensor *t, const u32 *new_shape, u32 new_ndim);
+void tensor_contiguous(Tensor *t);
+// Creates a view of src: same data pointer, same shape/strides,
+// owns_data=false.
+Tensor *tensor_view(const Tensor *src);
+// Allocates a new zero-filled tensor with the same shape and device as src.
+Tensor *tensor_create_like(const Tensor *src);
 
 // ---- metadata / shape helpers (device-independent) -----------------------
 
@@ -104,28 +119,9 @@ void expanded_shape(const Tensor *t, u32 expanded_ndim, u32 *t_expanded_shape);
 // t.stride=[5,1], expanded_ndim=3 → [0, 0, 1].
 void expanded_stride(const Tensor *t, u32 expanded_ndim,
                      u64 *t_expanded_stride);
-// Creates a view of src: same data pointer, same shape/strides,
-// owns_data=false.
-Tensor *tensor_view(const Tensor *src);
-// Allocates a new zero-filled tensor with the same shape and device as src.
-Tensor *tensor_create_like(const Tensor *src);
+
 // Prints shape and strides to stdout.
 void tensor_print(const Tensor *tensor);
-
-// ---- realloc -------------------------------------------------------------
-
-// Reallocates t's data buffer if the new shape has a different total size or
-// ndim. No-op (keeps existing buffer) if the shape already matches.
-void tensor_realloc(Tensor *t, const u32 *new_shape, u32 new_ndim);
-
-// ---- copy ----------------------------------------------------------------
-
-// Copies all elements from src into dst. Shapes must match. Handles CPU↔GPU
-// transfers.
-void tensor_copy(Tensor *dst, const Tensor *src);
-// If t is non-contiguous, copies its data into a new contiguous buffer and
-// frees the old one (if owned). No-op if already contiguous.
-void tensor_contiguous(Tensor *t);
 
 // ---- fill / clear --------------------------------------------------------
 

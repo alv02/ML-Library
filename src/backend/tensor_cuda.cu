@@ -70,9 +70,9 @@ __global__ void elementwise_unary(u64 size, f32 *out, const f32 *a, Op op) {
 // out_contig's contiguous strides. out_actual and a_meta carry the real
 // (potentially non-contiguous) strides used to compute physical offsets.
 template <typename Op>
-__global__ void
-elementwise_unary_strided(TensorMeta out_contig, TensorMeta out_actual,
-                          TensorMeta a_meta, f32 *out, const f32 *a, Op op) {
+__global__ void elementwise_unary(TensorMeta out_contig, TensorMeta out_actual,
+                                  TensorMeta a_meta, f32 *out, const f32 *a,
+                                  Op op) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= out_contig.size)
         return;
@@ -122,10 +122,9 @@ __global__ void elementwise_binary(u64 size, f32 *out, const f32 *a, f32 b,
 
 // Strided path for scalar ops when out or a is non-contiguous.
 template <typename Op>
-__global__ void elementwise_scalar_strided(TensorMeta out_contig,
-                                           TensorMeta out_actual,
-                                           TensorMeta a_meta, f32 *out,
-                                           const f32 *a, f32 scalar, Op op) {
+__global__ void elementwise(TensorMeta out_contig, TensorMeta out_actual,
+                            TensorMeta a_meta, f32 *out, const f32 *a,
+                            f32 scalar, Op op) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= out_contig.size)
         return;
@@ -134,14 +133,17 @@ __global__ void elementwise_scalar_strided(TensorMeta out_contig,
     out[out_offset] = op(a[a_offset], scalar);
 }
 
-// ---- copy (strided, D2D) -------------------------------------------------
+__global__ void tensor_contiguous(TensorMeta contig_meta,
+                                  TensorMeta actual_meta, f32 *dst, f32 *src) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (workIdx >= contig_meta.size)
+        return;
+    u64 src_offset = contig_meta.offset_from(workIdx, actual_meta);
+    dst[workIdx] = src[src_offset];
+}
 
-// Stride-aware D2D copy kernel. Same decomposition trick as the other strided
-// kernels: out_contig decomposes workIdx, out_actual and src_meta give the
-// physical write/read offsets.
-__global__ void tensor_copy_strided(TensorMeta out_contig,
-                                    TensorMeta out_actual, TensorMeta src_meta,
-                                    f32 *dst, const f32 *src) {
+__global__ void tensor_copy(TensorMeta out_contig, TensorMeta out_actual,
+                            TensorMeta src_meta, f32 *dst, const f32 *src) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= out_contig.size)
         return;
@@ -526,8 +528,8 @@ static void cuda_elementwise_unary(Tensor *out, const Tensor *a, Op op) {
     TensorMeta out_contig = make_contig_meta(out);
     TensorMeta out_actual(out);
     TensorMeta a_meta(a);
-    elementwise_unary_strided<<<blocks, threads>>>(
-        out_contig, out_actual, a_meta, out->data, a->data, op);
+    elementwise_unary<<<blocks, threads>>>(out_contig, out_actual, a_meta,
+                                           out->data, a->data, op);
 }
 
 // Fast path: all three tensors same shape and contiguous — plain flat
@@ -568,8 +570,8 @@ static void cuda_elementwise_scalar(Tensor *out, const Tensor *a, f32 scalar,
     TensorMeta out_contig = make_contig_meta(out);
     TensorMeta out_actual(out);
     TensorMeta a_meta(a);
-    elementwise_scalar_strided<<<blocks, threads>>>(
-        out_contig, out_actual, a_meta, out->data, a->data, scalar, op);
+    elementwise<<<blocks, threads>>>(out_contig, out_actual, a_meta, out->data,
+                                     a->data, scalar, op);
 }
 
 // ── TensorMeta
@@ -593,95 +595,44 @@ TensorMeta::TensorMeta(const Tensor *t, const u32 *bcast_shape, u32 bcast_ndim)
 // ------------------------
 
 void tensor_cuda_alloc(Tensor *tensor) {
-    cudaMalloc(&tensor->data, sizeof(f32) * tensor->size);
-    cudaMemset(tensor->data, 0, sizeof(f32) * tensor->size);
+    cudaMallocAsync(&tensor->data, sizeof(f32) * tensor->size, 0);
+    cudaMemsetAsync(tensor->data, 0, sizeof(f32) * tensor->size);
 }
 
-void tensor_cuda_free(Tensor *tensor) { cudaFree(tensor->data); }
+void tensor_cuda_free(Tensor *tensor) { cudaFreeAsync(tensor->data, 0); }
 
-Tensor *tensor_cuda_to_gpu(const Tensor *t_cpu) {
-    Tensor *t_gpu = new Tensor(t_cpu->ndim, t_cpu->shape, true);
-    memcpy(t_gpu->stride, t_cpu->stride, t_cpu->ndim * sizeof(u64));
-    cudaMemcpy(t_gpu->data, t_cpu->data, t_cpu->size * sizeof(f32),
-               cudaMemcpyHostToDevice);
-    return t_gpu;
-}
-
-Tensor *tensor_cuda_to_cpu(const Tensor *t_gpu) {
-    Tensor *t_cpu = new Tensor(t_gpu->ndim, t_gpu->shape, false);
-    memcpy(t_cpu->stride, t_gpu->stride, t_gpu->ndim * sizeof(u64));
-    cudaMemcpy(t_cpu->data, t_gpu->data, t_gpu->size * sizeof(f32),
-               cudaMemcpyDeviceToHost);
-    return t_cpu;
-}
-
-Tensor *tensor_cuda_copy(const Tensor *t_gpu) {
-    Tensor *copy = new Tensor(t_gpu->ndim, t_gpu->shape, true);
-    memcpy(copy->stride, t_gpu->stride, t_gpu->ndim * sizeof(u64));
-    cudaMemcpy(copy->data, t_gpu->data, t_gpu->size * sizeof(f32),
-               cudaMemcpyDeviceToDevice);
-    return copy;
-}
-
-// ---- copy (into existing tensor) ----------------------------------------
-
-// D2D strided copy: handles non-contiguous dst and/or src on the same device.
-//
-// Two paths:
-//   dst contiguous — iterate over src elements using src's ndim/strides, write
-//   dst at flat index workIdx. Passing src_contig as both out_contig and
-//   out_actual makes offset_from return workIdx for the dst address. This is
-//   the correct path when dst and src have different ndims (e.g. FlattenOp
-//   copies a 4D non-contiguous pool output into a 2D contiguous flat tensor).
-//
-//   dst non-contiguous — iterate using dst's ndim (same ndim as src in this
-//   codebase; this path is taken by tensor_contiguous which always preserves
-//   ndim).
-static void cuda_copy_d2d_strided(Tensor *dst, const Tensor *src) {
-    u32 threads = N_THREADS;
-    u32 blocks = cuda::ceil_div(dst->size, (u64)threads);
-    if (tensor_is_contiguous(dst)) {
-        TensorMeta src_contig = make_contig_meta(src);
-        TensorMeta src_actual(src);
-        tensor_copy_strided<<<blocks, threads>>>(
-            src_contig, src_contig, src_actual, dst->data, src->data);
-    } else {
-        TensorMeta dst_contig = make_contig_meta(dst);
-        TensorMeta dst_actual(dst);
-        TensorMeta src_meta(src);
-        tensor_copy_strided<<<blocks, threads>>>(
-            dst_contig, dst_actual, src_meta, dst->data, src->data);
-    }
-}
-
-// Selects cudaMemcpyKind from the two on_gpu flags packed into a 2-bit key:
-//   bit1 = dst->on_gpu, bit0 = src->on_gpu → 00=H2H, 01=D2H, 10=H2D,
-//   11=D2D.
-// For D2D with non-contiguous tensors the stride-aware kernel is used
-// instead of cudaMemcpy (which would copy the flat buffer in the wrong
-// order).
 void tensor_cuda_copy(Tensor *dst, const Tensor *src) {
-    if (dst->on_gpu && src->on_gpu &&
-        (!tensor_is_contiguous(dst) || !tensor_is_contiguous(src))) {
-        cuda_copy_d2d_strided(dst, src);
+    if (tensor_is_contiguous(dst) && tensor_is_contiguous(src)) {
+        cudaMemcpy(dst->data, src->data, src->size * sizeof(f32),
+                   cudaMemcpyDeviceToDevice);
         return;
     }
-    cudaMemcpyKind kind;
-    switch ((dst->on_gpu << 1) | src->on_gpu) {
-    case 0b00:
-        kind = cudaMemcpyHostToHost;
-        break;
-    case 0b01:
-        kind = cudaMemcpyDeviceToHost;
-        break;
-    case 0b10:
-        kind = cudaMemcpyHostToDevice;
-        break;
-    case 0b11:
-        kind = cudaMemcpyDeviceToDevice;
-        break;
-    }
-    cudaMemcpy(dst->data, src->data, src->size * sizeof(f32), kind);
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(dst->size, (u64)threads);
+    TensorMeta out_contig = make_contig_meta(dst);
+    TensorMeta out_actual(dst);
+    TensorMeta src_meta(src);
+    tensor_copy<<<blocks, threads>>>(out_contig, out_actual, src_meta,
+                                     dst->data, src->data);
+}
+
+void tensor_cuda_contiguous(Tensor *t) {
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(t->size, (u64)threads);
+
+    TensorMeta src_meta = TensorMeta(t);
+    TensorMeta src_contig = make_contig_meta(t);
+
+    Tensor *temp_contig = tensor_create_like(t);
+
+    tensor_contiguous<<<blocks, threads>>>(src_contig, src_meta,
+                                           temp_contig->data, t->data);
+
+    cudaMemcpy(t->data, temp_contig->data, t->size * sizeof(f32),
+               cudaMemcpyDeviceToDevice);
+    tensor_compute_strides(t->stride, t->shape, t->ndim);
+
+    delete temp_contig;
 }
 
 // ---- fill / clear

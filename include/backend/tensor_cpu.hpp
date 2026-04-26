@@ -3,10 +3,8 @@
 
 #include "../tensor.hpp"
 
-// ---- copy ----------------------------------------------------------------
-
-// Raw memcpy of the data buffer. Shapes must already match.
 void tensor_cpu_copy(Tensor *dst, const Tensor *src);
+void tensor_cpu_contigous(Tensor *t);
 
 // ---- fill / clear --------------------------------------------------------
 
@@ -55,6 +53,11 @@ void tensor_cpu_max(Tensor *out, const Tensor *tensor);
 void tensor_cpu_max(Tensor *out, const Tensor *tensor, u32 dim);
 // Returns the index (as f32) of the max value along dim.
 void tensor_cpu_argmax(Tensor *out, const Tensor *tensor, u32 dim);
+
+// ---- welford mean+var ----------------------------------------------------
+
+void tensor_cpu_welford_mean_var(Tensor *mean, Tensor *var, const Tensor *src,
+                                  u32 dim);
 
 // ---- scattering ----------------------------------------------------------
 void tensor_cpu_scatter_add(Tensor *out, const Tensor *src,
