@@ -6,6 +6,9 @@
 #include <cstdio>
 
 int main() {
+    CudaMemArena perm_arena(MiB(64));
+    CudaMemArena batch_arena(GiB(1));
+
     Tensor val_X = tensor_load("./data/cifar_X_train.npy", true);
     Tensor val_y = tensor_load("./data/cifar_y_train.npy", true);
     Tensor test_val_X = tensor_load("./data/cifar_X_test.npy", true);
@@ -25,40 +28,44 @@ int main() {
     tensor_print(val_X.impl());
 
     // 784 → 1024 → 512 → 256 → 10
-    nn_model model(flat_dim, {1024, 512, 256, 10}, true);
-    sgd optim(model.parameters(), 0.01f, 1e-4f, 0.9f);
+    nn_model model(flat_dim, {1024, 512, 256, 10}, true, &perm_arena);
+    sgd optim(model.parameters(), 0.01f, 1e-4f, 0.9f, &perm_arena);
     DataLoader loader(val_X, val_y, 128);
 
-    Var last_loss;
     for (int epoch = 0; epoch < 50; epoch++) {
         loader.shuffle();
         Tensor Xb, yb;
-        while (loader.next(Xb, yb)) {
-            last_loss = model.forward(Var(Xb), Var(yb));
-            backward(last_loss);
-            optim.step();
+        while (true) {
+            cuda_arena_clear(&batch_arena);
+            if (!loader.next(Xb, yb, &batch_arena))
+                break;
+            Var loss = model.forward(Var(Xb), Var(yb), &batch_arena);
+            backward(loss, &batch_arena);
+            optim.step(&batch_arena);
             optim.zero_grad();
-        }
-        if (epoch % 5 == 0) {
-            Tensor loss_cpu = tensor_to_cpu(last_loss->data);
-            printf("Epoch %2d  loss: %.4f\n", epoch, loss_cpu->data()[0]);
         }
     }
 
-    Var test_logits = model.predict(Var(test_val_X));
-    Var test_loss = model.forward(Var(test_val_X), Var(test_val_y));
-    Tensor loss_cpu = tensor_to_cpu(test_loss->data);
-    printf("\nTest loss:     %.4f\n", loss_cpu->data()[0]);
-    printf("Test accuracy: %.2f%%\n",
-           accuracy(test_logits->data, test_val_y) * 100.0f);
+    DataLoader test_loader(test_val_X, test_val_y, 256);
+    f32 total_acc = 0.0f, total_loss = 0.0f;
+    u32 n_batches = 0;
+    Tensor Xb_test, yb_test;
+    while (true) {
+        cuda_arena_clear(&batch_arena);
+        if (!test_loader.next(Xb_test, yb_test, &batch_arena))
+            break;
+        Var logits = model.predict(Var(Xb_test), &batch_arena);
+        Var loss = model.forward(Var(Xb_test), Var(yb_test), &batch_arena);
+        Tensor lc = tensor_to_cpu(loss->data);
+        total_loss += lc->data()[0];
+        total_acc += accuracy(logits->data, yb_test);
+        n_batches++;
+    }
+    printf("\nTest loss:     %.4f\n", total_loss / n_batches);
+    printf("Test accuracy: %.2f%%\n", total_acc / n_batches * 100.0f);
 
     tensor_reshape(val_X, orig_train_shape, 4);
     tensor_reshape(test_val_X, orig_test_shape, 4);
-
-    printf("\n--- Wrong predictions ---\n");
-    visualize_wrong(test_val_X, test_logits->data, test_val_y, 5);
-    printf("\n--- Correct predictions ---\n");
-    visualize_correct(test_val_X, test_logits->data, test_val_y, 3);
 
     return 0;
 }

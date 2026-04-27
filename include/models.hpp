@@ -7,19 +7,21 @@
 struct linear_model {
     Var W, b;
 
-    linear_model(u32 n_features, bool on_gpu);
+    linear_model(u32 n_features, bool on_gpu,
+                 CudaMemArena *perm_arena = nullptr);
     std::vector<Var> parameters() const { return {W, b}; }
-    Var predict(Var X);
-    Var forward(Var X, Var y);
+    Var predict(Var X, CudaMemArena *arena = nullptr);
+    Var forward(Var X, Var y, CudaMemArena *arena = nullptr);
 };
 
 struct nn_model {
     std::vector<Var> Wt, b;
 
-    nn_model(u32 in_features, const std::vector<u32> &layer_sizes, bool on_gpu);
+    nn_model(u32 in_features, const std::vector<u32> &layer_sizes, bool on_gpu,
+             CudaMemArena *perm_arena = nullptr);
     std::vector<Var> parameters() const;
-    Var predict(Var X);
-    Var forward(Var X, Var y);
+    Var predict(Var X, CudaMemArena *arena = nullptr);
+    Var forward(Var X, Var y, CudaMemArena *arena = nullptr);
 };
 
 struct conv_layer_params {
@@ -43,11 +45,12 @@ struct cnn_model {
     // C_in, H, W: input spatial shape — needed to compute flat_features at init
     cnn_model(u32 C_in, u32 H, u32 W, bool on_gpu,
               const std::vector<conv_layer_params> &conv_layers,
-              const std::vector<u32> &dense_sizes);
+              const std::vector<u32> &dense_sizes,
+              CudaMemArena *perm_arena = nullptr);
 
     std::vector<Var> parameters() const;
-    Var predict(Var X);
-    Var forward(Var X, Var y);
+    Var predict(Var X, CudaMemArena *arena = nullptr);
+    Var forward(Var X, Var y, CudaMemArena *arena = nullptr);
 };
 
 #endif

@@ -13,7 +13,7 @@ Var::Var(Tensor data, u32 flags) {
     impl_->grad_fn = nullptr;
 }
 
-void backward(Var loss) {
+void backward(Var loss, CudaMemArena *arena) {
     std::vector<Var> order;
     std::unordered_set<VarImpl *> visited;
 
@@ -30,7 +30,7 @@ void backward(Var loss) {
     std::reverse(order.begin(), order.end());
 
     u32 one_shape[] = {1};
-    loss->grad = Tensor::make(1, one_shape, loss->data->on_gpu());
+    loss->grad = Tensor::make(1, one_shape, loss->data->on_gpu(), arena);
     tensor_fill(loss->grad, 1.0f);
 
     for (auto &v : order)

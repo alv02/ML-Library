@@ -6,6 +6,18 @@
 #include <cstdio>
 
 int main() {
+    // Permanent arena: model parameters + SGD velocity tensors.
+    // Size this to comfortably hold all parameters; 256 MB is plenty for
+    // the conv net below (~30 MB of parameters).
+    CudaMemArena perm_arena(MiB(256));
+
+    // Batch arena: intermediate tensors created during each forward/backward
+    // pass.  Cleared at the top of every iteration so it effectively acts as
+    // a stack-of-stacks for the current batch.  Unlike cudaMalloc, the arena
+    // cannot reuse freed blocks, so it must hold the entire forward+backward
+    // working set at once.
+    CudaMemArena batch_arena(GiB(4));
+
     Tensor val_X      = tensor_load("data/X_train.npy", true);
     Tensor val_y      = tensor_load("data/y_train.npy", true);
     Tensor test_val_X = tensor_load("data/X_test.npy",  true);
@@ -27,52 +39,56 @@ int main() {
                         {128, Unfold2dParams(3, 2, 1)},
                         {256, Unfold2dParams(3, 2, 1)},
                     },
-                    {512, 10});
+                    {512, 10},
+                    &perm_arena);
 
-    sgd optim(model.parameters(), 0.01f, 1e-4f, 0.9f);
+    sgd optim(model.parameters(), 0.01f, 1e-4f, 0.9f, &perm_arena);
     DataLoader loader(val_X, val_y, 64);
 
-    Var last_loss;
     for (int epoch = 0; epoch < 50; epoch++) {
         loader.shuffle();
         Tensor Xb, yb;
-        while (loader.next(Xb, yb)) {
-            last_loss = model.forward(Var(Xb), Var(yb));
-            backward(last_loss);
-            optim.step();
+        while (true) {
+            cuda_arena_clear(&batch_arena);
+            if (!loader.next(Xb, yb, &batch_arena))
+                break;
+            Var loss = model.forward(Var(Xb), Var(yb), &batch_arena);
+            backward(loss, &batch_arena);
+            optim.step(&batch_arena);
             optim.zero_grad();
-        }
-        if (epoch % 5 == 0) {
-            Tensor loss_cpu = tensor_to_cpu(last_loss->data);
-            printf("Epoch %2d  loss: %.4f\n", epoch, loss_cpu->data()[0]);
         }
     }
 
     DataLoader test_loader(test_val_X, test_val_y, 256);
     f32 total_loss = 0.0f, total_acc = 0.0f;
     u32 n_batches = 0;
-    Tensor vis_X, vis_y;
-    Var vis_logits;
 
     Tensor Xb_test, yb_test;
-    while (test_loader.next(Xb_test, yb_test)) {
-        Var loss    = model.forward(Var(Xb_test), Var(yb_test));
-        Var logits  = model.predict(Var(Xb_test));
-        Tensor lc   = tensor_to_cpu(loss->data);
+    while (true) {
+        cuda_arena_clear(&batch_arena);
+        if (!test_loader.next(Xb_test, yb_test, &batch_arena))
+            break;
+        Var loss   = model.forward(Var(Xb_test), Var(yb_test), &batch_arena);
+        Var logits = model.predict(Var(Xb_test), &batch_arena);
+        Tensor lc  = tensor_to_cpu(loss->data);
         total_loss += lc->data()[0];
         total_acc  += accuracy(logits->data, yb_test);
         n_batches++;
-        vis_X      = Xb_test;
-        vis_y      = yb_test;
-        vis_logits = logits;
     }
     printf("\nTest loss:     %.4f\n", total_loss / n_batches);
     printf("Test accuracy: %.2f%%\n", total_acc / n_batches * 100.0f);
 
-    printf("\n--- Wrong predictions ---\n");
-    visualize_wrong(vis_X, vis_logits->data, vis_y, 5);
-    printf("\n--- Correct predictions ---\n");
-    visualize_correct(vis_X, vis_logits->data, vis_y, 3);
+    {
+        cuda_arena_clear(&batch_arena);
+        DataLoader vis_loader(test_val_X, test_val_y, 256);
+        Tensor vis_X, vis_y;
+        vis_loader.next(vis_X, vis_y, &batch_arena);
+        Var vis_logits = model.predict(Var(vis_X), &batch_arena);
+        printf("\n--- Wrong predictions ---\n");
+        visualize_wrong(vis_X, vis_logits->data, vis_y, 5);
+        printf("\n--- Correct predictions ---\n");
+        visualize_correct(vis_X, vis_logits->data, vis_y, 3);
+    }
 
     return 0;
 }

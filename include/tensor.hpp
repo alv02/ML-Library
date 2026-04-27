@@ -83,7 +83,7 @@ struct Tensor {
     static Tensor make(u32 ndim, const u32 *shape, const u64 *stride,
                        b32 on_gpu, CudaMemArena *arena = nullptr) {
         return Tensor(
-            std::make_shared<TensorImpl>(ndim, shape, stride, on_gpu));
+            std::make_shared<TensorImpl>(ndim, shape, stride, on_gpu, arena));
     };
 
     bool defined() const { return impl_ != nullptr; }
@@ -114,14 +114,15 @@ struct Unfold2dParams {
 };
 
 // ---- file I/O / device transfers -----------------------------------------
-Tensor tensor_load(const char *filename, b32 on_gpu);
+Tensor tensor_load(const char *filename, b32 on_gpu,
+                   CudaMemArena *arena = nullptr);
 b32 tensor_copy(Tensor &dst, const Tensor &src);
-Tensor tensor_to_gpu(const Tensor &t);
-Tensor tensor_to_cpu(const Tensor &t);
+Tensor tensor_to_gpu(const Tensor &t, CudaMemArena *arena = nullptr);
+Tensor tensor_to_cpu(const Tensor &t, CudaMemArena *arena = nullptr);
 
 void tensor_contiguous(Tensor &t);
-Tensor tensor_view(const Tensor &src);
-Tensor tensor_create_like(const Tensor &src);
+Tensor tensor_view(const Tensor &src, CudaMemArena *arena = nullptr);
+Tensor tensor_create_like(const Tensor &src, CudaMemArena *arena = nullptr);
 
 // ---- metadata (these stay on TensorImpl* — they're cheap, internal) ------
 // Rationale: shape helpers don't allocate, don't return tensors, and are
@@ -150,59 +151,62 @@ void tensor_clear(Tensor &t);
 
 // ---- activations ---------------------------------------------------------
 b32 tensor_relu(Tensor &dst, const Tensor &src);
-Tensor tensor_relu(const Tensor &src);
+Tensor tensor_relu(const Tensor &src, CudaMemArena *arena = nullptr);
 b32 tensor_exp(Tensor &dst, const Tensor &src);
-Tensor tensor_exp(const Tensor &src);
+Tensor tensor_exp(const Tensor &src, CudaMemArena *arena = nullptr);
 b32 tensor_log(Tensor &dst, const Tensor &src);
-Tensor tensor_log(const Tensor &src);
+Tensor tensor_log(const Tensor &src, CudaMemArena *arena = nullptr);
 b32 tensor_sqrt(Tensor &dst, const Tensor &src);
-Tensor tensor_sqrt(const Tensor &src);
+Tensor tensor_sqrt(const Tensor &src, CudaMemArena *arena = nullptr);
 
 // ---- elementwise binary --------------------------------------------------
 b32 tensor_add(Tensor &out, const Tensor &a, const Tensor &b);
-Tensor tensor_add(const Tensor &a, const Tensor &b);
+Tensor tensor_add(const Tensor &a, const Tensor &b, CudaMemArena *arena = nullptr);
 b32 tensor_sub(Tensor &out, const Tensor &a, const Tensor &b);
-Tensor tensor_sub(const Tensor &a, const Tensor &b);
+Tensor tensor_sub(const Tensor &a, const Tensor &b, CudaMemArena *arena = nullptr);
 b32 tensor_mul(Tensor &out, const Tensor &a, const Tensor &b);
-Tensor tensor_mul(const Tensor &a, const Tensor &b);
+Tensor tensor_mul(const Tensor &a, const Tensor &b, CudaMemArena *arena = nullptr);
 b32 tensor_div(Tensor &out, const Tensor &a, const Tensor &b);
-Tensor tensor_div(const Tensor &a, const Tensor &b);
+Tensor tensor_div(const Tensor &a, const Tensor &b, CudaMemArena *arena = nullptr);
 b32 tensor_equal(Tensor &out, const Tensor &a, const Tensor &b);
-Tensor tensor_equal(const Tensor &a, const Tensor &b);
+Tensor tensor_equal(const Tensor &a, const Tensor &b, CudaMemArena *arena = nullptr);
 
 b32 tensor_relu_backward(Tensor &out, const Tensor &grad, const Tensor &in);
-Tensor tensor_relu_backward(const Tensor &grad, const Tensor &in);
+Tensor tensor_relu_backward(const Tensor &grad, const Tensor &in, CudaMemArena *arena = nullptr);
 
-b32 tensor_softmax(Tensor &out, const Tensor &in);
-Tensor tensor_softmax(const Tensor &in);
-b32 tensor_log_softmax(Tensor &out, const Tensor &in);
-Tensor tensor_log_softmax(const Tensor &in);
+b32 tensor_softmax(Tensor &out, const Tensor &in, CudaMemArena *arena = nullptr);
+Tensor tensor_softmax(const Tensor &in, CudaMemArena *arena = nullptr);
+b32 tensor_log_softmax(Tensor &out, const Tensor &in, CudaMemArena *arena = nullptr);
+Tensor tensor_log_softmax(const Tensor &in, CudaMemArena *arena = nullptr);
 
 // ---- scalar ops ----------------------------------------------------------
 b32 tensor_add(Tensor &out, const Tensor &a, f32 scalar);
-Tensor tensor_add(const Tensor &a, f32 scalar);
+Tensor tensor_add(const Tensor &a, f32 scalar, CudaMemArena *arena = nullptr);
 b32 tensor_sub(Tensor &out, const Tensor &a, f32 scalar);
-Tensor tensor_sub(const Tensor &a, f32 scalar);
+Tensor tensor_sub(const Tensor &a, f32 scalar, CudaMemArena *arena = nullptr);
 b32 tensor_mul(Tensor &out, const Tensor &a, f32 scalar);
-Tensor tensor_mul(const Tensor &a, f32 scalar);
+Tensor tensor_mul(const Tensor &a, f32 scalar, CudaMemArena *arena = nullptr);
 b32 tensor_div(Tensor &out, const Tensor &a, f32 scalar);
-Tensor tensor_div(const Tensor &a, f32 scalar);
+Tensor tensor_div(const Tensor &a, f32 scalar, CudaMemArena *arena = nullptr);
 
 // ---- matmul --------------------------------------------------------------
 b32 tensor_mat_mul(Tensor &out, const Tensor &a, const Tensor &b,
                    b32 clear_out = true);
-Tensor tensor_mat_mul(const Tensor &a, const Tensor &b);
+Tensor tensor_mat_mul(const Tensor &a, const Tensor &b, CudaMemArena *arena = nullptr);
 
 // ---- reductions ----------------------------------------------------------
 b32 tensor_sum(Tensor &out, const Tensor &t, b32 clear_out = true);
 b32 tensor_sum(Tensor &out, const Tensor &t, u32 dim, b32 keep_dim = true,
                b32 clear_out = true);
-Tensor tensor_sum(const Tensor &t);
-Tensor tensor_sum(const Tensor &t, u32 dim, b32 keep_dim = true);
+Tensor tensor_sum(const Tensor &t, CudaMemArena *arena = nullptr);
+Tensor tensor_sum(const Tensor &t, u32 dim, b32 keep_dim = true,
+                  CudaMemArena *arena = nullptr);
 b32 tensor_max(Tensor &out, const Tensor &t, u32 dim, b32 keep_dim = true);
-Tensor tensor_max(const Tensor &t, u32 dim, b32 keep_dim = true);
+Tensor tensor_max(const Tensor &t, u32 dim, b32 keep_dim = true,
+                  CudaMemArena *arena = nullptr);
 b32 tensor_argmax(Tensor &out, const Tensor &t, u32 dim, b32 keep_dim = true);
-Tensor tensor_argmax(const Tensor &t, u32 dim, b32 keep_dim = true);
+Tensor tensor_argmax(const Tensor &t, u32 dim, b32 keep_dim = true,
+                     CudaMemArena *arena = nullptr);
 
 b32 tensor_welford_mean_var(Tensor &mean, Tensor &var, const Tensor &src,
                             u32 dim);
@@ -211,7 +215,7 @@ b32 tensor_welford_mean_var(Tensor &mean, Tensor &var, const Tensor &src,
 b32 tensor_scatter_add(Tensor &out, const Tensor &src, const Tensor &indices,
                        u32 dim);
 Tensor tensor_scatter_add(const Tensor &src, const Tensor &indices, u32 dim,
-                          u32 dim_size);
+                          u32 dim_size, CudaMemArena *arena = nullptr);
 
 // ---- init ----------------------------------------------------------------
 void tensor_he_init(Tensor &t);
@@ -220,11 +224,12 @@ void tensor_he_init(Tensor &t);
 b32 tensor_index_select(Tensor &dst, const Tensor &src, const u32 *indices,
                         u32 n_indices, u32 dim);
 Tensor tensor_index_select(const Tensor &src, const u32 *indices, u32 n_indices,
-                           u32 dim);
+                           u32 dim, CudaMemArena *arena = nullptr);
 
 // ---- spatial -------------------------------------------------------------
 b32 tensor_unfold2d(Tensor &out, const Tensor &input, Unfold2dParams params);
-Tensor tensor_unfold2d(const Tensor &input, Unfold2dParams params);
+Tensor tensor_unfold2d(const Tensor &input, Unfold2dParams params,
+                       CudaMemArena *arena = nullptr);
 b32 tensor_fold2d(Tensor &dst, const Tensor &col, Unfold2dParams params);
 
 // ---- comparison ----------------------------------------------------------

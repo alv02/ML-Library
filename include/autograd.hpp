@@ -22,8 +22,6 @@ struct VarImpl {
 
     VarImpl(Tensor data, u32 flags) : data(data), flags(flags) {};
     ~VarImpl();
-    u32 n_rows() const;
-    u32 n_cols() const;
 };
 
 struct Var {
@@ -43,6 +41,6 @@ struct Function {
     virtual ~Function() = default;
 };
 
-void backward(Var loss);
+void backward(Var loss, CudaMemArena *arena = nullptr);
 
 #endif
