@@ -6,81 +6,70 @@
 #include <cstdio>
 
 int main() {
-    Tensor *val_X = tensor_load("data/X_train.npy", true);
-    Tensor *val_y = tensor_load("data/y_train.npy", true);
-    Tensor *test_val_X = tensor_load("data/X_test.npy", true);
-    Tensor *test_val_y = tensor_load("data/y_test.npy", true);
+    Tensor val_X      = tensor_load("data/X_train.npy", true);
+    Tensor val_y      = tensor_load("data/y_train.npy", true);
+    Tensor test_val_X = tensor_load("data/X_test.npy",  true);
+    Tensor test_val_y = tensor_load("data/y_test.npy",  true);
 
-    tensor_print(val_X);
+    tensor_print(val_X.impl());
 
     // Conv(3→32, k=3,p=1) + MaxPool(2,2)  → [N,32,16,16]
     // Conv(32→64,k=3,p=1) + MaxPool(2,2)  → [N,64,8,8]
     // Conv(64→128,k=3,p=1)+ MaxPool(2,2)  → [N,128,4,4]
     // Flatten                              → [N,2048]
     // Dense: 2048 → 512 → 256 → 10
-    cnn_model model(
-        val_X, val_y,
-        {
-            {32,  Unfold2dParams(3, 1, 1), true, Unfold2dParams(2, 2)},
-            {64,  Unfold2dParams(3, 1, 1), true, Unfold2dParams(2, 2)},
-            {128, Unfold2dParams(3, 1, 1), true, Unfold2dParams(2, 2)},
-        },
-        {512, 256, 10});
+    cnn_model model(3, 32, 32, true,
+                    {
+                        {32,  Unfold2dParams(3, 1, 1), true, Unfold2dParams(2, 2)},
+                        {64,  Unfold2dParams(3, 1, 1), true, Unfold2dParams(2, 2)},
+                        {128, Unfold2dParams(3, 1, 1), true, Unfold2dParams(2, 2)},
+                    },
+                    {512, 256, 10});
 
-    sgd optim(0.005f, 5e-4f, 0.9f);
-    optim.set_graph(model.graph);
-
+    sgd optim(model.parameters(), 0.005f, 5e-4f, 0.9f);
     DataLoader loader(val_X, val_y, 64);
 
+    Var last_loss;
     for (int epoch = 0; epoch < 60; epoch++) {
         loader.shuffle();
-        Tensor *Xb, *yb;
+        Tensor Xb, yb;
         while (loader.next(Xb, yb)) {
-            model.forward(Xb, yb);
-            graph_backward(model.graph);
+            last_loss = model.forward(Var(Xb), Var(yb));
+            backward(last_loss);
             optim.step();
             optim.zero_grad();
-            delete Xb;
-            delete yb;
         }
-
         if (epoch % 5 == 0) {
-            Tensor *loss_cpu = tensor_to_cpu(model.fv_loss->val);
-            printf("Epoch %2d  loss: %.4f\n", epoch, loss_cpu->data[0]);
-            delete loss_cpu;
+            Tensor loss_cpu = tensor_to_cpu(last_loss->data);
+            printf("Epoch %2d  loss: %.4f\n", epoch, loss_cpu->data()[0]);
         }
     }
 
     DataLoader test_loader(test_val_X, test_val_y, 256);
     f32 total_loss = 0.0f, total_acc = 0.0f;
     u32 n_batches = 0;
-    Tensor *Xb_test = nullptr, *yb_test = nullptr;
-    Tensor *vis_X = nullptr, *vis_y = nullptr;
+    Tensor vis_X, vis_y;
+    Var vis_logits;
+
+    Tensor Xb_test, yb_test;
     while (test_loader.next(Xb_test, yb_test)) {
-        model.forward(Xb_test, yb_test);
-        Tensor *loss_cpu = tensor_to_cpu(model.fv_loss->val);
-        total_loss += loss_cpu->data[0];
-        delete loss_cpu;
-        total_acc += accuracy(model.a.back()->val, yb_test);
+        Var loss   = model.forward(Var(Xb_test), Var(yb_test));
+        Var logits = model.predict(Var(Xb_test));
+        Tensor lc  = tensor_to_cpu(loss->data);
+        total_loss += lc->data()[0];
+        total_acc  += accuracy(logits->data, yb_test);
         n_batches++;
-        delete vis_X;
-        delete vis_y;
-        vis_X = Xb_test;
-        vis_y = yb_test;
+        vis_X      = Xb_test;
+        vis_y      = yb_test;
+        vis_logits = logits;
     }
     printf("\nTest loss:     %.4f\n", total_loss / n_batches);
     printf("Test accuracy: %.2f%%\n", total_acc / n_batches * 100.0f);
 
     printf("\n--- Wrong predictions ---\n");
-    visualize_wrong(vis_X, model.a.back()->val, vis_y, 5);
+    visualize_wrong(vis_X, vis_logits->data, vis_y, 5);
     printf("\n--- Correct predictions ---\n");
-    visualize_correct(vis_X, model.a.back()->val, vis_y, 3);
+    visualize_correct(vis_X, vis_logits->data, vis_y, 3);
 
-    delete vis_X;
-    delete vis_y;
-    delete val_X;
-    delete val_y;
-    delete test_val_X;
-    delete test_val_y;
     return 0;
 }

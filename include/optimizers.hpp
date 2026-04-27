@@ -6,44 +6,32 @@
 #include <unordered_map>
 #include <vector>
 
-// ── DataLoader
-// ──────────────────────────────────────────────────────────────── Shuffles the
-// dataset each epoch and yields mini-batches via next(). When batch_size ==
-// n_samples this degenerates to full-batch GD.
+// ── DataLoader ────────────────────────────────────────────────────────────────
 
 struct DataLoader {
-    const Tensor *X;
-    const Tensor *y;
+    Tensor X, y;
     u32 batch_size;
     u32 n_samples;
     u32 cursor;
     std::vector<u32> indices;
 
-    DataLoader(const Tensor *X, const Tensor *y, u32 batch_size);
-
-    // Fisher-Yates shuffle — call once at the start of each epoch.
+    DataLoader(Tensor X, Tensor y, u32 batch_size);
     void shuffle();
-
-    // Allocates and returns the next batch. Returns false when the epoch is
-    // done. The caller owns the returned tensors and must delete them.
-    bool next(Tensor *&X_batch, Tensor *&y_batch);
+    bool next(Tensor &X_batch, Tensor &y_batch);
 };
 
-// ── sgd
-// ───────────────────────────────────────────────────────────────────────
+// ── sgd ───────────────────────────────────────────────────────────────────────
 
 struct sgd {
     f32 lr;
-    f32 lambda;
-    f32 mu; // momentum coefficient (0 = plain SGD)
-    Graph *graph; // non-owning
-    std::unordered_map<function_var *, Tensor *> velocity;
+    f32 lambda; // L2 weight decay
+    f32 mu;     // momentum coefficient (0 = plain SGD)
+    std::vector<Var> params;
+    std::unordered_map<VarImpl *, Tensor> velocity;
 
-    sgd(f32 learning_rate, f32 lambda = 0.0f, f32 mu = 0.0f);
-    ~sgd();
+    sgd(std::vector<Var> params, f32 lr, f32 lambda = 0.0f, f32 mu = 0.0f);
     void step();
     void zero_grad();
-    void set_graph(Graph *graph);
 };
 
 #endif

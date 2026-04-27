@@ -4,44 +4,95 @@
 #define MAX_NDIM 8
 #include "backend/cuda_mem_arena.hpp"
 #include "base.hpp"
+#include <memory>
 
-#define ROW_DIM(t) ((t)->ndim - 2)
-#define COL_DIM(t) ((t)->ndim - 1)
+#define ROW_DIM(t) ((t).ndim - 2)
+#define COL_DIM(t) ((t).ndim - 1)
 
-struct Tensor {
-    u32 shape[MAX_NDIM];  // size of each dimension
-    u64 stride[MAX_NDIM]; // step in elements to advance one index in each dim
-                          // (row-major)
-    f32 *data;            // flat data buffer (CPU or GPU pointer)
-    u32 ndim;             // number of active dimensions
-    u64 size;             // total number of elements (product of shape)
-    b32 on_gpu;           // true if data lives on the GPU
-    b32 owns_data;  // if false, destructor won't free data (borrowed/arena)
-    b32 can_modify; // if false, writing to this tensor is an error
+struct Storage {
+    f32 *data;
+    u64 nbytes;
+    b32 on_gpu;
+    // TODO: Change to allocator in the future
+    CudaMemArena *arena;
 
-    // Allocates a zero-filled buffer of the given shape on CPU or GPU.
-    Tensor(u32 ndim, const u32 *shape, b32 on_gpu);
-    Tensor(u32 ndim, const u32 *shape, const u64 *stride, b32 on_gpu);
-    // Creates a view: shares the same data pointer, owns_data=false.
-    Tensor(const Tensor *src);
-    ~Tensor();
+    Storage(u64 nbytes, b32 on_gpu, CudaMemArena *arena = nullptr);
+    ~Storage();
 
-    // Element access via multi-dimensional index, e.g. t(n, c, h, w).
-    // Uses strides so it works correctly on transposed/viewed tensors.
+    Storage(const Storage &) = delete;
+    Storage &operator=(const Storage &) = delete;
+};
+
+struct TensorImpl {
+    std::shared_ptr<Storage> storage;
+    u64 storage_offset = 0;
+    u32 shape[MAX_NDIM];
+    u64 stride[MAX_NDIM];
+    u32 ndim;
+
+    // Allocates a new storage and tensor metadata
+    TensorImpl(u32 ndim, const u32 *shape, b32 on_gpu,
+               CudaMemArena *arena = nullptr);
+    TensorImpl(u32 ndim, const u32 *shape, const u64 *stride, b32 on_gpu,
+               CudaMemArena *arena = nullptr);
+
+    // Default destructor — shared_ptr handles storage cleanup automatically
+    ~TensorImpl() = default;
+
+    TensorImpl(const TensorImpl &) = delete;
+    TensorImpl &operator=(const TensorImpl &) = delete;
+
+    // Forwarding accessors
+    f32 *data() const { return storage->data + storage_offset; }
+    b32 on_gpu() const { return storage->on_gpu; }
+    u64 numel() const {
+        u64 n = 1;
+        for (u32 i = 0; i < ndim; i++)
+            n *= shape[i];
+        return n;
+    }
+
     template <typename... Dims> f32 &operator()(Dims... dims) {
         u64 offset = 0;
         u32 indices[] = {(u32)dims...};
         for (u32 i = 0; i < sizeof...(dims); i++)
             offset += indices[i] * stride[i];
-        return data[offset];
+        return data()[offset];
     }
+
     template <typename... Dims> const f32 &operator()(Dims... dims) const {
         u64 offset = 0;
         u32 indices[] = {(u32)dims...};
         for (u32 i = 0; i < sizeof...(dims); i++)
             offset += indices[i] * stride[i];
-        return data[offset];
+        return data()[offset];
     }
+};
+
+// ---- Tensor: refcounted handle -------------------------------------------
+struct Tensor {
+    std::shared_ptr<TensorImpl> impl_;
+
+    Tensor() = default;
+    explicit Tensor(std::shared_ptr<TensorImpl> i) : impl_(std::move(i)) {}
+
+    static Tensor make(u32 ndim, const u32 *shape, b32 on_gpu,
+                       CudaMemArena *arena = nullptr) {
+        return Tensor(std::make_shared<TensorImpl>(ndim, shape, on_gpu, arena));
+    };
+    static Tensor make(u32 ndim, const u32 *shape, const u64 *stride,
+                       b32 on_gpu, CudaMemArena *arena = nullptr) {
+        return Tensor(
+            std::make_shared<TensorImpl>(ndim, shape, stride, on_gpu));
+    };
+
+    bool defined() const { return impl_ != nullptr; }
+    explicit operator bool() const { return defined(); }
+
+    TensorImpl *operator->() const { return impl_.get(); }
+    TensorImpl &operator*() const { return *impl_; }
+
+    TensorImpl &impl() const { return *impl_; }
 };
 
 struct Unfold2dParams {
@@ -63,187 +114,120 @@ struct Unfold2dParams {
 };
 
 // ---- file I/O / device transfers -----------------------------------------
+Tensor tensor_load(const char *filename, b32 on_gpu);
+b32 tensor_copy(Tensor &dst, const Tensor &src);
+Tensor tensor_to_gpu(const Tensor &t);
+Tensor tensor_to_cpu(const Tensor &t);
 
-// Loads a .npy file (version 1, float32, C-order) into a new Tensor.
-// If on_gpu=true the data is transferred to the GPU after loading.
-Tensor *tensor_load(const char *filename, b32 on_gpu);
-// Copies elements from src into dst. Shapes must match, both tensors must be
-// on the same device. Handles non-contiguous strides on both sides.
-b32 tensor_copy(Tensor *dst, const Tensor *src);
-// Returns a new GPU tensor with the same data and layout as t.
-// Works whether t is on CPU (H2D) or GPU (D2D).
-Tensor *tensor_to_gpu(const Tensor *t);
-// Returns a new CPU tensor with the same data and layout as t.
-// Works whether t is on GPU (D2H) or CPU (H2H).
-Tensor *tensor_to_cpu(const Tensor *t);
+void tensor_contiguous(Tensor &t);
+Tensor tensor_view(const Tensor &src);
+Tensor tensor_create_like(const Tensor &src);
 
-void tensor_realloc(Tensor *t, const u32 *new_shape, u32 new_ndim);
-void tensor_contiguous(Tensor *t);
-// Creates a view of src: same data pointer, same shape/strides,
-// owns_data=false.
-Tensor *tensor_view(const Tensor *src);
-// Allocates a new zero-filled tensor with the same shape and device as src.
-Tensor *tensor_create_like(const Tensor *src);
-
-// ---- metadata / shape helpers (device-independent) -----------------------
-
-// Computes row-major strides from shape and writes them into stride.
-// stride[ndim-1]=1, stride[i] = shape[i+1]*stride[i+1].
-// Returns the total element count (product of all shape values).
-// Use this whenever shape changes so strides stay consistent.
+// ---- metadata (these stay on TensorImpl* — they're cheap, internal) ------
+// Rationale: shape helpers don't allocate, don't return tensors, and are
+// called from inside other tensor ops. Keeping them on TensorImpl* avoids
+// pointless refcount bumps in hot paths.
 u64 tensor_compute_strides(u64 *stride, const u32 *shape, u32 ndim);
-// Expands t in-place to expanded_ndim by prepending 1s to shape and
-// recomputing strides. Returns false if t->ndim > expanded_ndim.
-b32 tensor_expand_shape(Tensor *t, u32 expanded_ndim);
-// Returns true if strides are packed row-major (no gaps, no transpositions).
-b32 tensor_is_contiguous(const Tensor *t);
-// Returns true if both tensors have the same ndim and identical shape.
-b32 tensor_shape_eq(const Tensor *a, const Tensor *b);
-// Swaps dim0 and dim1 in-place (swaps shape and stride entries). Returns false
-// if dims are out of range.
-b32 tensor_transpose(Tensor *tensor, u32 dim0, u32 dim1);
-// Reinterprets the tensor with a new shape in-place. Total size must be
-// unchanged. Returns false on mismatch.
-b32 tensor_reshape(Tensor *tensor, const u32 *shape, u32 ndim);
-// Computes the broadcast output shape of a and b (NumPy rules).
-// Writes result into out_shape and returns the output ndim (0 on incompatible
-// shapes). Example: a=[3,1,4], b=[2,4] → out_shape=[3,2,4], returns 3.
-u32 broadcast_shape(const Tensor *a, const Tensor *b, u32 *out_shape);
-// Writes the shape of t left-padded with 1s to reach expanded_ndim into
-// t_expanded_shape. Example: t.shape=[4,5], expanded_ndim=4 →
-// t_expanded_shape=[1,1,4,5].
-void expanded_shape(const Tensor *t, u32 expanded_ndim, u32 *t_expanded_shape);
-// Writes the strides of t left-padded with 0s to reach expanded_ndim into
-// t_expanded_stride. Prepended dims and dims where shape==1 get stride 0 so
-// indexing repeats the same element (broadcast). Example: t.shape=[1,5],
-// t.stride=[5,1], expanded_ndim=3 → [0, 0, 1].
-void expanded_stride(const Tensor *t, u32 expanded_ndim,
-                     u64 *t_expanded_stride);
+b32 tensor_expand_shape(TensorImpl &t, u32 expanded_ndim);
+b32 tensor_is_contiguous(const TensorImpl &t);
+b32 tensor_shape_eq(const TensorImpl &a, const TensorImpl &b);
+b32 tensor_transpose(TensorImpl &t, u32 dim0, u32 dim1);
+b32 tensor_reshape(TensorImpl &t, const u32 *shape, u32 ndim);
+u32 broadcast_shape(const TensorImpl &a, const TensorImpl &b, u32 *out_shape);
+void expanded_shape(const TensorImpl &t, u32 expanded_ndim, u32 *out);
+void expanded_stride(const TensorImpl &t, u32 expanded_ndim, u64 *out);
+void tensor_print(const TensorImpl &t);
 
-// Prints shape and strides to stdout.
-void tensor_print(const Tensor *tensor);
+// You might want public Tensor& overloads for the few that users call:
+b32 tensor_transpose(Tensor &t, u32 dim0, u32 dim1);
+b32 tensor_reshape(Tensor &t, const u32 *shape, u32 ndim);
+b32 tensor_shape_eq(const Tensor &a, const Tensor &b);
+b32 tensor_is_contiguous(const Tensor &t);
 
 // ---- fill / clear --------------------------------------------------------
+void tensor_fill(Tensor &t, f32 value);
+void tensor_clear(Tensor &t);
 
-// Sets every element to value.
-void tensor_fill(Tensor *tensor, f32 value);
-// Sets every element to 0. Equivalent to tensor_fill(t, 0).
-void tensor_clear(Tensor *tensor);
+// ---- activations ---------------------------------------------------------
+b32 tensor_relu(Tensor &dst, const Tensor &src);
+Tensor tensor_relu(const Tensor &src);
+b32 tensor_exp(Tensor &dst, const Tensor &src);
+Tensor tensor_exp(const Tensor &src);
+b32 tensor_log(Tensor &dst, const Tensor &src);
+Tensor tensor_log(const Tensor &src);
+b32 tensor_sqrt(Tensor &dst, const Tensor &src);
+Tensor tensor_sqrt(const Tensor &src);
 
-// ---- activations (relu, exp, log, softmax) --------------------------------
-// All elementwise. Two overloads per op:
-//   (dst, src) — writes into pre-allocated dst, returns false on shape
-//   mismatch. (src)      — allocates and returns a new tensor.
+// ---- elementwise binary --------------------------------------------------
+b32 tensor_add(Tensor &out, const Tensor &a, const Tensor &b);
+Tensor tensor_add(const Tensor &a, const Tensor &b);
+b32 tensor_sub(Tensor &out, const Tensor &a, const Tensor &b);
+Tensor tensor_sub(const Tensor &a, const Tensor &b);
+b32 tensor_mul(Tensor &out, const Tensor &a, const Tensor &b);
+Tensor tensor_mul(const Tensor &a, const Tensor &b);
+b32 tensor_div(Tensor &out, const Tensor &a, const Tensor &b);
+Tensor tensor_div(const Tensor &a, const Tensor &b);
+b32 tensor_equal(Tensor &out, const Tensor &a, const Tensor &b);
+Tensor tensor_equal(const Tensor &a, const Tensor &b);
 
-b32 tensor_relu(Tensor *dst, const Tensor *src);
-Tensor *tensor_relu(const Tensor *src);
-b32 tensor_exp(Tensor *dst, const Tensor *src);
-Tensor *tensor_exp(const Tensor *src);
-b32 tensor_log(Tensor *dst, const Tensor *src);
-Tensor *tensor_log(const Tensor *src);
-b32 tensor_sqrt(Tensor *dst, const Tensor *src);
-Tensor *tensor_sqrt(const Tensor *src);
+b32 tensor_relu_backward(Tensor &out, const Tensor &grad, const Tensor &in);
+Tensor tensor_relu_backward(const Tensor &grad, const Tensor &in);
 
-// ---- elementwise binary (add / sub / mul / div) --------------------------
-// All ops support broadcasting (NumPy rules). Same two-overload pattern as
-// activations.
+b32 tensor_softmax(Tensor &out, const Tensor &in);
+Tensor tensor_softmax(const Tensor &in);
+b32 tensor_log_softmax(Tensor &out, const Tensor &in);
+Tensor tensor_log_softmax(const Tensor &in);
 
-b32 tensor_add(Tensor *out, const Tensor *a, const Tensor *b);
-Tensor *tensor_add(const Tensor *a, const Tensor *b);
-b32 tensor_sub(Tensor *out, const Tensor *a, const Tensor *b);
-Tensor *tensor_sub(const Tensor *a, const Tensor *b);
-b32 tensor_mul(Tensor *out, const Tensor *a, const Tensor *b);
-Tensor *tensor_mul(const Tensor *a, const Tensor *b);
-b32 tensor_div(Tensor *out, const Tensor *a, const Tensor *b);
-Tensor *tensor_div(const Tensor *a, const Tensor *b);
-b32 tensor_equal(Tensor *out, const Tensor *a, const Tensor *b);
-Tensor *tensor_equal(const Tensor *a, const Tensor *b);
-// Elementwise: out[i] = grad[i] if in[i] > 0 else 0. Backward pass for ReLU.
-b32 tensor_relu_backward(Tensor *out, const Tensor *grad, const Tensor *in);
-Tensor *tensor_relu_backward(const Tensor *grad, const Tensor *in);
-// Row-wise softmax: out[i] = exp(in[i]) / sum(exp(in[row])) for each row.
-b32 tensor_softmax(Tensor *out, const Tensor *in);
-Tensor *tensor_softmax(const Tensor *in);
-// Row-wise log-softmax via log-sum-exp — numerically stable, no log(0) NaN.
-b32 tensor_log_softmax(Tensor *out, const Tensor *in);
-Tensor *tensor_log_softmax(const Tensor *in);
+// ---- scalar ops ----------------------------------------------------------
+b32 tensor_add(Tensor &out, const Tensor &a, f32 scalar);
+Tensor tensor_add(const Tensor &a, f32 scalar);
+b32 tensor_sub(Tensor &out, const Tensor &a, f32 scalar);
+Tensor tensor_sub(const Tensor &a, f32 scalar);
+b32 tensor_mul(Tensor &out, const Tensor &a, f32 scalar);
+Tensor tensor_mul(const Tensor &a, f32 scalar);
+b32 tensor_div(Tensor &out, const Tensor &a, f32 scalar);
+Tensor tensor_div(const Tensor &a, f32 scalar);
 
-// ---- scalar operations ---------------------------------------------------
-// Same as the binary ops above but broadcasts a scalar across the whole tensor.
-
-b32 tensor_add(Tensor *out, const Tensor *a, f32 scalar);
-Tensor *tensor_add(const Tensor *a, f32 scalar);
-b32 tensor_sub(Tensor *out, const Tensor *a, f32 scalar);
-Tensor *tensor_sub(const Tensor *a, f32 scalar);
-b32 tensor_mul(Tensor *out, const Tensor *tensor, f32 scalar);
-Tensor *tensor_mul(const Tensor *tensor, f32 scalar);
-b32 tensor_div(Tensor *out, const Tensor *a, f32 scalar);
-Tensor *tensor_div(const Tensor *a, f32 scalar);
-
-// ---- matrix multiply -----------------------------------------------------
-// 2D matmul: out = a @ b. a is [M, K], b is [K, N], out is [M, N].
-// clear_out=true zeros out before accumulating (set false to accumulate into
-// existing out).
-
-b32 tensor_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
+// ---- matmul --------------------------------------------------------------
+b32 tensor_mat_mul(Tensor &out, const Tensor &a, const Tensor &b,
                    b32 clear_out = true);
-Tensor *tensor_mat_mul(const Tensor *a, const Tensor *b);
+Tensor tensor_mat_mul(const Tensor &a, const Tensor &b);
 
-// ---- reduction (sum, max, argmax) ----------------------------------------
-// No-dim variants reduce the entire tensor to a scalar.
-// Dim variants reduce along the specified axis; keep_dim=true keeps that axis
-// as size 1.
-
-b32 tensor_sum(Tensor *out, const Tensor *tensor, b32 clear_out = true);
-b32 tensor_sum(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim = true,
+// ---- reductions ----------------------------------------------------------
+b32 tensor_sum(Tensor &out, const Tensor &t, b32 clear_out = true);
+b32 tensor_sum(Tensor &out, const Tensor &t, u32 dim, b32 keep_dim = true,
                b32 clear_out = true);
-Tensor *tensor_sum(const Tensor *tensor);
-Tensor *tensor_sum(const Tensor *tensor, u32 dim, b32 keep_dim = true);
-b32 tensor_max(Tensor *out, const Tensor *tensor);
-Tensor *tensor_max(const Tensor *tensor);
-b32 tensor_max(Tensor *out, const Tensor *tensor, u32 dim, b32 keep_dim = true);
-Tensor *tensor_max(const Tensor *tensor, u32 dim, b32 keep_dim = true);
-// Returns indices (as f32) of the max value along dim.
-b32 tensor_argmax(Tensor *out, const Tensor *tensor, u32 dim,
-                  b32 keep_dim = true);
-Tensor *tensor_argmax(const Tensor *tensor, u32 dim, b32 keep_dim = true);
+Tensor tensor_sum(const Tensor &t);
+Tensor tensor_sum(const Tensor &t, u32 dim, b32 keep_dim = true);
+b32 tensor_max(Tensor &out, const Tensor &t, u32 dim, b32 keep_dim = true);
+Tensor tensor_max(const Tensor &t, u32 dim, b32 keep_dim = true);
+b32 tensor_argmax(Tensor &out, const Tensor &t, u32 dim, b32 keep_dim = true);
+Tensor tensor_argmax(const Tensor &t, u32 dim, b32 keep_dim = true);
 
-b32 tensor_welford_mean_var(Tensor *mean, Tensor *var, const Tensor *src,
+b32 tensor_welford_mean_var(Tensor &mean, Tensor &var, const Tensor &src,
                             u32 dim);
 
-// ---- scattering ----------------------------------------------------------
-
-b32 tensor_scatter_add(Tensor *out, const Tensor *src, const Tensor *indices,
+// ---- scatter -------------------------------------------------------------
+b32 tensor_scatter_add(Tensor &out, const Tensor &src, const Tensor &indices,
                        u32 dim);
-Tensor *tensor_scatter_add(const Tensor *src, const Tensor *indices, u32 dim,
-                           u32 dim_size);
+Tensor tensor_scatter_add(const Tensor &src, const Tensor &indices, u32 dim,
+                          u32 dim_size);
 
-// ---- initializing --------------------------------------------------------
-// He (Kaiming) normal init: fills with values ~ N(0, sqrt(2 / fan_in)).
-// fan_in is the product of all dims except the last (output features).
-void tensor_he_init(Tensor *tensor);
+// ---- init ----------------------------------------------------------------
+void tensor_he_init(Tensor &t);
 
 // ---- indexing ------------------------------------------------------------
-// Gathers n_indices slices from src along dim using the indices array.
-// Equivalent to: dst = src[indices, :] for dim=0.
-// Example: src=[5,3], indices=[2,0,4], dim=0 → dst=[3,3] (rows 2, 0, 4).
-
-b32 tensor_index_select(Tensor *dst, const Tensor *src, const u32 *indices,
+b32 tensor_index_select(Tensor &dst, const Tensor &src, const u32 *indices,
                         u32 n_indices, u32 dim);
-Tensor *tensor_index_select(const Tensor *src, const u32 *indices,
-                            u32 n_indices, u32 dim);
-// ---- spatial / patch operations ------------------------------------------
+Tensor tensor_index_select(const Tensor &src, const u32 *indices, u32 n_indices,
+                           u32 dim);
 
-b32 tensor_unfold2d(Tensor *out, const Tensor *input, Unfold2dParams params);
-Tensor *tensor_unfold2d(const Tensor *input, Unfold2dParams params);
-
-// Inverse of unfold2d: scatter-adds col [N*L, C*kH*kW] back into dst [N,C,H,W].
-// dst must be zeroed before calling. params must match the forward unfold call.
-b32 tensor_fold2d(Tensor *dst, const Tensor *col, Unfold2dParams params);
+// ---- spatial -------------------------------------------------------------
+b32 tensor_unfold2d(Tensor &out, const Tensor &input, Unfold2dParams params);
+Tensor tensor_unfold2d(const Tensor &input, Unfold2dParams params);
+b32 tensor_fold2d(Tensor &dst, const Tensor &col, Unfold2dParams params);
 
 // ---- comparison ----------------------------------------------------------
+b32 tensor_equals(const Tensor &a, const Tensor &b, f32 tol = 1e-5f);
 
-// Returns true if a and b have the same shape and every element pair differs
-// by at most tol. Both tensors must be on CPU.
-b32 tensor_equals(const Tensor *a, const Tensor *b, f32 tol = 1e-5f);
 #endif

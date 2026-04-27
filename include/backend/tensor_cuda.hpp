@@ -18,12 +18,13 @@ struct TensorMeta {
     u32 shape[MAX_NDIM];  // size of each dimension
     u64 stride[MAX_NDIM]; // stride per dimension (0 = broadcast that dim)
 
+    TensorMeta() = default;
     // Copies shape and strides directly from t.
-    TensorMeta(const Tensor *t);
+    TensorMeta(const TensorImpl &t);
     // Broadcast-expanded constructor: left-pads shape with 1s and strides with
     // 0s to reach bcast_ndim. Dims where t->shape==1 also get stride=0 so
     // kernels using offset_from() automatically repeat the same element there.
-    TensorMeta(const Tensor *t, const u32 *bcast_shape, u32 bcast_ndim);
+    TensorMeta(const TensorImpl &t, const u32 *bcast_shape, u32 bcast_ndim);
 
     ML_DEVICE u32 rows() const { return shape[ndim - 2]; }
     ML_DEVICE u32 cols() const { return shape[ndim - 1]; }
@@ -51,74 +52,73 @@ struct TensorMeta {
     }
 };
 
-// ---- memory management (alloc / free / transfers) ------------------------
-
-void tensor_cuda_alloc(Tensor *tensor);
-void tensor_cuda_free(Tensor *tensor);
-void tensor_cuda_copy(Tensor *dst, const Tensor *src);
-void tensor_cuda_contiguous(Tensor *t);
+// ---- memory management transfers) ----------------------------------------
+void tensor_cuda_copy(TensorImpl &dst, const TensorImpl &src);
+void tensor_cuda_contiguous(TensorImpl &t);
 // ---- fill / clear --------------------------------------------------------
 
-void tensor_cuda_fill(Tensor *tensor, f32 value);
-void tensor_cuda_clear(Tensor *tensor);
+void tensor_cuda_fill(TensorImpl &tensor, f32 value);
+void tensor_cuda_clear(TensorImpl &tensor);
 
 // ---- activations (relu, exp) ---------------------------------------------
 
-void tensor_cuda_relu(Tensor *dst, const Tensor *src);
-void tensor_cuda_exp(Tensor *dst, const Tensor *src);
-void tensor_cuda_log(Tensor *dst, const Tensor *src);
-void tensor_cuda_sqrt(Tensor *dst, const Tensor *src);
+void tensor_cuda_relu(TensorImpl &dst, const TensorImpl &src);
+void tensor_cuda_exp(TensorImpl &dst, const TensorImpl &src);
+void tensor_cuda_log(TensorImpl &dst, const TensorImpl &src);
+void tensor_cuda_sqrt(TensorImpl &dst, const TensorImpl &src);
 
 // ---- elementwise binary (add / sub / mul / div) --------------------------
 
-void tensor_cuda_add(Tensor *out, const Tensor *a, const Tensor *b);
-void tensor_cuda_sub(Tensor *out, const Tensor *a, const Tensor *b);
-void tensor_cuda_mul(Tensor *out, const Tensor *a, const Tensor *b);
-void tensor_cuda_div(Tensor *out, const Tensor *a, const Tensor *b);
-void tensor_cuda_equal(Tensor *out, const Tensor *a, const Tensor *b);
-void tensor_cuda_relu_backward(Tensor *out, const Tensor *grad,
-                               const Tensor *in);
+void tensor_cuda_add(TensorImpl &out, const TensorImpl &a, const TensorImpl &b);
+void tensor_cuda_sub(TensorImpl &out, const TensorImpl &a, const TensorImpl &b);
+void tensor_cuda_mul(TensorImpl &out, const TensorImpl &a, const TensorImpl &b);
+void tensor_cuda_div(TensorImpl &out, const TensorImpl &a, const TensorImpl &b);
+void tensor_cuda_equal(TensorImpl &out, const TensorImpl &a,
+                       const TensorImpl &b);
+void tensor_cuda_relu_backward(TensorImpl &out, const TensorImpl &grad,
+                               const TensorImpl &in);
 
 // ---- scalar operations ---------------------------------------------------
 
-void tensor_cuda_add(Tensor *out, const Tensor *tensor, f32 scalar);
-void tensor_cuda_sub(Tensor *out, const Tensor *tensor, f32 scalar);
-void tensor_cuda_mul(Tensor *out, const Tensor *tensor, f32 scalar);
-void tensor_cuda_div(Tensor *out, const Tensor *tensor, f32 scalar);
+void tensor_cuda_add(TensorImpl &out, const TensorImpl &tensor, f32 scalar);
+void tensor_cuda_sub(TensorImpl &out, const TensorImpl &tensor, f32 scalar);
+void tensor_cuda_mul(TensorImpl &out, const TensorImpl &tensor, f32 scalar);
+void tensor_cuda_div(TensorImpl &out, const TensorImpl &tensor, f32 scalar);
 
 // ---- matrix multiply -----------------------------------------------------
 
-void tensor_cuda_mat_mul(Tensor *out, const Tensor *a, const Tensor *b,
-                         b32 clear_out);
+void tensor_cuda_mat_mul(TensorImpl &out, const TensorImpl &a,
+                         const TensorImpl &b, b32 clear_out);
 
 // ---- reduction (sum, max, argmax) ----------------------------------------
 
-void tensor_cuda_sum(Tensor *out, const Tensor *tensor);
-void tensor_cuda_sum(Tensor *out, const Tensor *tensor, u32 dim);
-void tensor_cuda_welford_mean_var(Tensor *mean, Tensor *var, const Tensor *src,
-                                  u32 dim);
-void tensor_cuda_max(Tensor *out, const Tensor *tensor);
-void tensor_cuda_max(Tensor *out, const Tensor *tensor, u32 dim);
-void tensor_cuda_argmax(Tensor *out, const Tensor *tensor, u32 dim);
+void tensor_cuda_sum(TensorImpl &out, const TensorImpl &tensor);
+void tensor_cuda_sum(TensorImpl &out, const TensorImpl &tensor, u32 dim);
+void tensor_cuda_welford_mean_var(TensorImpl &mean, TensorImpl &var,
+                                  const TensorImpl &src, u32 dim);
+void tensor_cuda_max(TensorImpl &out, const TensorImpl &tensor);
+void tensor_cuda_max(TensorImpl &out, const TensorImpl &tensor, u32 dim);
+void tensor_cuda_argmax(TensorImpl &out, const TensorImpl &tensor, u32 dim);
 
 // ---- scattering ----------------------------------------------------------
-void tensor_cuda_scatter_add(Tensor *out, const Tensor *src,
-                             const Tensor *indices, u32 dim);
+void tensor_cuda_scatter_add(TensorImpl &out, const TensorImpl &src,
+                             const TensorImpl &indices, u32 dim);
 // ---- initializing --------------------------------------------------------
 
-void tensor_cuda_he_init(Tensor *tensor);
+void tensor_cuda_he_init(TensorImpl &tensor);
 
 // ---- indexing ------------------------------------------------------------
 
-void tensor_cuda_index_select(Tensor *dst, const Tensor *src,
+void tensor_cuda_index_select(TensorImpl &dst, const TensorImpl &src,
                               const u32 *indices, u32 n_indices, u32 dim);
 
-void tensor_cuda_unfold2d(Tensor *dst, const Tensor *src,
+void tensor_cuda_unfold2d(TensorImpl &dst, const TensorImpl &src,
                           Unfold2dParams params);
-void tensor_cuda_fold2d(Tensor *dst, const Tensor *col, Unfold2dParams params);
+void tensor_cuda_fold2d(TensorImpl &dst, const TensorImpl &col,
+                        Unfold2dParams params);
 
 // ---- comparison ----------------------------------------------------------
 
-b32 tensor_cuda_equals(const Tensor *a, const Tensor *b, f32 tol);
+b32 tensor_cuda_equals(const TensorImpl &a, const TensorImpl &b, f32 tol);
 
 #endif // TENSOR_CUDA_HPP

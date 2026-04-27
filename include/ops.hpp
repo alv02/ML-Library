@@ -3,159 +3,27 @@
 
 #include "autograd.hpp"
 
-struct MatMulOp : function {
-    MatMulOp(function_var *a, function_var *b) {
-        n_inputs = 2;
-        inputs[0] = a;
-        inputs[1] = b;
-    }
+Var mat_mul(Var a, Var b);
+Var add(Var a, Var b);
+Var relu(Var a);
 
-    function_var *make_output() override;
-    void forward(function_var *out) override;
-    void backward(Tensor *grad_output) override;
-};
+// input  [N, C_in, H, W]
+// weight [C_in*kH*kW, C_out]  (pre-transposed, Wt convention)
+// output [N, C_out, L_h, L_w]
+Var conv2d(Var input, Var weight, Unfold2dParams params);
 
-struct AddOp : function {
-    AddOp(function_var *a, function_var *b) {
-        n_inputs = 2;
-        inputs[0] = a;
-        inputs[1] = b;
-    }
+// input [N, C, H, W] → output [N, C, L_h, L_w]
+Var max_pool2d(Var input, Unfold2dParams params);
 
-    function_var *make_output() override;
-    void forward(function_var *out) override;
-    void backward(Tensor *grad_output) override;
-};
+// [N, ...] → [N, C*H*W]
+Var flatten(Var input);
 
-struct ReluOp : function {
-    ReluOp(function_var *a) {
-        n_inputs = 1;
-        inputs[0] = a;
-    }
+// input [N, C, H, W], gamma/beta [C]
+Var batch_norm(Var input, Var gamma, Var beta, f32 eps = 1e-5f);
 
-    function_var *make_output() override;
-    void forward(function_var *out) override;
-    void backward(Tensor *grad_output) override;
-};
+Var mse_loss(Var pred, Var target);
 
-// inputs[0] = input  [N, C_in, H, W]
-// inputs[1] = weight [C_in*kH*kW, C_out]  (pre-transposed, matches Wt
-// convention) output             [N, C_out, L_h, L_w] bias should be added
-// separately via AddOp
-struct Conv2dOp : function {
-    Unfold2dParams params;
-    Tensor *saved_col; // [N*L, C_in*kH*kW] — unfolded input saved for backward
-
-    Conv2dOp(function_var *input, function_var *kernels, Unfold2dParams params)
-        : params(params), saved_col(nullptr) {
-        n_inputs = 2;
-        inputs[0] = input;
-        inputs[1] = kernels;
-    }
-
-    ~Conv2dOp() { delete saved_col; }
-
-    function_var *make_output() override;
-    void forward(function_var *out) override;
-    void backward(Tensor *grad_output) override;
-};
-
-struct MaxPool2dOp : function {
-    Unfold2dParams params;
-    Tensor *saved_max_idx;
-
-    MaxPool2dOp(function_var *input, Unfold2dParams params)
-        : params(params), saved_max_idx(nullptr) {
-        n_inputs = 1;
-        inputs[0] = input;
-    }
-    ~MaxPool2dOp() { delete saved_max_idx; }
-    function_var *make_output() override;
-    void forward(function_var *out) override;
-    void backward(Tensor *grad_output) override;
-};
-
-// Flattens [N, ...] → [N, C*H*W]. Grad flows back by reshaping to saved shape.
-struct FlattenOp : function {
-    u32 saved_ndim;
-    u32 saved_shape[MAX_NDIM];
-
-    FlattenOp(function_var *input) {
-        n_inputs = 1;
-        inputs[0] = input;
-    }
-
-    function_var *make_output() override;
-    void forward(function_var *out) override;
-    void backward(Tensor *grad_output) override;
-};
-
-// inputs[0] = input [N, C, H, W]
-// inputs[1] = gamma [C]   (scale)
-// inputs[2] = beta  [C]   (shift)
-// output             [N, C, H, W]
-struct BatchNormOp : function {
-    f32 eps;
-    Tensor *saved_mean; // [1,C,1,1] — per-channel mean, broadcast-ready
-    Tensor *saved_var;  // [1,C,1,1] — per-channel Bessel-corrected variance
-    Tensor *saved_xhat; // [N, C, H, W] — normalized input, needed for d_gamma
-
-    BatchNormOp(function_var *input, function_var *gamma, function_var *beta,
-                f32 eps = 1e-5f)
-        : eps(eps), saved_mean(nullptr), saved_var(nullptr), saved_xhat(nullptr) {
-        n_inputs = 3;
-        inputs[0] = input;
-        inputs[1] = gamma;
-        inputs[2] = beta;
-    }
-
-    ~BatchNormOp() {
-        delete saved_mean;
-        delete saved_var;
-        delete saved_xhat;
-    }
-
-    function_var *make_output() override;
-    void forward(function_var *out) override;
-    void backward(Tensor *grad_output) override;
-};
-
-struct MeanSquareErrorOp : function {
-    u64 N; // number of elements in the broadcasted diff — set during forward()
-
-    MeanSquareErrorOp(function_var *pred, function_var *target) {
-        n_inputs = 2;
-        inputs[0] = pred;
-        inputs[1] = target;
-        N = 0;
-    }
-
-    function_var *make_output() override;
-    void forward(function_var *out) override;
-    void backward(Tensor *grad_output) override;
-};
-
-// Fused softmax + cross-entropy loss.
-// inputs[0] = logits  [N, C]
-// inputs[1] = targets [N, C]  (one-hot)
-// output = scalar loss mean over the batch
-struct CrossEntropyWithLogitsOp : function {
-    Tensor *saved_softmax; // softmax(logits), allocated once, reused each step
-    u64 N_batch;           // batch size — set in make_output
-
-    CrossEntropyWithLogitsOp(function_var *logits, function_var *targets) {
-        n_inputs = 2;
-        inputs[0] = logits;
-        inputs[1] = targets;
-        saved_softmax = nullptr;
-        N_batch = 0;
-    }
-
-    ~CrossEntropyWithLogitsOp() { delete saved_softmax; }
-
-    function_var *make_output() override;
-    void forward(function_var *out) override;
-    void backward(Tensor *grad_output) override;
-};
+// Fused softmax + cross-entropy. logits/targets [N, C], output scalar.
+Var cross_entropy_with_logits(Var logits, Var targets);
 
 #endif

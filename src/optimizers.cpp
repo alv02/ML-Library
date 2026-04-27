@@ -3,10 +3,9 @@
 #include <cstdlib>
 #include <numeric>
 
-// ── DataLoader
-// ────────────────────────────────────────────────────────────────
+// ── DataLoader ────────────────────────────────────────────────────────────────
 
-DataLoader::DataLoader(const Tensor *X, const Tensor *y, u32 batch_size)
+DataLoader::DataLoader(Tensor X, Tensor y, u32 batch_size)
     : X(X), y(y), batch_size(batch_size), cursor(0) {
     n_samples = X->shape[0];
     indices.resize(n_samples);
@@ -21,74 +20,54 @@ void DataLoader::shuffle() {
     }
 }
 
-bool DataLoader::next(Tensor *&X_batch, Tensor *&y_batch) {
+bool DataLoader::next(Tensor &X_batch, Tensor &y_batch) {
     if (cursor >= n_samples)
         return false;
-
     u32 end = std::min(cursor + batch_size, n_samples);
     u32 n = end - cursor;
-
     X_batch = tensor_index_select(X, indices.data() + cursor, n, 0);
     y_batch = tensor_index_select(y, indices.data() + cursor, n, 0);
     cursor = end;
     return true;
 }
 
-// ── sgd
-// ───────────────────────────────────────────────────────────────────────
+// ── sgd ───────────────────────────────────────────────────────────────────────
 
-sgd::sgd(f32 learning_rate, f32 lambda, f32 mu)
-    : lr(learning_rate), lambda(lambda), mu(mu), graph(nullptr) {}
-
-sgd::~sgd() {
-    for (auto &[fv, v] : velocity)
-        delete v;
-}
+sgd::sgd(std::vector<Var> params, f32 lr, f32 lambda, f32 mu)
+    : lr(lr), lambda(lambda), mu(mu), params(std::move(params)) {}
 
 void sgd::step() {
-    if (!graph) {
-        printf("sgd: no graph set\n");
-        return;
-    }
-    for (function_var *fv : graph->nodes) {
-        if ((fv->flags & FV_FLAG_PARAMETER) && fv->grad) {
-            if (lambda > 0.0f) {
-                Tensor *reg = tensor_mul(fv->val, lambda);
-                tensor_add(fv->grad, fv->grad, reg);
-                delete reg;
-            }
+    for (auto &p : params) {
+        if (!p->grad.defined())
+            continue;
 
-            if (mu > 0.0f) {
-                Tensor *&v = velocity[fv];
-                if (!v) {
-                    v = tensor_create_like(fv->val);
-                    tensor_clear(v);
-                }
-                // v = mu * v + grad
-                tensor_mul(v, v, mu);
-                tensor_add(v, v, fv->grad);
-                // param -= lr * v
-                Tensor *tmp = tensor_mul(v, lr);
-                tensor_sub(fv->val, fv->val, tmp);
-                delete tmp;
-            } else {
-                Tensor *tmp = tensor_mul(fv->grad, lr);
-                tensor_sub(fv->val, fv->val, tmp);
-                delete tmp;
+        if (lambda > 0.0f) {
+            Tensor reg = tensor_mul(p->data, lambda);
+            tensor_add(p->grad, p->grad, reg);
+        }
+
+        if (mu > 0.0f) {
+            Tensor &v = velocity[p.impl_.get()];
+            if (!v.defined()) {
+                v = tensor_create_like(p->data);
+                tensor_clear(v);
             }
+            // v = mu*v + grad
+            tensor_mul(v, v, mu);
+            tensor_add(v, v, p->grad);
+            // param -= lr * v
+            Tensor delta = tensor_mul(v, lr);
+            tensor_sub(p->data, p->data, delta);
+        } else {
+            Tensor delta = tensor_mul(p->grad, lr);
+            tensor_sub(p->data, p->data, delta);
         }
     }
 }
 
 void sgd::zero_grad() {
-    if (!graph) {
-        printf("sgd: no graph set\n");
-        return;
-    }
-    for (function_var *fv : graph->nodes) {
-        if ((fv->flags & FV_FLAG_REQUIERES_GRAD) && fv->grad)
-            tensor_clear(fv->grad);
+    for (auto &p : params) {
+        if (p->grad.defined())
+            tensor_clear(p->grad);
     }
 }
-
-void sgd::set_graph(Graph *graph) { this->graph = graph; }

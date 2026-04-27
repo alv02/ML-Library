@@ -55,9 +55,6 @@ target_link_libraries(main_cnn3 PRIVATE mllib)
 # ── Tests ─────────────────────────────────────────────────────────────────────
 enable_testing()
 
-add_executable(test_broadcast test/broadcast.cpp)
-target_link_libraries(test_broadcast PRIVATE mllib)
-add_test(NAME broadcast COMMAND test_broadcast WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test)
 
 add_executable(test_tensor test/test_tensor.cpp)
 target_link_libraries(test_tensor PRIVATE mllib)

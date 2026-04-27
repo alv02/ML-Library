@@ -2,49 +2,47 @@
 #define AUTOGRAD_H
 
 #include "tensor.hpp"
+#include <memory>
 #include <vector>
-#define MAX_INPUTS 3
 
-enum function_var_flags {
+enum var_flags {
     FV_FLAG_NONE = 0,
     FV_FLAG_REQUIERES_GRAD = (1 << 0),
     FV_FLAG_PARAMETER = (1 << 1),
 
 };
 
-struct function;
+struct Function;
 
-struct function_var {
+struct VarImpl {
     u32 flags;
-    Tensor *val;
-    Tensor *grad;
-    function *grad_fn;
+    Tensor data;
+    Tensor grad;
+    std::shared_ptr<Function> grad_fn;
 
-    function_var(Tensor *val, u32 flags);
-    ~function_var();
+    VarImpl(Tensor data, u32 flags) : data(data), flags(flags) {};
+    ~VarImpl();
     u32 n_rows() const;
     u32 n_cols() const;
 };
 
-void fv_print(const function_var *fv);
+struct Var {
+    std::shared_ptr<VarImpl> impl_;
 
-struct function {
-    u32 n_inputs;
-    function_var *inputs[MAX_INPUTS];
+    Var() = default;
 
-    // Allocate output fv with correct shape and flags, wire grad_fn. Called
-    // once.
-    virtual function_var *make_output() = 0;
-    // Compute values into an already-allocated fv. Called every step.
-    virtual void forward(function_var *out) = 0;
-    virtual void backward(Tensor *grad_output) = 0;
+    Var(Tensor data, u32 flags = FV_FLAG_NONE);
+    bool defined() const { return impl_ != nullptr; }
+    explicit operator bool() { return defined(); }
+    VarImpl *operator->() const { return impl_.get(); }
 };
 
-struct Graph {
-    std::vector<function_var *> nodes;
+struct Function {
+    std::vector<Var> inputs;
+    virtual void backward(Tensor grad_output) = 0;
+    virtual ~Function() = default;
 };
 
-Graph *graph_create(function_var *output);
-void graph_free(Graph *graph);
-void graph_backward(Graph *graph);
+void backward(Var loss);
+
 #endif
