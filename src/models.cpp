@@ -92,6 +92,15 @@ cnn_model::cnn_model(u32 C_in, u32 H, u32 W, bool on_gpu,
             bn_gamma.push_back(gamma);
             bn_beta.push_back(Var(Tensor::make(1, g_shape, on_gpu, perm_arena),
                                   FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER));
+
+            // Running stats: [1, C_out, 1, 1], mean=0, var=1
+            u32 stat_shape[4] = {1, C_out, 1, 1};
+            Tensor rm = Tensor::make(4, stat_shape, on_gpu, perm_arena);
+            tensor_fill(rm, 0.0f);
+            bn_running_mean.push_back(rm);
+            Tensor rv = Tensor::make(4, stat_shape, on_gpu, perm_arena);
+            tensor_fill(rv, 1.0f);
+            bn_running_var.push_back(rv);
         }
 
         Unfold2dParams p = spec.params;
@@ -144,8 +153,9 @@ Var cnn_model::predict(Var X, CudaMemArena *arena) {
         cur = conv2d(cur, kernels[l], conv_specs[l].params, arena);
         cur = add(cur, conv_b[l], arena);
         if (conv_specs[l].bn) {
-            cur = batch_norm(cur, bn_gamma[bn_idx], bn_beta[bn_idx], 1e-5f,
-                             arena);
+            cur = batch_norm(cur, bn_gamma[bn_idx], bn_beta[bn_idx],
+                             bn_running_mean[bn_idx], bn_running_var[bn_idx],
+                             training, 0.1f, 1e-5f, arena);
             bn_idx++;
         }
         cur = relu(cur, arena);

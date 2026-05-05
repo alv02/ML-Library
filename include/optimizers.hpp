@@ -35,6 +35,7 @@ struct sgd {
         CudaMemArena *perm_arena = nullptr);
     void step(CudaMemArena *arena = nullptr);
     void zero_grad();
+    void set_lr(f32 new_lr) { lr = new_lr; }
 };
 
 #endif

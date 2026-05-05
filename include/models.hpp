@@ -37,10 +37,14 @@ struct cnn_model {
 
     // Conv stage parameters
     std::vector<Var> kernels, conv_b;
-    std::vector<Var> bn_gamma, bn_beta; // one entry per BN layer
+    std::vector<Var> bn_gamma, bn_beta;         // one entry per BN layer
+    std::vector<Tensor> bn_running_mean, bn_running_var; // [1,C,1,1], perm_arena
 
     // Dense stage parameters
     std::vector<Var> dense_Wt, dense_b;
+
+    bool training = true;
+    void set_training(bool t) { training = t; }
 
     // C_in, H, W: input spatial shape — needed to compute flat_features at init
     cnn_model(u32 C_in, u32 H, u32 W, bool on_gpu,

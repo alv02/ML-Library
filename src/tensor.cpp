@@ -164,17 +164,19 @@ Tensor tensor_to_cpu(const Tensor &t, CudaMemArena *arena) {
     return dst;
 }
 
-static void tensor_contiguous_impl(TensorImpl &t) {
+static void tensor_contiguous_impl(TensorImpl &t, CudaMemArena *arena = nullptr) {
     if (tensor_is_contiguous(t))
         return;
     if (t.on_gpu()) {
-        tensor_cuda_contiguous(t);
+        tensor_cuda_contiguous(t, arena);
     } else {
         tensor_cpu_contigous(t);
     }
 }
 
-void tensor_contiguous(Tensor &t) { tensor_contiguous_impl(t.impl()); }
+void tensor_contiguous(Tensor &t, CudaMemArena *arena) {
+    tensor_contiguous_impl(t.impl(), arena);
+}
 
 // Creates a Tensor that shares src's storage but has independent metadata,
 // so reshape/transpose on the view won't affect the original.
@@ -239,14 +241,15 @@ b32 tensor_transpose(Tensor &t, u32 dim0, u32 dim1) {
     return tensor_transpose(t.impl(), dim0, dim1);
 }
 
-b32 tensor_reshape(TensorImpl &tensor, const u32 *shape, u32 ndim) {
+b32 tensor_reshape(TensorImpl &tensor, const u32 *shape, u32 ndim,
+                   CudaMemArena *arena) {
     u64 new_size = 1;
     for (u32 i = 0; i < ndim; i++)
         new_size *= shape[i];
     if (tensor.numel() != new_size)
         return false;
 
-    tensor_contiguous_impl(tensor);
+    tensor_contiguous_impl(tensor, arena);
 
     for (u32 i = 0; i < ndim; i++)
         tensor.shape[i] = shape[i];
@@ -255,8 +258,8 @@ b32 tensor_reshape(TensorImpl &tensor, const u32 *shape, u32 ndim) {
     return true;
 }
 
-b32 tensor_reshape(Tensor &t, const u32 *shape, u32 ndim) {
-    return tensor_reshape(t.impl(), shape, ndim);
+b32 tensor_reshape(Tensor &t, const u32 *shape, u32 ndim, CudaMemArena *arena) {
+    return tensor_reshape(t.impl(), shape, ndim, arena);
 }
 
 void tensor_print(const TensorImpl &tensor) {

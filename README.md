@@ -10,9 +10,9 @@ Built as a learning project to understand how ML frameworks work at the systems 
 
 - **Tensor module** with two backends (CPU and CUDA): arbitrary strides, zero-copy broadcasting, CPU↔GPU transfers, `.npy` file I/O
 - **CUDA kernels written by hand**: shared-memory tiled matmul, parallel tree reductions, unfold2d/fold2d (im2col), scatter-add, atomic operations
-- **Autograd engine**: computational graph (DAG), 8+ differentiable ops — MatMul, Conv2d, MaxPool2d, ReLU, softmax, cross-entropy
+- **Autograd engine**: computational graph (DAG), 8+ differentiable ops — MatMul, Conv2d, MaxPool2d, BatchNorm2d, ReLU, softmax, cross-entropy
 - **SGD optimizer** with momentum and L2 regularization
-- **Models**: linear regression, fully-connected network, CNN with strided convolutions, CNN with max pooling
+- **Models**: linear regression, fully-connected network, CNN with strided convolutions, CNN with max pooling, VGG-style CNN with BatchNorm
 - **Utilities**: DataLoader with Fisher-Yates shuffle, accuracy metric, terminal visualization of predictions (ANSI color)
 
 ---
@@ -64,6 +64,7 @@ Binaries are placed in `build/`. All executables must be run from the **project 
 ./build/main_nn      # Dense network on CIFAR-10
 ./build/main_cnn     # CNN with strided convolutions
 ./build/main_cnn2    # CNN with max pooling
+./build/main_cnn3    # VGG-B with BatchNorm on CIFAR-10
 ```
 
 Each executable prints per-epoch loss and final test loss + accuracy. The CNN executables also render a terminal visualization of correct and wrong predictions using ANSI color codes.
@@ -155,6 +156,43 @@ CrossEntropyLoss
 
 ---
 
+### `main_cnn3` — VGG-style CNN with BatchNorm (CIFAR-10)
+
+VGG-inspired architecture with BatchNorm2d after every convolution. Three blocks of two conv layers each, followed by MaxPool2d, then two dense layers. Adapted for CIFAR-10's 32×32 input (3 blocks instead of 5, smaller dense head).
+
+```
+Input: [N, 3, 32, 32]
+
+Block 1:
+  Conv(3→64,   k=3, p=1) → BN → ReLU             [N, 64,  32, 32]
+  Conv(64→64,  k=3, p=1) → BN → ReLU → MaxPool   [N, 64,  16, 16]
+
+Block 2:
+  Conv(64→128, k=3, p=1) → BN → ReLU             [N, 128, 16, 16]
+  Conv(128→128,k=3, p=1) → BN → ReLU → MaxPool   [N, 128,  8,  8]
+
+Block 3:
+  Conv(128→256,k=3, p=1) → BN → ReLU             [N, 256,  8,  8]
+  Conv(256→256,k=3, p=1) → BN → ReLU → MaxPool   [N, 256,  4,  4]
+
+Flatten                                            [N, 4096]
+Linear(4096→512) → ReLU
+Linear(512→10)
+CrossEntropyLoss
+```
+
+| Hyperparameter | Value          |
+| -------------- | -------------- |
+| Optimizer      | SGD            |
+| Learning rate  | 0.01           |
+| Momentum       | 0.9            |
+| Weight decay   | 5e-4           |
+| Batch size     | 64             |
+| Epochs         | 100            |
+| Weight init    | Kaiming normal |
+
+---
+
 ## Results on CIFAR-10
 
 | Model                           | Executable  | Test Accuracy |
@@ -162,6 +200,7 @@ CrossEntropyLoss
 | Dense FC (3072→1024→512→256→10) | `main_nn`   | 53.64%        |
 | CNN strided conv                | `main_cnn`  | 70.36%        |
 | CNN + MaxPool                   | `main_cnn2` | 76.53%        |
+| VGG-style + BatchNorm           | `main_cnn3` | 88.06%        |
 
 > Results may vary slightly between runs due to random weight initialization and batch shuffling.
 
@@ -210,6 +249,7 @@ python pytorch_baseline.py
 ├── main_nn.cpp              # Dense network on CIFAR-10
 ├── main_cnn.cpp             # Strided CNN on CIFAR-10
 ├── main_cnn2.cpp            # MaxPool CNN on CIFAR-10
+├── main_cnn3.cpp            # VGG-B with BatchNorm on CIFAR-10
 ├── prepare_dataset.py       # Download and preprocess CIFAR-10 → .npy
 ├── pytorch_baseline.py      # PyTorch reference implementation
 └── CMakeLists.txt
@@ -224,5 +264,7 @@ python pytorch_baseline.py
 **MaxPool backward** saves the argmax index for each pooling window during the forward pass, then routes gradients back to those positions using scatter-add.
 
 **Broadcasting** works by setting stride=0 on dimensions of size 1. Both CPU and CUDA kernels compute the physical memory offset from the logical index using these strides, so no data is copied.
+
+**BatchNorm2d** normalizes each channel over the spatial and batch dimensions during training, then applies learnable per-channel scale (γ) and shift (β). Running mean and variance are tracked for inference. The backward pass computes gradients through the normalization, scale, and shift in a single pass.
 
 **Numerical stability**: log-softmax uses the log-sum-exp trick; cross-entropy is fused with softmax to avoid `log(0)`.

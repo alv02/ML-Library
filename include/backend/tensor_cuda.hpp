@@ -54,7 +54,7 @@ struct TensorMeta {
 
 // ---- memory management transfers) ----------------------------------------
 void tensor_cuda_copy(TensorImpl &dst, const TensorImpl &src);
-void tensor_cuda_contiguous(TensorImpl &t);
+void tensor_cuda_contiguous(TensorImpl &t, CudaMemArena *arena = nullptr);
 // ---- fill / clear --------------------------------------------------------
 
 void tensor_cuda_fill(TensorImpl &tensor, f32 value);

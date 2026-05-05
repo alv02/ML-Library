@@ -120,7 +120,7 @@ b32 tensor_copy(Tensor &dst, const Tensor &src);
 Tensor tensor_to_gpu(const Tensor &t, CudaMemArena *arena = nullptr);
 Tensor tensor_to_cpu(const Tensor &t, CudaMemArena *arena = nullptr);
 
-void tensor_contiguous(Tensor &t);
+void tensor_contiguous(Tensor &t, CudaMemArena *arena = nullptr);
 Tensor tensor_view(const Tensor &src, CudaMemArena *arena = nullptr);
 Tensor tensor_create_like(const Tensor &src, CudaMemArena *arena = nullptr);
 
@@ -133,7 +133,8 @@ b32 tensor_expand_shape(TensorImpl &t, u32 expanded_ndim);
 b32 tensor_is_contiguous(const TensorImpl &t);
 b32 tensor_shape_eq(const TensorImpl &a, const TensorImpl &b);
 b32 tensor_transpose(TensorImpl &t, u32 dim0, u32 dim1);
-b32 tensor_reshape(TensorImpl &t, const u32 *shape, u32 ndim);
+b32 tensor_reshape(TensorImpl &t, const u32 *shape, u32 ndim,
+                   CudaMemArena *arena = nullptr);
 u32 broadcast_shape(const TensorImpl &a, const TensorImpl &b, u32 *out_shape);
 void expanded_shape(const TensorImpl &t, u32 expanded_ndim, u32 *out);
 void expanded_stride(const TensorImpl &t, u32 expanded_ndim, u64 *out);
@@ -141,7 +142,8 @@ void tensor_print(const TensorImpl &t);
 
 // You might want public Tensor& overloads for the few that users call:
 b32 tensor_transpose(Tensor &t, u32 dim0, u32 dim1);
-b32 tensor_reshape(Tensor &t, const u32 *shape, u32 ndim);
+b32 tensor_reshape(Tensor &t, const u32 *shape, u32 ndim,
+                   CudaMemArena *arena = nullptr);
 b32 tensor_shape_eq(const Tensor &a, const Tensor &b);
 b32 tensor_is_contiguous(const Tensor &t);
 

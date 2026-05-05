@@ -19,8 +19,12 @@ Var max_pool2d(Var input, Unfold2dParams params, CudaMemArena *arena = nullptr);
 // [N, ...] → [N, C*H*W]
 Var flatten(Var input, CudaMemArena *arena = nullptr);
 
-// input [N, C, H, W], gamma/beta [C]
-Var batch_norm(Var input, Var gamma, Var beta, f32 eps = 1e-5f,
+// input [N, C, H, W], gamma/beta [C], running_mean/var [1,C,1,1]
+// training=true  → normalize with batch stats, update running EMA
+// training=false → normalize with running stats, no grad_fn
+Var batch_norm(Var input, Var gamma, Var beta,
+               Tensor running_mean, Tensor running_var,
+               bool training = true, f32 momentum = 0.1f, f32 eps = 1e-5f,
                CudaMemArena *arena = nullptr);
 
 Var mse_loss(Var pred, Var target, CudaMemArena *arena = nullptr);

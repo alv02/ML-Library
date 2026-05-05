@@ -30,7 +30,6 @@ void cuda_arena_pop_to(CudaMemArena *arena, u64 pos) {
     cuda_arena_pop(arena, size);
 }
 void cuda_arena_clear(CudaMemArena *arena) {
-    cudaStreamSynchronize(0);
     if (arena->pos > 0)
         cudaMemsetAsync(arena->base, 0, arena->pos, 0);
     cuda_arena_pop_to(arena, 0);

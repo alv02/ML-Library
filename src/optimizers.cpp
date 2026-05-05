@@ -78,3 +78,4 @@ void sgd::zero_grad() {
             tensor_clear(p->grad);
     }
 }
+
