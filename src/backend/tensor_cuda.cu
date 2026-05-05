@@ -2,8 +2,8 @@
 #include <cuda/cmath>
 #include <curand_kernel.h>
 
-static constexpr u32 TILE = 16;
-static constexpr u32 N_THREADS = 256;
+static constexpr u32 TILE = 32;
+static constexpr u32 N_THREADS = 512;
 
 // ── Functors ─────────────────────────────────────────────────────────────────
 
@@ -140,45 +140,70 @@ __global__ void mat_mul(TensorMeta out_meta, TensorMeta a_meta,
     out[out_meta.at(myRow, myCol)] = value;
 }
 
+// 2×2 thread coarsening: 16×16 block (256 threads), each thread owns a 2×2
+// output subregion. Keeps the same 32×32 shared memory tile as before, giving
+// 4× more FMAs per thread and 6 blocks/SM (100% warp occupancy on SM 12.x).
 __global__ void mat_mul_tiled(TensorMeta out_meta, TensorMeta a_meta,
                               TensorMeta b_meta, f32 *out, f32 *a, f32 *b,
                               f32 beta) {
-    u64 myRow = threadIdx.y + blockIdx.x * blockDim.y;
-    u64 myCol = threadIdx.x + blockIdx.y * blockDim.x;
+    constexpr u32 HTILE = TILE / 2;  // 16 — thread block side length
+
+    // Output coordinates for this thread's 2×2 subregion
+    u64 row0 = threadIdx.y * 2 + blockIdx.x * TILE;
+    u64 row1 = row0 + 1;
+    u64 col0 = threadIdx.x * 2 + blockIdx.y * TILE;
+    u64 col1 = col0 + 1;
 
     __shared__ f32 a_tile[TILE * TILE];
     __shared__ f32 b_tile[TILE * TILE];
 
-    bool in_bounds = myRow < out_meta.rows() && myCol < out_meta.cols();
     u32 n_tiles = cuda::ceil_div(a_meta.cols(), TILE);
 
-    f32 value = 0.0f;
+    // Linear id for coalesced tile loading (256 threads → 1024 elements, 4 each)
+    u32 tid = threadIdx.y * HTILE + threadIdx.x;
+
+    f32 v00 = 0, v01 = 0, v10 = 0, v11 = 0;
+
     for (u32 n = 0; n < n_tiles; n++) {
-        u32 col_a = n * TILE + threadIdx.x;
-        u32 row_b = n * TILE + threadIdx.y;
+        // Load a_tile and b_tile — 4 elements per thread, coalesced
+        for (u32 i = 0; i < 4; i++) {
+            u32 flat = tid + i * (HTILE * HTILE);
+            u32 ar = flat / TILE, ac = flat % TILE;
+            u64 grow = blockIdx.x * TILE + ar, gcol = n * TILE + ac;
+            a_tile[flat] = (grow < a_meta.rows() && gcol < a_meta.cols())
+                               ? a[a_meta.at(grow, gcol)]
+                               : 0.0f;
 
-        a_tile[threadIdx.y * TILE + threadIdx.x] =
-            (myRow < out_meta.rows() && col_a < a_meta.cols())
-                ? a[a_meta.at(myRow, col_a)]
-                : 0.0f;
-
-        b_tile[threadIdx.y * TILE + threadIdx.x] =
-            (row_b < b_meta.rows() && myCol < b_meta.cols())
-                ? b[b_meta.at(row_b, myCol)]
-                : 0.0f;
+            u32 br = flat / TILE, bc = flat % TILE;
+            u64 brow = n * TILE + br, bcol = blockIdx.y * TILE + bc;
+            b_tile[flat] = (brow < b_meta.rows() && bcol < b_meta.cols())
+                               ? b[b_meta.at(brow, bcol)]
+                               : 0.0f;
+        }
 
         __syncthreads();
 
-        for (u32 i = 0; i < TILE; i++)
-            value +=
-                a_tile[threadIdx.y * TILE + i] * b_tile[i * TILE + threadIdx.x];
+        for (u32 k = 0; k < TILE; k++) {
+            f32 a0 = a_tile[threadIdx.y * 2 * TILE + k];
+            f32 a1 = a_tile[(threadIdx.y * 2 + 1) * TILE + k];
+            f32 b0 = b_tile[k * TILE + threadIdx.x * 2];
+            f32 b1 = b_tile[k * TILE + threadIdx.x * 2 + 1];
+            v00 += a0 * b0;  v01 += a0 * b1;
+            v10 += a1 * b0;  v11 += a1 * b1;
+        }
 
         __syncthreads();
     }
 
-    if (in_bounds)
-        out[out_meta.at(myRow, myCol)] =
-            value + beta * out[out_meta.at(myRow, myCol)];
+    u64 rows = out_meta.rows(), cols = out_meta.cols();
+    if (row0 < rows && col0 < cols)
+        out[out_meta.at(row0, col0)] = v00 + beta * out[out_meta.at(row0, col0)];
+    if (row0 < rows && col1 < cols)
+        out[out_meta.at(row0, col1)] = v01 + beta * out[out_meta.at(row0, col1)];
+    if (row1 < rows && col0 < cols)
+        out[out_meta.at(row1, col0)] = v10 + beta * out[out_meta.at(row1, col0)];
+    if (row1 < rows && col1 < cols)
+        out[out_meta.at(row1, col1)] = v11 + beta * out[out_meta.at(row1, col1)];
 }
 
 __global__ void tensor_sum_step(u64 size, f32 *out, f32 *tensor) {
@@ -495,8 +520,8 @@ TensorMeta::TensorMeta(const TensorImpl &t, const u32 *bcast_shape,
 // -------------------------------------------
 void tensor_cuda_copy(TensorImpl &dst, const TensorImpl &src) {
     if (tensor_is_contiguous(dst) && tensor_is_contiguous(src)) {
-        cudaMemcpy(dst.data(), src.data(), src.numel() * sizeof(f32),
-                   cudaMemcpyDeviceToDevice);
+        cudaMemcpyAsync(dst.data(), src.data(), src.numel() * sizeof(f32),
+                        cudaMemcpyDeviceToDevice, 0);
         return;
     }
     u32 threads = N_THREADS;
@@ -508,21 +533,21 @@ void tensor_cuda_copy(TensorImpl &dst, const TensorImpl &src) {
                                      dst.data(), src.data());
 }
 
-void tensor_cuda_contiguous(TensorImpl &t) {
+void tensor_cuda_contiguous(TensorImpl &t, CudaMemArena *arena) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(t.numel(), (u64)threads);
 
     TensorMeta src_meta(t);
     TensorMeta src_contig = make_contig_meta(t);
 
-    Tensor temp_t = Tensor::make(t.ndim, t.shape, true);
+    Tensor temp_t = Tensor::make(t.ndim, t.shape, true, arena);
     TensorImpl &temp = temp_t.impl();
 
     tensor_contiguous<<<blocks, threads>>>(src_contig, src_meta, temp.data(),
                                            t.data());
 
-    cudaMemcpy(t.data(), temp.data(), t.numel() * sizeof(f32),
-               cudaMemcpyDeviceToDevice);
+    cudaMemcpyAsync(t.data(), temp.data(), t.numel() * sizeof(f32),
+                    cudaMemcpyDeviceToDevice, 0);
     tensor_compute_strides(t.stride, t.shape, t.ndim);
 }
 
@@ -535,7 +560,7 @@ void tensor_cuda_fill(TensorImpl &tensor, f32 value) {
 }
 
 void tensor_cuda_clear(TensorImpl &tensor) {
-    cudaMemset(tensor.data(), 0, sizeof(f32) * tensor.numel());
+    cudaMemsetAsync(tensor.data(), 0, sizeof(f32) * tensor.numel(), 0);
 }
 
 // ---- activations (relu, exp) ---------------------------------------------
@@ -610,10 +635,10 @@ void tensor_cuda_div(TensorImpl &out, const TensorImpl &tensor, f32 scalar) {
 
 void tensor_cuda_mat_mul(TensorImpl &out, const TensorImpl &a,
                          const TensorImpl &b, b32 clear_out) {
-    u32 threads = TILE;
-    u32 row_tiles = cuda::ceil_div(out.shape[0], threads);
-    u32 col_tiles = cuda::ceil_div(out.shape[1], threads);
-    dim3 threadsPerBlock(threads, threads);
+    constexpr u32 HTILE = TILE / 2;
+    u32 row_tiles = cuda::ceil_div(out.shape[0], TILE);
+    u32 col_tiles = cuda::ceil_div(out.shape[1], TILE);
+    dim3 threadsPerBlock(HTILE, HTILE);  // 16×16 = 256 threads
     dim3 blocks(row_tiles, col_tiles);
     TensorMeta out_meta(out);
     TensorMeta a_meta(a);
@@ -769,13 +794,13 @@ void tensor_cuda_index_select(TensorImpl &dst, const TensorImpl &src,
     TensorMeta dst_meta(dst);
     TensorMeta src_meta(src);
     u32 *indices_gpu;
-    cudaMalloc(&indices_gpu, n_indices * sizeof(u32));
-    cudaMemcpy(indices_gpu, indices, n_indices * sizeof(u32),
-               cudaMemcpyHostToDevice);
+    cudaMallocAsync(&indices_gpu, n_indices * sizeof(u32), 0);
+    cudaMemcpyAsync(indices_gpu, indices, n_indices * sizeof(u32),
+                    cudaMemcpyHostToDevice, 0);
     tensor_index_select<<<blocks, threads>>>(dst_meta, src_meta, dst.data(),
                                              src.data(), indices_gpu, n_indices,
                                              dim);
-    cudaFree(indices_gpu);
+    cudaFreeAsync(indices_gpu, 0);
 }
 
 // ---- spatial / patch operations ------------------------------------------
