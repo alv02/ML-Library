@@ -210,7 +210,9 @@ b32 tensor_argmax(Tensor &out, const Tensor &t, u32 dim, b32 keep_dim = true);
 Tensor tensor_argmax(const Tensor &t, u32 dim, b32 keep_dim = true,
                      CudaMemArena *arena = nullptr);
 
-b32 tensor_welford_mean_var(Tensor &mean, Tensor &var, const Tensor &src,
+// Outputs mean and raw M2 (sum of squared deviations) along `dim`.
+// Divide m2 by N for biased variance, or by N-1 for unbiased.
+b32 tensor_welford_mean_var(Tensor &mean, Tensor &m2, const Tensor &src,
                             u32 dim);
 
 // ---- scatter -------------------------------------------------------------

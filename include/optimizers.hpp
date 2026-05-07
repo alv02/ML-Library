@@ -38,4 +38,51 @@ struct sgd {
     void set_lr(f32 new_lr) { lr = new_lr; }
 };
 
+// ── MultiStepLR ───────────────────────────────────────────────────────────────
+// Multiplies lr by gamma each time epoch (0-indexed) hits a milestone.
+
+struct MultiStepLR {
+    sgd &optimizer;
+    std::vector<int> milestones;
+    f32 gamma;
+    f32 base_lr;
+
+    MultiStepLR(sgd &optimizer, std::vector<int> milestones, f32 gamma = 0.1f);
+    void step(int epoch);
+};
+
+// ── ReduceLROnPlateau ─────────────────────────────────────────────────────────
+// Reduces lr by factor when loss has not improved by min_delta for patience
+// consecutive epochs. Stops reducing once lr reaches min_lr.
+
+struct ReduceLROnPlateau {
+    sgd &optimizer;
+    f32 factor;
+    int patience;
+    f32 min_lr;
+    f32 min_delta;
+
+    f32 best_loss = 1e9f;
+    int no_improve = 0;
+
+    ReduceLROnPlateau(sgd &optimizer, f32 factor = 0.1f, int patience = 10,
+                      f32 min_lr = 1e-6f, f32 min_delta = 1e-4f);
+    void step(f32 loss, int epoch);
+};
+
+// ── EarlyStopping ─────────────────────────────────────────────────────────────
+// Returns true (stop signal) when loss has not improved by min_delta for
+// patience consecutive epochs.
+
+struct EarlyStopping {
+    int patience;
+    f32 min_delta;
+
+    f32 best_loss = 1e9f;
+    int no_improve = 0;
+
+    EarlyStopping(int patience, f32 min_delta = 1e-4f);
+    bool step(f32 loss, int epoch);
+};
+
 #endif

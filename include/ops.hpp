@@ -19,9 +19,13 @@ Var max_pool2d(Var input, Unfold2dParams params, CudaMemArena *arena = nullptr);
 // [N, ...] → [N, C*H*W]
 Var flatten(Var input, CudaMemArena *arena = nullptr);
 
-// input [N, C, H, W], gamma/beta [C], running_mean/var [1,C,1,1]
-// training=true  → normalize with batch stats, update running EMA
+// input [N, C, ...], gamma/beta [C], running_mean/var shape [1,C,1,...,1] matching input ndim
+// Normalizes per channel (dim 1) over all other dims — works for dense (N,C) and conv (N,C,H,W) etc.
+// training=true  → normalize with biased batch variance (divide by N);
+//                  updates running_var with unbiased variance (divide by N-1)
+//                  via EMA: running = (1-momentum)*running + momentum*batch
 // training=false → normalize with running stats, no grad_fn
+// momentum: weight given to the incoming batch estimate (PyTorch convention, default 0.1)
 Var batch_norm(Var input, Var gamma, Var beta,
                Tensor running_mean, Tensor running_var,
                bool training = true, f32 momentum = 0.1f, f32 eps = 1e-5f,

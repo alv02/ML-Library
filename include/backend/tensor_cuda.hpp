@@ -94,7 +94,7 @@ void tensor_cuda_mat_mul(TensorImpl &out, const TensorImpl &a,
 
 void tensor_cuda_sum(TensorImpl &out, const TensorImpl &tensor);
 void tensor_cuda_sum(TensorImpl &out, const TensorImpl &tensor, u32 dim);
-void tensor_cuda_welford_mean_var(TensorImpl &mean, TensorImpl &var,
+void tensor_cuda_welford_mean_var(TensorImpl &mean, TensorImpl &m2,
                                   const TensorImpl &src, u32 dim);
 void tensor_cuda_max(TensorImpl &out, const TensorImpl &tensor);
 void tensor_cuda_max(TensorImpl &out, const TensorImpl &tensor, u32 dim);

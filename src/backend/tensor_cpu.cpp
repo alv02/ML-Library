@@ -303,7 +303,7 @@ void tensor_cpu_argmax(TensorImpl &out, const TensorImpl &tensor, u32 dim) {
 
 // ---- welford mean+var ----------------------------------------------------
 
-void tensor_cpu_welford_mean_var(TensorImpl &mean, TensorImpl &var,
+void tensor_cpu_welford_mean_var(TensorImpl &mean, TensorImpl &m2,
                                  const TensorImpl &src, u32 dim) {
     u32 C = src.shape[dim];
 
@@ -327,7 +327,7 @@ void tensor_cpu_welford_mean_var(TensorImpl &mean, TensorImpl &var,
 
     for (u32 c = 0; c < C; c++) {
         mean.data()[c] = mu[c];
-        var.data()[c] = M2[c] / (f32)(n[c] - 1);
+        m2.data()[c] = M2[c];  // raw sum of squared deviations; divide by N or N-1 at call site
     }
 }
 

@@ -19,9 +19,14 @@ static Tensor reduce_grad(const Tensor &grad, const Tensor &target,
 }
 
 // Reduces [N,C,H,W] → [1,C,1,1] by summing over dims 0, 2, 3.
-static Tensor reduce_nhw(const Tensor &t, CudaMemArena *arena) {
-    return tensor_sum(tensor_sum(tensor_sum(t, 3, true, arena), 2, true, arena),
-                      0, true, arena);
+// Sum over all dims except dim 1 (the channel/feature dim), keeping dims.
+static Tensor reduce_all_except_c(const Tensor &t, CudaMemArena *arena) {
+    Tensor r = tensor_view(t);
+    for (i32 d = (i32)r->ndim - 1; d >= 0; d--) {
+        if ((u32)d == 1) continue;
+        r = tensor_sum(r, (u32)d, true, arena);
+    }
+    return r;
 }
 
 // ── mat_mul ──────────────────────────────────────────────────────────────────
@@ -330,24 +335,38 @@ Var batch_norm(Var input, Var gamma, Var beta,
                bool training, f32 momentum, f32 eps, CudaMemArena *arena) {
     const Tensor &inp = input->data;
     bool on_gpu = inp->on_gpu();
+    u32 ndim = inp->ndim;
     u32 C = inp->shape[1];
-    u32 c4[4] = {1, C, 1, 1};
+
+    // Broadcast shape: [1, C, 1, ..., 1] matching inp->ndim
+    u32 bcast_shape[MAX_NDIM];
+    for (u32 d = 0; d < ndim; d++) bcast_shape[d] = (d == 1) ? C : 1;
 
     Tensor mean, var, xhat;
 
     if (training) {
-        // Compute per-channel batch statistics [1,C,1,1]
-        mean = Tensor::make(4, c4, on_gpu, arena);
-        var = Tensor::make(4, c4, on_gpu, arena);
-        tensor_welford_mean_var(mean, var, inp, 1);
+        // Compute per-channel mean and raw M2 (sum of squared deviations)
+        mean = Tensor::make(ndim, bcast_shape, on_gpu, arena);
+        Tensor m2 = Tensor::make(ndim, bcast_shape, on_gpu, arena);
+        tensor_welford_mean_var(mean, m2, inp, 1);
 
-        // Update running EMA: running = (1-m)*running + m*batch
+        // count = elements per channel (N * spatial dims)
+        f32 count = (f32)inp->numel() / (f32)C;
+
+        // Biased variance (divide by count): used for normalization, matching PyTorch forward
+        var = tensor_div(m2, count, arena);
+
+        // Unbiased variance (divide by count-1): used for running stats EMA, matching PyTorch
+        Tensor unbiased_var = tensor_div(m2, count - 1.0f, arena);
+
+        // Update running stats: running = (1-momentum)*running + momentum*batch
+        // momentum is the weight of the incoming batch estimate (PyTorch convention)
         tensor_mul(running_mean, running_mean, 1.0f - momentum);
         tensor_add(running_mean, running_mean, tensor_mul(mean, momentum, arena));
         tensor_mul(running_var, running_var, 1.0f - momentum);
-        tensor_add(running_var, running_var, tensor_mul(var, momentum, arena));
+        tensor_add(running_var, running_var, tensor_mul(unbiased_var, momentum, arena));
 
-        // xhat = (inp - batch_mean) / sqrt(batch_var + eps)
+        // xhat = (inp - batch_mean) / sqrt(biased_batch_var + eps)
         xhat = tensor_sub(inp, mean, arena);
     } else {
         // Eval: normalize with accumulated running stats, no grad
@@ -360,11 +379,11 @@ Var batch_norm(Var input, Var gamma, Var beta,
     tensor_sqrt(denom, denom);
     tensor_div(xhat, xhat, denom);
 
-    // y = gamma * xhat + beta  (gamma/beta [C] → [1,C,1,1])
+    // y = gamma * xhat + beta  (gamma/beta [C] → [1,C,1,...,1])
     Tensor gv = tensor_view(gamma->data);
-    tensor_reshape(gv, c4, 4, arena);
+    tensor_reshape(gv, bcast_shape, ndim, arena);
     Tensor bv = tensor_view(beta->data);
-    tensor_reshape(bv, c4, 4, arena);
+    tensor_reshape(bv, bcast_shape, ndim, arena);
     Tensor out_data = tensor_mul(xhat, gv, arena);
     tensor_add(out_data, out_data, bv);
 
@@ -381,32 +400,33 @@ Var batch_norm(Var input, Var gamma, Var beta,
         u32 C;
         void backward(Tensor grad) override {
             const Tensor &inp = inputs[0]->data;
-            u32 N = inp->shape[0], H = inp->shape[2], W = inp->shape[3];
-            f32 m = (f32)(N * H * W);
-            u32 c4[4] = {1, C, 1, 1};
+            u32 ndim = inp->ndim;
+            f32 m = (f32)inp->numel() / (f32)C;
+            u32 bcast_shape[MAX_NDIM];
+            for (u32 d = 0; d < ndim; d++) bcast_shape[d] = (d == 1) ? C : 1;
             u32 c_shape[1] = {C};
 
             Tensor std_dev = tensor_sqrt(tensor_add(saved_var, eps, arena), arena);
 
-            // d_xhat = grad * gamma  [N,C,H,W]
+            // d_xhat = grad * gamma
             Tensor gv = tensor_view(inputs[1]->data);
-            tensor_reshape(gv, c4, 4, arena);
+            tensor_reshape(gv, bcast_shape, ndim, arena);
             Tensor d_xhat = tensor_mul(grad, gv, arena);
 
-            // d_beta = sum(grad, N,H,W) → [C]
+            // d_beta = sum(grad, all dims except C) → [C]
             if (inputs[2]->flags & FV_FLAG_REQUIERES_GRAD) {
                 if (!inputs[2]->grad.defined())
                     inputs[2]->grad = tensor_create_like(inputs[2]->data, arena);
-                Tensor db = reduce_nhw(grad, arena);
+                Tensor db = reduce_all_except_c(grad, arena);
                 tensor_reshape(db, c_shape, 1, arena);
                 tensor_add(inputs[2]->grad, inputs[2]->grad, db);
             }
 
-            // d_gamma = sum(grad * xhat, N,H,W) → [C]
+            // d_gamma = sum(grad * xhat, all dims except C) → [C]
             if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
                 if (!inputs[1]->grad.defined())
                     inputs[1]->grad = tensor_create_like(inputs[1]->data, arena);
-                Tensor dg = reduce_nhw(tensor_mul(grad, saved_xhat, arena), arena);
+                Tensor dg = reduce_all_except_c(tensor_mul(grad, saved_xhat, arena), arena);
                 tensor_reshape(dg, c_shape, 1, arena);
                 tensor_add(inputs[1]->grad, inputs[1]->grad, dg);
             }
@@ -417,11 +437,11 @@ Var batch_norm(Var input, Var gamma, Var beta,
                 if (!inputs[0]->grad.defined())
                     inputs[0]->grad = tensor_create_like(inputs[0]->data, arena);
 
-                Tensor mean_dxhat = reduce_nhw(d_xhat, arena);
+                Tensor mean_dxhat = reduce_all_except_c(d_xhat, arena);
                 tensor_div(mean_dxhat, mean_dxhat, m);
 
                 Tensor mean_dxhat_x =
-                    reduce_nhw(tensor_mul(d_xhat, saved_xhat, arena), arena);
+                    reduce_all_except_c(tensor_mul(d_xhat, saved_xhat, arena), arena);
                 tensor_div(mean_dxhat_x, mean_dxhat_x, m);
                 Tensor xhat_term = tensor_mul(saved_xhat, mean_dxhat_x, arena);
 

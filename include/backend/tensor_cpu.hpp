@@ -56,9 +56,10 @@ void tensor_cpu_max(TensorImpl &out, const TensorImpl &tensor, u32 dim);
 // Returns the index (as f32) of the max value along dim.
 void tensor_cpu_argmax(TensorImpl &out, const TensorImpl &tensor, u32 dim);
 
-// ---- welford mean+var ----------------------------------------------------
+// ---- welford mean+m2 ----------------------------------------------------
+// Outputs mean and raw M2 (sum of squared deviations) along `dim`.
 
-void tensor_cpu_welford_mean_var(TensorImpl &mean, TensorImpl &var,
+void tensor_cpu_welford_mean_var(TensorImpl &mean, TensorImpl &m2,
                                  const TensorImpl &src, u32 dim);
 
 // ---- scattering ----------------------------------------------------------

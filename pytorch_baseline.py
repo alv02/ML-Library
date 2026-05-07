@@ -161,3 +161,78 @@ cnn2_loader = DataLoader(TensorDataset(X_train, y_train_idx),
                          batch_size=64, shuffle=True)
 train(cnn2_model, criterion, cnn2_optim, cnn2_loader, epochs=60)
 evaluate(cnn2_model, criterion)
+
+# ── Model 4: main_cnn3 — VGG-13-style + BatchNorm ────────────────────────────
+# Block 1: Conv(3→64)+BN+ReLU,   Conv(64→64)+BN+ReLU,   MaxPool → [N,64,16,16]
+# Block 2: Conv(64→128)+BN+ReLU,  Conv(128→128)+BN+ReLU,  MaxPool → [N,128,8,8]
+# Block 3: Conv(128→256)+BN+ReLU, Conv(256→256)+BN+ReLU,  MaxPool → [N,256,4,4]
+# Block 4: Conv(256→512)+BN+ReLU, Conv(512→512)+BN+ReLU,  MaxPool → [N,512,2,2]
+# → Flatten → 2048 → 512 → 10
+# SGD lr=0.05, weight_decay=5e-4, momentum=0.9, batch=64, epochs=100
+# ReduceLROnPlateau factor=0.1, patience=10
+
+print("=" * 50)
+print("main_cnn3  (VGG-13-style + BatchNorm)")
+print("=" * 50)
+
+def conv_bn(in_c, out_c):
+    return [nn.Conv2d(in_c, out_c, 3, padding=1, bias=False), nn.BatchNorm2d(out_c), nn.ReLU()]
+
+class CNN3(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.features = nn.Sequential(
+            *conv_bn(3,   64),  *conv_bn(64,  64),  nn.MaxPool2d(2, 2),
+            *conv_bn(64,  128), *conv_bn(128, 128), nn.MaxPool2d(2, 2),
+            *conv_bn(128, 256), *conv_bn(256, 256), nn.MaxPool2d(2, 2),
+            *conv_bn(256, 512), *conv_bn(512, 512), nn.MaxPool2d(2, 2),
+        )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(512 * 2 * 2, 512), nn.ReLU(),
+            nn.Linear(512, 10),
+        )
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        return self.classifier(self.features(x))
+
+def train_cnn3(model, criterion, optimizer, scheduler, loader, epochs, log_every=5):
+    best_loss = float("inf")
+    no_improve = 0
+    for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0.0
+        for Xb, yb in loader:
+            optimizer.zero_grad()
+            loss = criterion(model(Xb), yb)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+        avg_loss = epoch_loss / len(loader)
+        if epoch % log_every == 0:
+            print(f"Epoch {epoch+1:3d}  loss: {avg_loss:.4f}  lr: {optimizer.param_groups[0]['lr']:.2e}")
+        scheduler.step(avg_loss)
+        if best_loss - avg_loss > 1e-4:
+            best_loss = avg_loss
+            no_improve = 0
+        else:
+            no_improve += 1
+        if no_improve >= 10:
+            print(f"EarlyStopping at epoch {epoch+1}")
+            break
+
+cnn3_model = CNN3().to(device)
+cnn3_optim = torch.optim.SGD(cnn3_model.parameters(), lr=0.05,
+                              weight_decay=5e-4, momentum=0.9)
+cnn3_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    cnn3_optim, factor=0.1, patience=5)
+cnn3_loader = DataLoader(TensorDataset(X_train, y_train_idx),
+                         batch_size=64, shuffle=True)
+train_cnn3(cnn3_model, criterion, cnn3_optim, cnn3_scheduler, cnn3_loader, epochs=100)
+evaluate(cnn3_model, criterion)

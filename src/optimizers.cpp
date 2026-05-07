@@ -1,5 +1,6 @@
 #include "../include/optimizers.hpp"
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <numeric>
 
@@ -77,5 +78,70 @@ void sgd::zero_grad() {
         if (p->grad.defined())
             tensor_clear(p->grad);
     }
+}
+
+// ── MultiStepLR ───────────────────────────────────────────────────────────────
+
+MultiStepLR::MultiStepLR(sgd &optimizer, std::vector<int> milestones, f32 gamma)
+    : optimizer(optimizer), milestones(std::move(milestones)), gamma(gamma),
+      base_lr(optimizer.lr) {
+    std::sort(this->milestones.begin(), this->milestones.end());
+}
+
+void MultiStepLR::step(int epoch) {
+    for (int m : milestones) {
+        if (epoch == m) {
+            f32 old_lr = optimizer.lr;
+            f32 new_lr = old_lr * gamma;
+            optimizer.set_lr(new_lr);
+            printf("MultiStepLR: epoch %d — lr %.2e → %.2e\n", epoch + 1, old_lr,
+                   new_lr);
+            break;
+        }
+    }
+}
+
+// ── ReduceLROnPlateau ─────────────────────────────────────────────────────────
+
+ReduceLROnPlateau::ReduceLROnPlateau(sgd &optimizer, f32 factor, int patience,
+                                     f32 min_lr, f32 min_delta)
+    : optimizer(optimizer), factor(factor), patience(patience), min_lr(min_lr),
+      min_delta(min_delta) {}
+
+void ReduceLROnPlateau::step(f32 loss, int epoch) {
+    if (best_loss - loss > min_delta) {
+        best_loss = loss;
+        no_improve = 0;
+    } else {
+        no_improve++;
+    }
+    if (no_improve >= patience && optimizer.lr > min_lr) {
+        f32 old_lr = optimizer.lr;
+        f32 new_lr = std::max(old_lr * factor, min_lr);
+        optimizer.set_lr(new_lr);
+        no_improve = 0;
+        printf("ReduceLROnPlateau: epoch %d — lr %.2e → %.2e\n", epoch + 1, old_lr,
+               new_lr);
+    }
+}
+
+// ── EarlyStopping ─────────────────────────────────────────────────────────────
+
+EarlyStopping::EarlyStopping(int patience, f32 min_delta)
+    : patience(patience), min_delta(min_delta) {}
+
+bool EarlyStopping::step(f32 loss, int epoch) {
+    if (best_loss - loss > min_delta) {
+        best_loss = loss;
+        no_improve = 0;
+    } else {
+        no_improve++;
+    }
+    if (no_improve >= patience) {
+        printf("EarlyStopping: no improvement for %d epochs, stopping at epoch %d\n",
+               patience, epoch + 1);
+        return true;
+    }
+    return false;
 }
 

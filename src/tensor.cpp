@@ -1019,27 +1019,27 @@ Tensor tensor_argmax(const Tensor &t, u32 dim, b32 keep_dim, CudaMemArena *arena
     return out;
 }
 
-// ---- welford mean+var ----------------------------------------------------
+// ---- welford mean+m2 ----------------------------------------------------
 
-b32 tensor_welford_mean_var(Tensor &mean, Tensor &var, const Tensor &src,
+b32 tensor_welford_mean_var(Tensor &mean, Tensor &m2, const Tensor &src,
                             u32 dim) {
     if (dim >= src->ndim) {
         printf("tensor_welford_mean_var: dim %u out of range (ndim=%u)\n", dim,
                src->ndim);
         return false;
     }
-    if (mean->numel() != src->shape[dim] || var->numel() != src->shape[dim]) {
-        printf("tensor_welford_mean_var: mean and var must have size=%u "
+    if (mean->numel() != src->shape[dim] || m2->numel() != src->shape[dim]) {
+        printf("tensor_welford_mean_var: mean and m2 must have size=%u "
                "(shape[dim])\n",
                src->shape[dim]);
         return false;
     }
     switch ((mean->on_gpu() << 1) | src->on_gpu()) {
     case 0b00:
-        tensor_cpu_welford_mean_var(mean.impl(), var.impl(), src.impl(), dim);
+        tensor_cpu_welford_mean_var(mean.impl(), m2.impl(), src.impl(), dim);
         return true;
     case 0b11:
-        tensor_cuda_welford_mean_var(mean.impl(), var.impl(), src.impl(), dim);
+        tensor_cuda_welford_mean_var(mean.impl(), m2.impl(), src.impl(), dim);
         return true;
     default:
         printf("tensor_welford_mean_var: tensors must be on the same device\n");
