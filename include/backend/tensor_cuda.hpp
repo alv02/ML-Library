@@ -87,8 +87,26 @@ void tensor_cuda_div(TensorImpl &out, const TensorImpl &tensor, f32 scalar);
 
 // ---- matrix multiply -----------------------------------------------------
 
+// Hand-written tiled kernel (kept for reference/comparison)
 void tensor_cuda_mat_mul(TensorImpl &out, const TensorImpl &a,
                          const TensorImpl &b, b32 clear_out);
+
+// cuBLAS SGEMM — requires row-major contiguous inputs (stride[1] == 1)
+void tensor_cuda_mat_mul_cublas(TensorImpl &out, const TensorImpl &a,
+                                const TensorImpl &b, b32 clear_out);
+
+// ---- fused batch norm -------------------------------------------------------
+// Forward: out = gamma*(inp-mean)/sqrt(m2/count+eps) + beta, also writes xhat.
+// Backward: accumulates dx, d_gamma, d_beta in a single two-pass kernel per channel.
+void tensor_cuda_bn_fwd_normalize(TensorImpl &out, TensorImpl &xhat,
+                                   const TensorImpl &inp,
+                                   const TensorImpl &mean, const TensorImpl &m2,
+                                   const TensorImpl &gamma, const TensorImpl &beta,
+                                   f32 count, f32 eps);
+void tensor_cuda_bn_bwd(TensorImpl &dx, TensorImpl &d_gamma, TensorImpl &d_beta,
+                         const TensorImpl &grad, const TensorImpl &xhat,
+                         const TensorImpl &gamma, const TensorImpl &var,
+                         f32 m, f32 eps);
 
 // ---- reduction (sum, max, argmax) ----------------------------------------
 

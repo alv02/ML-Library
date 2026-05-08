@@ -13,17 +13,12 @@ using namespace std;
 Storage::Storage(u64 nbytes, b32 on_gpu, CudaMemArena *arena)
     : nbytes(nbytes), on_gpu(on_gpu), arena(arena) {
     if (on_gpu) {
-        if (arena) {
+        if (arena)
             data = (f32 *)cuda_arena_push(arena, nbytes);
-        } else {
+        else
             cudaMallocAsync(&data, nbytes, 0);
-            if (nbytes > 0)
-                cudaMemsetAsync(data, 0, nbytes, 0);
-        }
     } else {
         data = (f32 *)malloc(nbytes);
-        if (data && nbytes > 0)
-            memset(data, 0, nbytes);
     }
 }
 
@@ -164,7 +159,8 @@ Tensor tensor_to_cpu(const Tensor &t, CudaMemArena *arena) {
     return dst;
 }
 
-static void tensor_contiguous_impl(TensorImpl &t, CudaMemArena *arena = nullptr) {
+static void tensor_contiguous_impl(TensorImpl &t,
+                                   CudaMemArena *arena = nullptr) {
     if (tensor_is_contiguous(t))
         return;
     if (t.on_gpu()) {
@@ -193,6 +189,19 @@ Tensor tensor_view(const Tensor &src, CudaMemArena *arena) {
 
 Tensor tensor_create_like(const Tensor &src, CudaMemArena *arena) {
     return Tensor::make(src->ndim, src->shape, src->on_gpu(), arena);
+}
+
+Tensor tensor_zeros(u32 ndim, const u32 *shape, b32 on_gpu,
+                    CudaMemArena *arena) {
+    Tensor t = Tensor::make(ndim, shape, on_gpu, arena);
+    tensor_clear(t);
+    return t;
+}
+
+Tensor tensor_zeros_like(const Tensor &src, CudaMemArena *arena) {
+    Tensor t = tensor_create_like(src, arena);
+    tensor_clear(t);
+    return t;
 }
 
 // ---- Metadata / shape helpers (device-independent) -----------------------
@@ -688,7 +697,8 @@ b32 tensor_relu_backward(Tensor &out, const Tensor &grad, const Tensor &in) {
     }
 }
 
-Tensor tensor_relu_backward(const Tensor &grad, const Tensor &in, CudaMemArena *arena) {
+Tensor tensor_relu_backward(const Tensor &grad, const Tensor &in,
+                            CudaMemArena *arena) {
     Tensor out = tensor_create_like(in, arena);
     if (!tensor_relu_backward(out, grad, in))
         return Tensor{};
@@ -822,7 +832,7 @@ b32 tensor_mat_mul(Tensor &out, const Tensor &a, const Tensor &b,
         tensor_cpu_mat_mul(out.impl(), a.impl(), b.impl(), clear_out);
         return true;
     case 0b111:
-        tensor_cuda_mat_mul(out.impl(), a.impl(), b.impl(), clear_out);
+        tensor_cuda_mat_mul_cublas(out.impl(), a.impl(), b.impl(), clear_out);
         return true;
     default:
         printf("tensor_mat_mul: all tensors must be on the same device\n");
@@ -832,7 +842,7 @@ b32 tensor_mat_mul(Tensor &out, const Tensor &a, const Tensor &b,
 
 Tensor tensor_mat_mul(const Tensor &a, const Tensor &b, CudaMemArena *arena) {
     u32 shape[2] = {a->shape[ROW_DIM(a.impl())], b->shape[COL_DIM(b.impl())]};
-    Tensor out = Tensor::make(2, shape, a->on_gpu(), arena);
+    Tensor out = tensor_zeros(2, shape, a->on_gpu(), arena);
     if (!tensor_mat_mul(out, a, b, false)) {
         printf("Shape of A: [%d, %d]\n", a->shape[ROW_DIM(a.impl())],
                a->shape[COL_DIM(a.impl())]);
@@ -1005,7 +1015,8 @@ b32 tensor_argmax(Tensor &out, const Tensor &t, u32 dim, b32 keep_dim) {
     return true;
 }
 
-Tensor tensor_argmax(const Tensor &t, u32 dim, b32 keep_dim, CudaMemArena *arena) {
+Tensor tensor_argmax(const Tensor &t, u32 dim, b32 keep_dim,
+                     CudaMemArena *arena) {
     if (dim >= t->ndim) {
         printf("tensor_argmax: dim %u out of range (ndim=%u)\n", dim, t->ndim);
         return Tensor{};
@@ -1045,6 +1056,34 @@ b32 tensor_welford_mean_var(Tensor &mean, Tensor &m2, const Tensor &src,
         printf("tensor_welford_mean_var: tensors must be on the same device\n");
         return false;
     }
+}
+
+// ---- fused batch norm ---------------------------------------------------
+
+void tensor_bn_fwd_normalize(Tensor &out, Tensor &xhat, const Tensor &inp,
+                             const Tensor &mean, const Tensor &m2,
+                             const Tensor &gamma, const Tensor &beta, f32 count,
+                             f32 eps) {
+    if (inp->on_gpu())
+        tensor_cuda_bn_fwd_normalize(out.impl(), xhat.impl(), inp.impl(),
+                                     mean.impl(), m2.impl(), gamma.impl(),
+                                     beta.impl(), count, eps);
+    else
+        tensor_cpu_bn_fwd_normalize(out.impl(), xhat.impl(), inp.impl(),
+                                    mean.impl(), m2.impl(), gamma.impl(),
+                                    beta.impl(), count, eps);
+}
+
+void tensor_bn_bwd(Tensor &dx, Tensor &d_gamma, Tensor &d_beta,
+                   const Tensor &grad, const Tensor &xhat, const Tensor &gamma,
+                   const Tensor &var, f32 m, f32 eps) {
+    if (grad->on_gpu())
+        tensor_cuda_bn_bwd(dx.impl(), d_gamma.impl(), d_beta.impl(),
+                           grad.impl(), xhat.impl(), gamma.impl(), var.impl(),
+                           m, eps);
+    else
+        tensor_cpu_bn_bwd(dx.impl(), d_gamma.impl(), d_beta.impl(), grad.impl(),
+                          xhat.impl(), gamma.impl(), var.impl(), m, eps);
 }
 
 // ---- softmax -------------------------------------------------------------
@@ -1146,7 +1185,7 @@ Tensor tensor_scatter_add(const Tensor &src, const Tensor &indices, u32 dim,
     u32 out_shape[MAX_NDIM];
     memcpy(out_shape, src->shape, src->ndim * sizeof(u32));
     out_shape[dim] = dim_size;
-    Tensor out = Tensor::make(src->ndim, out_shape, src->on_gpu(), arena);
+    Tensor out = tensor_zeros(src->ndim, out_shape, src->on_gpu(), arena);
     if (!tensor_scatter_add(out, src, indices, dim))
         return Tensor{};
     return out;

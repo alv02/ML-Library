@@ -122,7 +122,12 @@ Tensor tensor_to_cpu(const Tensor &t, CudaMemArena *arena = nullptr);
 
 void tensor_contiguous(Tensor &t, CudaMemArena *arena = nullptr);
 Tensor tensor_view(const Tensor &src, CudaMemArena *arena = nullptr);
+// Uninitialized allocation with the same shape and device as src.
 Tensor tensor_create_like(const Tensor &src, CudaMemArena *arena = nullptr);
+// Zero-filled allocation (like torch.zeros / torch.zeros_like).
+Tensor tensor_zeros(u32 ndim, const u32 *shape, b32 on_gpu,
+                    CudaMemArena *arena = nullptr);
+Tensor tensor_zeros_like(const Tensor &src, CudaMemArena *arena = nullptr);
 
 // ---- metadata (these stay on TensorImpl* — they're cheap, internal) ------
 // Rationale: shape helpers don't allocate, don't return tensors, and are
@@ -214,6 +219,19 @@ Tensor tensor_argmax(const Tensor &t, u32 dim, b32 keep_dim = true,
 // Divide m2 by N for biased variance, or by N-1 for unbiased.
 b32 tensor_welford_mean_var(Tensor &mean, Tensor &m2, const Tensor &src,
                             u32 dim);
+
+// Fused batch-norm forward: writes xhat = (inp-mean)/sqrt(m2/count+eps)
+// and out = gamma*xhat+beta.  mean, m2, gamma, beta are all [C]-shaped.
+void tensor_bn_fwd_normalize(Tensor &out, Tensor &xhat, const Tensor &inp,
+                             const Tensor &mean, const Tensor &m2,
+                             const Tensor &gamma, const Tensor &beta,
+                             f32 count, f32 eps);
+
+// Fused batch-norm backward: accumulates dx, d_gamma, d_beta.
+// var is the biased variance [C]-shaped; m is the number of elements per channel.
+void tensor_bn_bwd(Tensor &dx, Tensor &d_gamma, Tensor &d_beta,
+                   const Tensor &grad, const Tensor &xhat,
+                   const Tensor &gamma, const Tensor &var, f32 m, f32 eps);
 
 // ---- scatter -------------------------------------------------------------
 b32 tensor_scatter_add(Tensor &out, const Tensor &src, const Tensor &indices,

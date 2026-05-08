@@ -47,7 +47,7 @@ Var mat_mul(Var a, Var b, CudaMemArena *arena) {
                 tensor_transpose(bt, 0, 1);
                 Tensor dA = tensor_mat_mul(grad, bt, arena);
                 if (!inputs[0]->grad.defined())
-                    inputs[0]->grad = tensor_create_like(inputs[0]->data, arena);
+                    inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
                 tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
             }
             if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
@@ -55,7 +55,7 @@ Var mat_mul(Var a, Var b, CudaMemArena *arena) {
                 tensor_transpose(at, 0, 1);
                 Tensor dB = tensor_mat_mul(at, grad, arena);
                 if (!inputs[1]->grad.defined())
-                    inputs[1]->grad = tensor_create_like(inputs[1]->data, arena);
+                    inputs[1]->grad = tensor_zeros_like(inputs[1]->data, arena);
                 tensor_add(inputs[1]->grad, inputs[1]->grad, dB);
             }
         }
@@ -84,13 +84,13 @@ Var add(Var a, Var b, CudaMemArena *arena) {
             if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
                 Tensor dA = reduce_grad(grad, inputs[0]->data, arena);
                 if (!inputs[0]->grad.defined())
-                    inputs[0]->grad = tensor_create_like(inputs[0]->data, arena);
+                    inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
                 tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
             }
             if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
                 Tensor dB = reduce_grad(grad, inputs[1]->data, arena);
                 if (!inputs[1]->grad.defined())
-                    inputs[1]->grad = tensor_create_like(inputs[1]->data, arena);
+                    inputs[1]->grad = tensor_zeros_like(inputs[1]->data, arena);
                 tensor_add(inputs[1]->grad, inputs[1]->grad, dB);
             }
         }
@@ -117,7 +117,7 @@ Var relu(Var a, CudaMemArena *arena) {
             if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
                 return;
             if (!inputs[0]->grad.defined())
-                inputs[0]->grad = tensor_create_like(inputs[0]->data, arena);
+                inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
             Tensor dA = tensor_relu_backward(grad, inputs[0]->data, arena);
             tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
         }
@@ -177,7 +177,7 @@ Var conv2d(Var input, Var weight, Unfold2dParams params, CudaMemArena *arena) {
             // dInput = g @ weight^T → fold2d → [N, C, H, W]
             if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
                 if (!inputs[0]->grad.defined())
-                    inputs[0]->grad = tensor_create_like(inputs[0]->data, arena);
+                    inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
                 Tensor wt = tensor_view(inputs[1]->data);
                 tensor_transpose(wt, 0, 1);
                 Tensor col_grad = tensor_mat_mul(g, wt, arena);
@@ -187,7 +187,7 @@ Var conv2d(Var input, Var weight, Unfold2dParams params, CudaMemArena *arena) {
             // dWeight = col^T @ g → [C*kH*kW, C_out]
             if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
                 if (!inputs[1]->grad.defined())
-                    inputs[1]->grad = tensor_create_like(inputs[1]->data, arena);
+                    inputs[1]->grad = tensor_zeros_like(inputs[1]->data, arena);
                 Tensor ct = tensor_view(saved_col);
                 tensor_transpose(ct, 0, 1);
                 Tensor dW = tensor_mat_mul(ct, g, arena);
@@ -253,7 +253,7 @@ Var max_pool2d(Var input, Unfold2dParams params, CudaMemArena *arena) {
             if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
                 return;
             if (!inputs[0]->grad.defined())
-                inputs[0]->grad = tensor_create_like(inputs[0]->data, arena);
+                inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
 
             // Reverse forward transpose: [N, C, L_h, L_w] → [N, L, C, 1]
             Tensor g = tensor_view(grad);
@@ -313,7 +313,7 @@ Var flatten(Var input, CudaMemArena *arena) {
             if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
                 return;
             if (!inputs[0]->grad.defined())
-                inputs[0]->grad = tensor_create_like(inputs[0]->data, arena);
+                inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
             Tensor g = tensor_view(grad);
             tensor_reshape(g, saved_shape, saved_ndim, arena);
             tensor_add(inputs[0]->grad, inputs[0]->grad, g);
@@ -342,7 +342,7 @@ Var batch_norm(Var input, Var gamma, Var beta,
     u32 bcast_shape[MAX_NDIM];
     for (u32 d = 0; d < ndim; d++) bcast_shape[d] = (d == 1) ? C : 1;
 
-    Tensor mean, var, xhat;
+    Tensor mean, var, xhat, out_data;
 
     if (training) {
         // Compute per-channel mean and raw M2 (sum of squared deviations)
@@ -350,42 +350,37 @@ Var batch_norm(Var input, Var gamma, Var beta,
         Tensor m2 = Tensor::make(ndim, bcast_shape, on_gpu, arena);
         tensor_welford_mean_var(mean, m2, inp, 1);
 
-        // count = elements per channel (N * spatial dims)
         f32 count = (f32)inp->numel() / (f32)C;
 
-        // Biased variance (divide by count): used for normalization, matching PyTorch forward
+        // Biased var saved for backward; unbiased var for running stats EMA
         var = tensor_div(m2, count, arena);
-
-        // Unbiased variance (divide by count-1): used for running stats EMA, matching PyTorch
         Tensor unbiased_var = tensor_div(m2, count - 1.0f, arena);
 
         // Update running stats: running = (1-momentum)*running + momentum*batch
-        // momentum is the weight of the incoming batch estimate (PyTorch convention)
         tensor_mul(running_mean, running_mean, 1.0f - momentum);
         tensor_add(running_mean, running_mean, tensor_mul(mean, momentum, arena));
         tensor_mul(running_var, running_var, 1.0f - momentum);
         tensor_add(running_var, running_var, tensor_mul(unbiased_var, momentum, arena));
 
-        // xhat = (inp - batch_mean) / sqrt(biased_batch_var + eps)
-        xhat = tensor_sub(inp, mean, arena);
+        xhat     = Tensor::make(ndim, inp->shape, on_gpu, arena);
+        out_data = Tensor::make(ndim, inp->shape, on_gpu, arena);
+        tensor_bn_fwd_normalize(out_data, xhat, inp, mean, m2,
+                                gamma->data, beta->data, count, eps);
     } else {
-        // Eval: normalize with accumulated running stats, no grad
+        // Eval: normalize with running stats, no grad
         xhat = tensor_sub(inp, running_mean, arena);
         mean = running_mean;
-        var = running_var;
+        var  = running_var;
+        Tensor denom = tensor_add(var, eps, arena);
+        tensor_sqrt(denom, denom);
+        tensor_div(xhat, xhat, denom);
+        Tensor gv = tensor_view(gamma->data);
+        tensor_reshape(gv, bcast_shape, ndim, arena);
+        Tensor bv = tensor_view(beta->data);
+        tensor_reshape(bv, bcast_shape, ndim, arena);
+        out_data = tensor_mul(xhat, gv, arena);
+        tensor_add(out_data, out_data, bv);
     }
-
-    Tensor denom = tensor_add(var, eps, arena);
-    tensor_sqrt(denom, denom);
-    tensor_div(xhat, xhat, denom);
-
-    // y = gamma * xhat + beta  (gamma/beta [C] → [1,C,1,...,1])
-    Tensor gv = tensor_view(gamma->data);
-    tensor_reshape(gv, bcast_shape, ndim, arena);
-    Tensor bv = tensor_view(beta->data);
-    tensor_reshape(bv, bcast_shape, ndim, arena);
-    Tensor out_data = tensor_mul(xhat, gv, arena);
-    tensor_add(out_data, out_data, bv);
 
     Var out(out_data);
 
@@ -400,57 +395,29 @@ Var batch_norm(Var input, Var gamma, Var beta,
         u32 C;
         void backward(Tensor grad) override {
             const Tensor &inp = inputs[0]->data;
-            u32 ndim = inp->ndim;
             f32 m = (f32)inp->numel() / (f32)C;
-            u32 bcast_shape[MAX_NDIM];
-            for (u32 d = 0; d < ndim; d++) bcast_shape[d] = (d == 1) ? C : 1;
-            u32 c_shape[1] = {C};
 
-            Tensor std_dev = tensor_sqrt(tensor_add(saved_var, eps, arena), arena);
+            auto ensure_grad = [&](Var &v) {
+                if ((v->flags & FV_FLAG_REQUIERES_GRAD) && !v->grad.defined())
+                    v->grad = tensor_zeros_like(v->data, arena);
+            };
+            ensure_grad(inputs[0]);
+            ensure_grad(inputs[1]);
+            ensure_grad(inputs[2]);
 
-            // d_xhat = grad * gamma
-            Tensor gv = tensor_view(inputs[1]->data);
-            tensor_reshape(gv, bcast_shape, ndim, arena);
-            Tensor d_xhat = tensor_mul(grad, gv, arena);
+            Tensor dx_tmp, dgamma_tmp, dbeta_tmp;
+            auto grad_or_tmp = [&](Var &v, Tensor &tmp) -> Tensor & {
+                if (v->flags & FV_FLAG_REQUIERES_GRAD) return v->grad;
+                tmp = tensor_create_like(v->data, arena);
+                return tmp;
+            };
+            Tensor &dx     = grad_or_tmp(inputs[0], dx_tmp);
+            Tensor &dgamma = grad_or_tmp(inputs[1], dgamma_tmp);
+            Tensor &dbeta  = grad_or_tmp(inputs[2], dbeta_tmp);
 
-            // d_beta = sum(grad, all dims except C) → [C]
-            if (inputs[2]->flags & FV_FLAG_REQUIERES_GRAD) {
-                if (!inputs[2]->grad.defined())
-                    inputs[2]->grad = tensor_create_like(inputs[2]->data, arena);
-                Tensor db = reduce_all_except_c(grad, arena);
-                tensor_reshape(db, c_shape, 1, arena);
-                tensor_add(inputs[2]->grad, inputs[2]->grad, db);
-            }
-
-            // d_gamma = sum(grad * xhat, all dims except C) → [C]
-            if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
-                if (!inputs[1]->grad.defined())
-                    inputs[1]->grad = tensor_create_like(inputs[1]->data, arena);
-                Tensor dg = reduce_all_except_c(tensor_mul(grad, saved_xhat, arena), arena);
-                tensor_reshape(dg, c_shape, 1, arena);
-                tensor_add(inputs[1]->grad, inputs[1]->grad, dg);
-            }
-
-            // d_x = (1/std) * (d_xhat - (1/m)*sum(d_xhat)
-            //                         - xhat*(1/m)*sum(d_xhat*xhat))
-            if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
-                if (!inputs[0]->grad.defined())
-                    inputs[0]->grad = tensor_create_like(inputs[0]->data, arena);
-
-                Tensor mean_dxhat = reduce_all_except_c(d_xhat, arena);
-                tensor_div(mean_dxhat, mean_dxhat, m);
-
-                Tensor mean_dxhat_x =
-                    reduce_all_except_c(tensor_mul(d_xhat, saved_xhat, arena), arena);
-                tensor_div(mean_dxhat_x, mean_dxhat_x, m);
-                Tensor xhat_term = tensor_mul(saved_xhat, mean_dxhat_x, arena);
-
-                Tensor dx = tensor_sub(d_xhat, mean_dxhat, arena);
-                tensor_sub(dx, dx, xhat_term);
-                tensor_div(dx, dx, std_dev);
-
-                tensor_add(inputs[0]->grad, inputs[0]->grad, dx);
-            }
+            tensor_bn_bwd(dx, dgamma, dbeta,
+                          grad, saved_xhat,
+                          inputs[1]->data, saved_var, m, eps);
         }
     };
     auto fn = std::make_shared<Fn>();
@@ -491,7 +458,7 @@ Var mse_loss(Var pred, Var target, CudaMemArena *arena) {
 
             if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
                 if (!inputs[0]->grad.defined())
-                    inputs[0]->grad = tensor_create_like(inputs[0]->data, arena);
+                    inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
                 Tensor d = tensor_sub(inputs[0]->data, inputs[1]->data, arena);
                 tensor_mul(d, d, scale);
                 tensor_mul(d, d, grad);
@@ -500,7 +467,7 @@ Var mse_loss(Var pred, Var target, CudaMemArena *arena) {
 
             if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
                 if (!inputs[1]->grad.defined())
-                    inputs[1]->grad = tensor_create_like(inputs[1]->data, arena);
+                    inputs[1]->grad = tensor_zeros_like(inputs[1]->data, arena);
                 Tensor d = tensor_sub(inputs[1]->data, inputs[0]->data, arena);
                 tensor_mul(d, d, scale);
                 tensor_mul(d, d, grad);
@@ -544,7 +511,7 @@ Var cross_entropy_with_logits(Var logits, Var targets, CudaMemArena *arena) {
             // d_logits = (softmax - targets) / N_batch * grad_scalar
             if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
                 if (!inputs[0]->grad.defined())
-                    inputs[0]->grad = tensor_create_like(inputs[0]->data, arena);
+                    inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
                 Tensor d = tensor_sub(saved_softmax, inputs[1]->data, arena);
                 tensor_div(d, d, (f32)N_batch);
                 tensor_mul(d, d, grad);
@@ -554,7 +521,7 @@ Var cross_entropy_with_logits(Var logits, Var targets, CudaMemArena *arena) {
             // d_targets = -log(softmax) / N_batch * grad_scalar
             if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
                 if (!inputs[1]->grad.defined())
-                    inputs[1]->grad = tensor_create_like(inputs[1]->data, arena);
+                    inputs[1]->grad = tensor_zeros_like(inputs[1]->data, arena);
                 Tensor d = tensor_log(saved_softmax, arena);
                 tensor_div(d, d, -(f32)N_batch);
                 tensor_mul(d, d, grad);

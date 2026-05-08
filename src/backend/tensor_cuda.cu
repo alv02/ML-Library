@@ -1,4 +1,5 @@
 #include "../../include/backend/tensor_cuda.hpp"
+#include <cublas_v2.h>
 #include <cuda/cmath>
 #include <curand_kernel.h>
 
@@ -653,6 +654,195 @@ void tensor_cuda_mat_mul(TensorImpl &out, const TensorImpl &a,
     mat_mul_tiled<<<blocks, threadsPerBlock>>>(
         out_meta, a_meta, b_meta, out.data(), a.data(), b.data(), beta);
 }
+// ---- cuBLAS matrix multiply ----------------------------------------------
+
+static cublasHandle_t cublas_handle() {
+    static cublasHandle_t handle = [] {
+        cublasHandle_t h;
+        cublasCreate(&h);
+        return h;
+    }();
+    return handle;
+}
+
+// C = A * B using cuBLAS SGEMM.
+//
+// cuBLAS is column-major. We use the identity:
+//   C (row-major M×N) = A (M×K) * B (K×N)
+//   ≡ Ct (col-major N×M) = op(B_data) [N×K] * op(A_data) [K×M]
+//
+// Orientation of each matrix is detected from strides:
+//   row-major (stride[1]==1): cuBLAS already sees the transpose → CUBLAS_OP_N, ld=stride[0]
+//   col-major (stride[0]==1): cuBLAS sees the matrix directly   → CUBLAS_OP_T, ld=stride[1]
+//
+// This handles both contiguous and transposed-view tensors.
+void tensor_cuda_mat_mul_cublas(TensorImpl &out, const TensorImpl &a,
+                                const TensorImpl &b, b32 clear_out) {
+    int M = (int)a.shape[0], K = (int)a.shape[1], N = (int)b.shape[1];
+    float alpha = 1.0f;
+    float beta  = clear_out ? 0.0f : 1.0f;
+
+    cublasOperation_t op_b = (b.stride[1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
+    int ld_b = (b.stride[1] == 1) ? (int)b.stride[0] : (int)b.stride[1];
+
+    cublasOperation_t op_a = (a.stride[1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
+    int ld_a = (a.stride[1] == 1) ? (int)a.stride[0] : (int)a.stride[1];
+
+    int ldc = (int)out.stride[0];   // output is always row-major
+
+    cublasSgemm(cublas_handle(),
+                op_b, op_a,
+                N, M, K,
+                &alpha, b.data(), ld_b,
+                        a.data(), ld_a,
+                &beta,  out.data(), ldc);
+}
+
+// ---- fused batch norm -------------------------------------------------------
+//
+// Both kernels launch one block per channel (C blocks total) and iterate over
+// all other_dims_size = N*H*W (or N for dense) elements with a strided loop.
+// offset_from() maps a contiguous index i to the actual memory offset in the
+// source tensor, handling non-contiguous strides (e.g. views).
+
+// Forward: out = gamma * xhat + beta,  xhat = (inp - mean) / sqrt(m2/count + eps)
+// One pass — mean and m2 come from the preceding welford kernel.
+__global__ void bn_fwd_normalize(
+    f32 *out, f32 *xhat,
+    const f32 *inp,
+    const f32 *mean, const f32 *m2,
+    const f32 *gamma, const f32 *beta,
+    f32 count_inv, f32 eps,
+    u64 stride_c,
+    TensorMeta meta_contig, TensorMeta meta_src,
+    u64 other_dims_size
+) {
+    u32 c = blockIdx.x;
+    f32 mu      = mean[c];
+    f32 inv_std = rsqrtf(m2[c] * count_inv + eps);
+    f32 g       = gamma[c];
+    f32 b       = beta[c];
+    u64 base    = (u64)c * stride_c;
+
+    for (u64 i = threadIdx.x; i < other_dims_size; i += blockDim.x) {
+        u64 off = base + meta_contig.offset_from(i, meta_src);
+        f32 xh  = (inp[off] - mu) * inv_std;
+        xhat[off] = xh;
+        out[off]  = fmaf(g, xh, b);
+    }
+}
+
+// Backward: two passes within one kernel per channel.
+// Pass 1: reduce sum_grad = Σ grad  and  sum_grad_xhat = Σ grad*xhat  over the channel.
+// Pass 2: dx = (gamma/std) * (grad - sum_grad/m - xhat * sum_grad_xhat/m)
+// Also accumulates d_gamma[c] += sum_grad_xhat  and  d_beta[c] += sum_grad.
+__global__ void bn_bwd_fused(
+    f32 *dx,
+    f32 *d_gamma, f32 *d_beta,
+    const f32 *grad, const f32 *xhat,
+    const f32 *gamma, const f32 *var,
+    f32 m_inv, f32 eps,
+    u64 stride_c,
+    TensorMeta meta_contig, TensorMeta meta_src,
+    u64 other_dims_size
+) {
+    u32 c = blockIdx.x;
+    f32 g       = gamma[c];
+    f32 inv_std = rsqrtf(var[c] + eps);
+    u64 base    = (u64)c * stride_c;
+
+    __shared__ f32 s_sum_grad[N_THREADS];
+    __shared__ f32 s_sum_grad_xhat[N_THREADS];
+
+    f32 sum_grad = 0.f, sum_grad_xhat = 0.f;
+
+    // Pass 1: each thread accumulates partial sums
+    for (u64 i = threadIdx.x; i < other_dims_size; i += blockDim.x) {
+        u64 off = base + meta_contig.offset_from(i, meta_src);
+        f32 gv  = grad[off];
+        f32 xh  = xhat[off];
+        sum_grad      += gv;
+        sum_grad_xhat += gv * xh;
+    }
+
+    s_sum_grad[threadIdx.x]      = sum_grad;
+    s_sum_grad_xhat[threadIdx.x] = sum_grad_xhat;
+    __syncthreads();
+
+    for (u32 s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            s_sum_grad[threadIdx.x]      += s_sum_grad[threadIdx.x + s];
+            s_sum_grad_xhat[threadIdx.x] += s_sum_grad_xhat[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+
+    // Thread 0 is the sole writer to d_gamma[c] and d_beta[c]
+    if (threadIdx.x == 0) {
+        d_gamma[c] += s_sum_grad_xhat[0];
+        d_beta[c]  += s_sum_grad[0];
+    }
+    __syncthreads();  // make totals visible to all threads before pass 2
+
+    f32 mean_grad      = s_sum_grad[0] * m_inv;
+    f32 mean_grad_xhat = s_sum_grad_xhat[0] * m_inv;
+    f32 coeff          = g * inv_std;
+
+    // Pass 2: compute dx (accumulate into existing grad tensor)
+    for (u64 i = threadIdx.x; i < other_dims_size; i += blockDim.x) {
+        u64 off = base + meta_contig.offset_from(i, meta_src);
+        dx[off] += coeff * (grad[off] - mean_grad - xhat[off] * mean_grad_xhat);
+    }
+}
+
+static void bn_build_meta(u64 &stride_c, u64 &other_dims_size,
+                          TensorMeta &meta_contig, TensorMeta &meta_src,
+                          const TensorImpl &t) {
+    stride_c        = t.stride[1];
+    other_dims_size = t.numel() / t.shape[1];
+    meta_contig.ndim = meta_src.ndim = t.ndim - 1;
+    meta_contig.size = meta_src.size = other_dims_size;
+    for (u32 d = 0, o = 0; d < t.ndim; d++) {
+        if (d == 1) continue;
+        meta_contig.shape[o] = t.shape[d];
+        meta_src.shape[o]    = t.shape[d];
+        meta_src.stride[o]   = t.stride[d];
+        o++;
+    }
+    tensor_compute_strides(meta_contig.stride, meta_contig.shape, meta_contig.ndim);
+}
+
+void tensor_cuda_bn_fwd_normalize(TensorImpl &out, TensorImpl &xhat,
+                                   const TensorImpl &inp,
+                                   const TensorImpl &mean, const TensorImpl &m2,
+                                   const TensorImpl &gamma, const TensorImpl &beta,
+                                   f32 count, f32 eps) {
+    u64 stride_c, other_dims_size;
+    TensorMeta meta_contig, meta_src;
+    bn_build_meta(stride_c, other_dims_size, meta_contig, meta_src, inp);
+    u32 C = inp.shape[1];
+    bn_fwd_normalize<<<C, N_THREADS>>>(
+        out.data(), xhat.data(), inp.data(),
+        mean.data(), m2.data(), gamma.data(), beta.data(),
+        1.0f / count, eps,
+        stride_c, meta_contig, meta_src, other_dims_size);
+}
+
+void tensor_cuda_bn_bwd(TensorImpl &dx, TensorImpl &d_gamma, TensorImpl &d_beta,
+                         const TensorImpl &grad, const TensorImpl &xhat,
+                         const TensorImpl &gamma, const TensorImpl &var,
+                         f32 m, f32 eps) {
+    u64 stride_c, other_dims_size;
+    TensorMeta meta_contig, meta_src;
+    bn_build_meta(stride_c, other_dims_size, meta_contig, meta_src, grad);
+    u32 C = grad.shape[1];
+    bn_bwd_fused<<<C, N_THREADS>>>(
+        dx.data(), d_gamma.data(), d_beta.data(),
+        grad.data(), xhat.data(), gamma.data(), var.data(),
+        1.0f / m, eps,
+        stride_c, meta_contig, meta_src, other_dims_size);
+}
+
 // ---- reduction (sum, max, argmax) ----------------------------------------
 
 // Global reduction using repeated kernel launches — each reduces the current

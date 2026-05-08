@@ -62,6 +62,18 @@ void tensor_cpu_argmax(TensorImpl &out, const TensorImpl &tensor, u32 dim);
 void tensor_cpu_welford_mean_var(TensorImpl &mean, TensorImpl &m2,
                                  const TensorImpl &src, u32 dim);
 
+// ---- fused batch norm ---------------------------------------------------
+
+void tensor_cpu_bn_fwd_normalize(TensorImpl &out, TensorImpl &xhat,
+                                 const TensorImpl &inp, const TensorImpl &mean,
+                                 const TensorImpl &m2, const TensorImpl &gamma,
+                                 const TensorImpl &beta, f32 count, f32 eps);
+
+void tensor_cpu_bn_bwd(TensorImpl &dx, TensorImpl &d_gamma, TensorImpl &d_beta,
+                       const TensorImpl &grad, const TensorImpl &xhat,
+                       const TensorImpl &gamma, const TensorImpl &var,
+                       f32 m, f32 eps);
+
 // ---- scattering ----------------------------------------------------------
 void tensor_cpu_scatter_add(TensorImpl &out, const TensorImpl &src,
                             const TensorImpl &indices, u32 dim);

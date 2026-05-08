@@ -5,7 +5,6 @@ CudaMemArena::CudaMemArena(u64 capacity) {
     this->capacity = capacity;
     this->pos = 0;
     cudaMalloc(&this->base, capacity);
-    cudaMemset(this->base, 0, capacity);
 }
 
 CudaMemArena::~CudaMemArena() { cudaFree(this->base); }
@@ -30,7 +29,5 @@ void cuda_arena_pop_to(CudaMemArena *arena, u64 pos) {
     cuda_arena_pop(arena, size);
 }
 void cuda_arena_clear(CudaMemArena *arena) {
-    if (arena->pos > 0)
-        cudaMemsetAsync(arena->base, 0, arena->pos, 0);
     cuda_arena_pop_to(arena, 0);
 }

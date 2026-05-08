@@ -1,5 +1,6 @@
 #include "../include/optimizers.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <numeric>
@@ -32,17 +33,21 @@ bool DataLoader::next(Tensor &X_batch, Tensor &y_batch, CudaMemArena *arena) {
     return true;
 }
 
+// ── Optimizer ─────────────────────────────────────────────────────────────────
+
+Optimizer::Optimizer(std::vector<Var> params, f32 lr, CudaMemArena *perm_arena)
+    : lr(lr), params(std::move(params)), perm_arena(perm_arena) {
+    // Pre-allocate parameter gradients on perm_arena so backward never
+    // allocates them on the batch arena (which is cleared every iteration).
+    for (auto &p : this->params)
+        p->grad = tensor_zeros_like(p->data, perm_arena);
+}
+
 // ── sgd ───────────────────────────────────────────────────────────────────────
 
 sgd::sgd(std::vector<Var> params, f32 lr, f32 lambda, f32 mu,
          CudaMemArena *perm_arena)
-    : lr(lr), lambda(lambda), mu(mu), params(std::move(params)),
-      perm_arena(perm_arena) {
-    // Pre-allocate parameter gradients on perm_arena so backward never
-    // allocates them on the batch arena (which is cleared every iteration).
-    for (auto &p : this->params)
-        p->grad = tensor_create_like(p->data, perm_arena);
-}
+    : Optimizer(std::move(params), lr, perm_arena), lambda(lambda), mu(mu) {}
 
 void sgd::step(CudaMemArena *arena) {
     for (auto &p : params) {
@@ -80,9 +85,71 @@ void sgd::zero_grad() {
     }
 }
 
+// ── AdamW ─────────────────────────────────────────────────────────────────────
+
+AdamW::AdamW(std::vector<Var> params, f32 lr, f32 beta1, f32 beta2, f32 eps,
+             f32 lambda, CudaMemArena *perm_arena)
+    : Optimizer(std::move(params), lr, perm_arena), beta1(beta1), beta2(beta2),
+      eps(eps), lambda(lambda), t(0) {
+    for (auto &p : this->params) {
+        Tensor mt = tensor_create_like(p->data, perm_arena);
+        tensor_clear(mt);
+        Tensor vt = tensor_create_like(p->data, perm_arena);
+        tensor_clear(vt);
+        m[p.impl_.get()] = mt;
+        v[p.impl_.get()] = vt;
+    }
+}
+
+void AdamW::step(CudaMemArena *arena) {
+    t++;
+    f32 bc1 = 1.0f - powf(beta1, (f32)t);
+    f32 bc2 = 1.0f - powf(beta2, (f32)t);
+    f32 step_size = lr * sqrtf(bc2) / bc1;
+
+    for (auto &p : params) {
+        if (!p->grad.defined())
+            continue;
+
+        Tensor &mt = m[p.impl_.get()];
+        Tensor &vt = v[p.impl_.get()];
+
+        // mt = beta1*mt + (1-beta1)*grad
+        tensor_mul(mt, mt, beta1);
+        Tensor g1 = tensor_mul(p->grad, 1.0f - beta1, arena);
+        tensor_add(mt, mt, g1);
+
+        // vt = beta2*vt + (1-beta2)*grad^2
+        tensor_mul(vt, vt, beta2);
+        Tensor g2 = tensor_mul(p->grad, p->grad, arena);
+        Tensor g2s = tensor_mul(g2, 1.0f - beta2, arena);
+        tensor_add(vt, vt, g2s);
+
+        // param -= step_size * mt / (sqrt(vt) + eps)
+        Tensor vt_sqrt = tensor_sqrt(vt, arena);
+        Tensor denom = tensor_add(vt_sqrt, eps, arena);
+        Tensor delta = tensor_div(mt, denom, arena);
+        Tensor scaled = tensor_mul(delta, step_size, arena);
+        tensor_sub(p->data, p->data, scaled);
+
+        // decoupled weight decay: param -= lr * lambda * param
+        if (lambda > 0.0f) {
+            Tensor wd = tensor_mul(p->data, lr * lambda, arena);
+            tensor_sub(p->data, p->data, wd);
+        }
+    }
+}
+
+void AdamW::zero_grad() {
+    for (auto &p : params) {
+        if (p->grad.defined())
+            tensor_clear(p->grad);
+    }
+}
+
 // ── MultiStepLR ───────────────────────────────────────────────────────────────
 
-MultiStepLR::MultiStepLR(sgd &optimizer, std::vector<int> milestones, f32 gamma)
+MultiStepLR::MultiStepLR(Optimizer &optimizer, std::vector<int> milestones, f32 gamma)
     : optimizer(optimizer), milestones(std::move(milestones)), gamma(gamma),
       base_lr(optimizer.lr) {
     std::sort(this->milestones.begin(), this->milestones.end());
@@ -103,7 +170,7 @@ void MultiStepLR::step(int epoch) {
 
 // ── ReduceLROnPlateau ─────────────────────────────────────────────────────────
 
-ReduceLROnPlateau::ReduceLROnPlateau(sgd &optimizer, f32 factor, int patience,
+ReduceLROnPlateau::ReduceLROnPlateau(Optimizer &optimizer, f32 factor, int patience,
                                      f32 min_lr, f32 min_delta)
     : optimizer(optimizer), factor(factor), patience(patience), min_lr(min_lr),
       min_delta(min_delta) {}

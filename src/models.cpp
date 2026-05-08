@@ -9,7 +9,7 @@ linear_model::linear_model(u32 n_features, bool on_gpu,
             FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
 
     u32 b_shape[1] = {1};
-    b = Var(Tensor::make(1, b_shape, on_gpu, perm_arena),
+    b = Var(tensor_zeros(1, b_shape, on_gpu, perm_arena),
             FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
 }
 
@@ -33,7 +33,7 @@ nn_model::nn_model(u32 in_features, const std::vector<u32> &layer_sizes,
         Wt.push_back(w);
 
         u32 b_shape[2] = {1, out};
-        b.push_back(Var(Tensor::make(2, b_shape, on_gpu, perm_arena),
+        b.push_back(Var(tensor_zeros(2, b_shape, on_gpu, perm_arena),
                         FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER));
 
         in_features = out;
@@ -81,7 +81,7 @@ cnn_model::cnn_model(u32 C_in, u32 H, u32 W, bool on_gpu,
         kernels.push_back(kernel);
 
         u32 b_shape[4] = {1, C_out, 1, 1};
-        conv_b.push_back(Var(Tensor::make(4, b_shape, on_gpu, perm_arena),
+        conv_b.push_back(Var(tensor_zeros(4, b_shape, on_gpu, perm_arena),
                              FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER));
 
         if (spec.bn) {
@@ -90,7 +90,7 @@ cnn_model::cnn_model(u32 C_in, u32 H, u32 W, bool on_gpu,
                       FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
             tensor_fill(gamma->data, 1.0f);
             bn_gamma.push_back(gamma);
-            bn_beta.push_back(Var(Tensor::make(1, g_shape, on_gpu, perm_arena),
+            bn_beta.push_back(Var(tensor_zeros(1, g_shape, on_gpu, perm_arena),
                                   FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER));
 
             // Running stats: [1, C_out, 1, 1], mean=0, var=1
@@ -127,7 +127,7 @@ cnn_model::cnn_model(u32 C_in, u32 H, u32 W, bool on_gpu,
         dense_Wt.push_back(w);
 
         u32 b_shape[2] = {1, out};
-        dense_b.push_back(Var(Tensor::make(2, b_shape, on_gpu, perm_arena),
+        dense_b.push_back(Var(tensor_zeros(2, b_shape, on_gpu, perm_arena),
                                FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER));
 
         flat = out;

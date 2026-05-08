@@ -34,7 +34,7 @@ target_include_directories(mllib PUBLIC include)
 
 # Link CUDA runtime
 find_package(CUDAToolkit REQUIRED)
-target_link_libraries(mllib PUBLIC CUDA::cudart CUDA::curand)
+target_link_libraries(mllib PUBLIC CUDA::cudart CUDA::curand CUDA::cublas)
 
 # ── Main executable ───────────────────────────────────────────────────────────
 add_executable(main_lr main_lr.cpp)

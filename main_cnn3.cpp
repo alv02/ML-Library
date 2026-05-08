@@ -6,12 +6,14 @@
 #include <cstdio>
 
 // VGG-13-style with BatchNorm on CIFAR-10. Input [N,3,32,32].
-//   Block 1: Conv(3→64)+BN+ReLU,   Conv(64→64)+BN+ReLU,   MaxPool → [N,64,16,16]
-//   Block 2: Conv(64→128)+BN+ReLU,  Conv(128→128)+BN+ReLU,  MaxPool → [N,128,8,8]
-//   Block 3: Conv(128→256)+BN+ReLU, Conv(256→256)+BN+ReLU,  MaxPool → [N,256,4,4]
-//   Block 4: Conv(256→512)+BN+ReLU, Conv(512→512)+BN+ReLU,  MaxPool → [N,512,2,2]
-//   Flatten → [N,2048]  Dense: 2048 → 512 → 10
-// PyTorch VGG-13-BN baseline: ~93.5%. Expected here: ~92-93% (no data augmentation).
+//   Block 1: Conv(3→64)+BN+ReLU,   Conv(64→64)+BN+ReLU,   MaxPool →
+//   [N,64,16,16] Block 2: Conv(64→128)+BN+ReLU,  Conv(128→128)+BN+ReLU, MaxPool
+//   → [N,128,8,8] Block 3: Conv(128→256)+BN+ReLU, Conv(256→256)+BN+ReLU,
+//   MaxPool → [N,256,4,4] Block 4: Conv(256→512)+BN+ReLU,
+//   Conv(512→512)+BN+ReLU,  MaxPool → [N,512,2,2] Flatten → [N,2048]  Dense:
+//   2048 → 512 → 10
+// PyTorch VGG-13-BN baseline: ~93.5%. Expected here: ~92-93% (no data
+// augmentation).
 
 int main() {
     CudaMemArena perm_arena(MiB(512));
@@ -28,8 +30,8 @@ int main() {
         3, 32, 32, true,
         {
             // Block 1
-            {64,  Unfold2dParams(3, 1, 1), false, {}, true},
-            {64,  Unfold2dParams(3, 1, 1), true, Unfold2dParams(2, 2), true},
+            {64, Unfold2dParams(3, 1, 1), false, {}, true},
+            {64, Unfold2dParams(3, 1, 1), true, Unfold2dParams(2, 2), true},
             // Block 2
             {128, Unfold2dParams(3, 1, 1), false, {}, true},
             {128, Unfold2dParams(3, 1, 1), true, Unfold2dParams(2, 2), true},
@@ -71,7 +73,8 @@ int main() {
         }
         Tensor lc = tensor_to_cpu(loss_accum);
         f32 avg_loss = lc->data()[0] / batch;
-        printf("Epoch %d/%d done — avg loss %.4f\n", epoch + 1, epochs, avg_loss);
+        printf("Epoch %d/%d done — avg loss %.4f\n", epoch + 1, epochs,
+               avg_loss);
 
         scheduler.step(avg_loss, epoch);
         if (early_stop.step(avg_loss, epoch))

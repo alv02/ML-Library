@@ -331,6 +331,80 @@ void tensor_cpu_welford_mean_var(TensorImpl &mean, TensorImpl &m2,
     }
 }
 
+// ---- fused batch norm ---------------------------------------------------
+
+void tensor_cpu_bn_fwd_normalize(TensorImpl &out, TensorImpl &xhat,
+                                 const TensorImpl &inp, const TensorImpl &mean,
+                                 const TensorImpl &m2, const TensorImpl &gamma,
+                                 const TensorImpl &beta, f32 count, f32 eps) {
+    u64 ch_strides[MAX_NDIM] = {};
+    ch_strides[1] = 1; // stride=1 on dim 1 → next() returns channel index
+
+    tensorIterator inp_it(inp.ndim, inp.shape, inp.stride);
+    tensorIterator out_it(out.ndim, out.shape, out.stride);
+    tensorIterator xhat_it(xhat.ndim, xhat.shape, xhat.stride);
+    tensorIterator ch_it(inp.ndim, inp.shape, ch_strides);
+
+    while (inp_it.has_next()) {
+        u64 inp_off  = inp_it.next();
+        u64 out_off  = out_it.next();
+        u64 xhat_off = xhat_it.next();
+        u32 c        = (u32)ch_it.next();
+
+        f32 std_c  = sqrtf(m2.data()[c] / count + eps);
+        f32 x_hat  = (inp.data()[inp_off] - mean.data()[c]) / std_c;
+        xhat.data()[xhat_off] = x_hat;
+        out.data()[out_off]   = gamma.data()[c] * x_hat + beta.data()[c];
+    }
+}
+
+void tensor_cpu_bn_bwd(TensorImpl &dx, TensorImpl &d_gamma, TensorImpl &d_beta,
+                       const TensorImpl &grad, const TensorImpl &xhat,
+                       const TensorImpl &gamma, const TensorImpl &var,
+                       f32 m, f32 eps) {
+    u32 C = grad.shape[1];
+    std::vector<f32> sum_grad(C, 0.0f), sum_grad_xhat(C, 0.0f);
+
+    u64 ch_strides[MAX_NDIM] = {};
+    ch_strides[1] = 1;
+
+    // First pass: accumulate per-channel sums
+    {
+        tensorIterator grad_it(grad.ndim, grad.shape, grad.stride);
+        tensorIterator xhat_it(xhat.ndim, xhat.shape, xhat.stride);
+        tensorIterator ch_it(grad.ndim, grad.shape, ch_strides);
+        while (grad_it.has_next()) {
+            f32 g = grad.data()[grad_it.next()];
+            f32 x = xhat.data()[xhat_it.next()];
+            u32 c = (u32)ch_it.next();
+            sum_grad[c]      += g;
+            sum_grad_xhat[c] += g * x;
+        }
+    }
+
+    for (u32 c = 0; c < C; c++) {
+        d_gamma.data()[c] += sum_grad_xhat[c];
+        d_beta.data()[c]  += sum_grad[c];
+    }
+
+    // Second pass: compute dx
+    {
+        tensorIterator grad_it(grad.ndim, grad.shape, grad.stride);
+        tensorIterator xhat_it(xhat.ndim, xhat.shape, xhat.stride);
+        tensorIterator dx_it(dx.ndim, dx.shape, dx.stride);
+        tensorIterator ch_it(grad.ndim, grad.shape, ch_strides);
+        while (grad_it.has_next()) {
+            f32  g      = grad.data()[grad_it.next()];
+            f32  x      = xhat.data()[xhat_it.next()];
+            u64  dx_off = dx_it.next();
+            u32  c      = (u32)ch_it.next();
+            f32  std_c  = sqrtf(var.data()[c] + eps);
+            dx.data()[dx_off] += gamma.data()[c] / std_c *
+                                 (g - sum_grad[c] / m - x * sum_grad_xhat[c] / m);
+        }
+    }
+}
+
 // ---- scattering ----------------------------------------------------------
 
 void tensor_cpu_scatter_add(TensorImpl &out, const TensorImpl &src,
