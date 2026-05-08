@@ -288,3 +288,7 @@ __marimo__/
 
 # Numpy data
 *.npy
+
+# Nsight Systems profiling reports
+*.nsys-rep
+*.sqlite
