@@ -2,6 +2,7 @@
 #define OPTIMIZERS_HPP
 
 #include "autograd.hpp"
+#include "layers.hpp"
 #include "tensor.hpp"
 #include <unordered_map>
 #include <vector>
@@ -48,6 +49,8 @@ struct sgd : Optimizer {
 
     sgd(std::vector<Var> params, f32 lr, f32 lambda = 0.0f, f32 mu = 0.0f,
         CudaMemArena *perm_arena = nullptr);
+    sgd(Layer &model, f32 lr, f32 lambda = 0.0f, f32 mu = 0.0f,
+        CudaMemArena *perm_arena = nullptr);
     void step(CudaMemArena *arena = nullptr) override;
     void zero_grad() override;
 };
@@ -59,13 +62,16 @@ struct AdamW : Optimizer {
     f32 beta1;
     f32 beta2;
     f32 eps;
-    f32 lambda; // decoupled weight decay
-    u32 t;      // step counter for bias correction
+    f32 lambda;                              // decoupled weight decay
+    u32 t;                                   // step counter for bias correction
     std::unordered_map<VarImpl *, Tensor> m; // first moment
     std::unordered_map<VarImpl *, Tensor> v; // second moment
 
     AdamW(std::vector<Var> params, f32 lr = 1e-3f, f32 beta1 = 0.9f,
           f32 beta2 = 0.999f, f32 eps = 1e-8f, f32 lambda = 0.0f,
+          CudaMemArena *perm_arena = nullptr);
+    AdamW(Layer &model, f32 lr = 1e-3f, f32 beta1 = 0.9f, f32 beta2 = 0.999f,
+          f32 eps = 1e-8f, f32 lambda = 0.0f,
           CudaMemArena *perm_arena = nullptr);
     void step(CudaMemArena *arena = nullptr) override;
     void zero_grad() override;

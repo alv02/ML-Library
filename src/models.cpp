@@ -1,107 +1,31 @@
 #include "../include/models.hpp"
 
-// ── linear_model ─────────────────────────────────────────────────────────────
-
-linear_model::linear_model(u32 n_features, bool on_gpu,
-                           CudaMemArena *perm_arena) {
-    u32 w_shape[2] = {n_features, 1};
-    W = Var(Tensor::make(2, w_shape, on_gpu, perm_arena),
-            FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
-
-    u32 b_shape[1] = {1};
-    b = Var(tensor_zeros(1, b_shape, on_gpu, perm_arena),
-            FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
-}
-
-Var linear_model::predict(Var X, CudaMemArena *arena) {
-    return add(mat_mul(X, W, arena), b, arena);
-}
-
-Var linear_model::forward(Var X, Var y, CudaMemArena *arena) {
-    return mse_loss(predict(X, arena), y, arena);
-}
-
-// ── nn_model ─────────────────────────────────────────────────────────────────
-
-nn_model::nn_model(u32 in_features, const std::vector<u32> &layer_sizes,
-                   bool on_gpu, CudaMemArena *perm_arena) {
-    for (u32 out : layer_sizes) {
-        u32 w_shape[2] = {in_features, out};
-        Var w(Tensor::make(2, w_shape, on_gpu, perm_arena),
-              FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
-        tensor_he_init(w->data);
-        Wt.push_back(w);
-
-        u32 b_shape[2] = {1, out};
-        b.push_back(Var(tensor_zeros(2, b_shape, on_gpu, perm_arena),
-                        FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER));
-
-        in_features = out;
+Sequential make_mlp(u32 in_features, const std::vector<u32> &sizes, bool on_gpu,
+                    CudaMemArena *perm_arena) {
+    Sequential model;
+    for (u32 i = 0; i < (u32)sizes.size(); i++) {
+        model.add<Linear>(in_features, sizes[i], on_gpu, perm_arena);
+        if (i < (u32)sizes.size() - 1)
+            model.add<ReLU>();
+        in_features = sizes[i];
     }
+    return model;
 }
 
-std::vector<Var> nn_model::parameters() const {
-    std::vector<Var> p;
-    for (auto &w : Wt)  p.push_back(w);
-    for (auto &bi : b)  p.push_back(bi);
-    return p;
-}
-
-Var nn_model::predict(Var X, CudaMemArena *arena) {
-    Var cur = X;
-    for (u32 l = 0; l < (u32)Wt.size(); l++) {
-        cur = add(mat_mul(cur, Wt[l], arena), b[l], arena);
-        if (l < (u32)Wt.size() - 1)
-            cur = relu(cur, arena);
-    }
-    return cur;
-}
-
-Var nn_model::forward(Var X, Var y, CudaMemArena *arena) {
-    return cross_entropy_with_logits(predict(X, arena), y, arena);
-}
-
-// ── cnn_model ─────────────────────────────────────────────────────────────────
-
-cnn_model::cnn_model(u32 C_in, u32 H, u32 W, bool on_gpu,
-                     const std::vector<conv_layer_params> &conv_layers,
-                     const std::vector<u32> &dense_sizes,
-                     CudaMemArena *perm_arena)
-    : conv_specs(conv_layers) {
-
+Sequential make_cnn(u32 C_in, u32 H, u32 W, bool on_gpu,
+                    const std::vector<conv_layer_params> &conv_layers,
+                    const std::vector<u32> &dense_sizes,
+                    CudaMemArena *perm_arena) {
+    Sequential model;
     u32 H_cur = H, W_cur = W, C_cur = C_in;
 
     for (const auto &spec : conv_layers) {
-        u32 C_out = spec.C_out;
-
-        u32 k_shape[2] = {C_cur * spec.params.k_h * spec.params.k_w, C_out};
-        Var kernel(Tensor::make(2, k_shape, on_gpu, perm_arena),
-                   FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
-        tensor_he_init(kernel->data);
-        kernels.push_back(kernel);
-
-        u32 b_shape[4] = {1, C_out, 1, 1};
-        conv_b.push_back(Var(tensor_zeros(4, b_shape, on_gpu, perm_arena),
-                             FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER));
-
-        if (spec.bn) {
-            u32 g_shape[1] = {C_out};
-            Var gamma(Tensor::make(1, g_shape, on_gpu, perm_arena),
-                      FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
-            tensor_fill(gamma->data, 1.0f);
-            bn_gamma.push_back(gamma);
-            bn_beta.push_back(Var(tensor_zeros(1, g_shape, on_gpu, perm_arena),
-                                  FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER));
-
-            // Running stats: [1, C_out, 1, 1], mean=0, var=1
-            u32 stat_shape[4] = {1, C_out, 1, 1};
-            Tensor rm = Tensor::make(4, stat_shape, on_gpu, perm_arena);
-            tensor_fill(rm, 0.0f);
-            bn_running_mean.push_back(rm);
-            Tensor rv = Tensor::make(4, stat_shape, on_gpu, perm_arena);
-            tensor_fill(rv, 1.0f);
-            bn_running_var.push_back(rv);
-        }
+        model.add<Conv2d>(C_cur, spec.C_out, spec.params, on_gpu, perm_arena);
+        if (spec.bn)
+            model.add<BatchNorm2d>(spec.C_out, on_gpu, perm_arena);
+        model.add<ReLU>();
+        if (spec.pool)
+            model.add<MaxPool2d>(spec.pool_params);
 
         Unfold2dParams p = spec.params;
         p.compute_output_size(H_cur, W_cur);
@@ -115,65 +39,50 @@ cnn_model::cnn_model(u32 C_in, u32 H, u32 W, bool on_gpu,
             W_cur = pp.L_w;
         }
 
-        C_cur = C_out;
+        C_cur = spec.C_out;
     }
+
+    model.add<Flatten>();
 
     u32 flat = C_cur * H_cur * W_cur;
-    for (u32 out : dense_sizes) {
-        u32 w_shape[2] = {flat, out};
-        Var w(Tensor::make(2, w_shape, on_gpu, perm_arena),
-              FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
-        tensor_he_init(w->data);
-        dense_Wt.push_back(w);
-
-        u32 b_shape[2] = {1, out};
-        dense_b.push_back(Var(tensor_zeros(2, b_shape, on_gpu, perm_arena),
-                               FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER));
-
-        flat = out;
+    for (u32 i = 0; i < (u32)dense_sizes.size(); i++) {
+        model.add<Linear>(flat, dense_sizes[i], on_gpu, perm_arena);
+        if (i < (u32)dense_sizes.size() - 1)
+            model.add<ReLU>();
+        flat = dense_sizes[i];
     }
+
+    return model;
 }
 
-std::vector<Var> cnn_model::parameters() const {
-    std::vector<Var> p;
-    for (auto &k : kernels)  p.push_back(k);
-    for (auto &b : conv_b)   p.push_back(b);
-    for (auto &g : bn_gamma) p.push_back(g);
-    for (auto &b : bn_beta)  p.push_back(b);
-    for (auto &w : dense_Wt) p.push_back(w);
-    for (auto &b : dense_b)  p.push_back(b);
-    return p;
-}
+Sequential make_resnet(u32 num_classes, bool on_gpu,
+                       const std::vector<u32> &stage_blocks,
+                       CudaMemArena *perm_arena) {
+    const u32 channels[] = {64, 128, 256, 512};
+    Sequential model;
 
-Var cnn_model::predict(Var X, CudaMemArena *arena) {
-    Var cur = X;
-    u32 bn_idx = 0;
+    // Stem: Conv(3→64, k=3, s=1, p=1) → BN → ReLU
+    // No MaxPool — CIFAR-10 images are 32×32, halving early loses too much detail.
+    model.add<Conv2d>(3, 64, Unfold2dParams(3, 1, 1), on_gpu, perm_arena);
+    model.add<BatchNorm2d>(64, on_gpu, perm_arena);
+    model.add<ReLU>();
 
-    for (u32 l = 0; l < (u32)kernels.size(); l++) {
-        cur = conv2d(cur, kernels[l], conv_specs[l].params, arena);
-        cur = add(cur, conv_b[l], arena);
-        if (conv_specs[l].bn) {
-            cur = batch_norm(cur, bn_gamma[bn_idx], bn_beta[bn_idx],
-                             bn_running_mean[bn_idx], bn_running_var[bn_idx],
-                             training, 0.1f, 1e-5f, arena);
-            bn_idx++;
+    // Residual stages. Stage 0 keeps spatial size (stride=1), stages 1-3 halve it.
+    u32 C_in = 64;
+    for (u32 s = 0; s < (u32)stage_blocks.size(); s++) {
+        u32 C_out = channels[s];
+        u32 first_stride = (s == 0) ? 1 : 2;
+        for (u32 b = 0; b < stage_blocks[s]; b++) {
+            model.add<ResBlock>(C_in, C_out, (b == 0) ? first_stride : 1u, on_gpu, perm_arena);
+            C_in = C_out;
         }
-        cur = relu(cur, arena);
-        if (conv_specs[l].pool)
-            cur = max_pool2d(cur, conv_specs[l].pool_params, arena);
     }
 
-    cur = flatten(cur, arena);
+    // Global average pool: after 3 stride-2 stages on 32×32, spatial size is 4×4.
+    // MaxPool(4,4) collapses it to 1×1 → Flatten → 512.
+    model.add<MaxPool2d>(Unfold2dParams(4, 4, 0));
+    model.add<Flatten>();
+    model.add<Linear>(channels[stage_blocks.size() - 1], num_classes, on_gpu, perm_arena);
 
-    for (u32 l = 0; l < (u32)dense_Wt.size(); l++) {
-        cur = add(mat_mul(cur, dense_Wt[l], arena), dense_b[l], arena);
-        if (l < (u32)dense_Wt.size() - 1)
-            cur = relu(cur, arena);
-    }
-
-    return cur;
-}
-
-Var cnn_model::forward(Var X, Var y, CudaMemArena *arena) {
-    return cross_entropy_with_logits(predict(X, arena), y, arena);
+    return model;
 }

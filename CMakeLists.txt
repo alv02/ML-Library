@@ -21,8 +21,10 @@ add_library(mllib
     src/tensor_iterator.cpp
     src/autograd.cpp
     src/ops.cpp
+    src/layers.cpp
     src/models.cpp
     src/optimizers.cpp
+    src/augment.cpp
     src/metrics.cpp
     src/visualize.cpp
     src/backend/tensor_cpu.cpp
@@ -55,6 +57,10 @@ target_link_libraries(main_cnn2 PRIVATE mllib)
 # ── CIFAR-10 VGG-B with BatchNorm ────────────────────────────────────────────
 add_executable(main_cnn3 main_cnn3.cpp)
 target_link_libraries(main_cnn3 PRIVATE mllib)
+
+# ── CIFAR-10 ResNet-18 ────────────────────────────────────────────────────────
+add_executable(main_resnet main_resnet.cpp)
+target_link_libraries(main_resnet PRIVATE mllib)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 enable_testing()

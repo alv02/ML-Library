@@ -1,28 +1,8 @@
 #ifndef MODELS_HPP
 #define MODELS_HPP
-#include "autograd.hpp"
-#include "ops.hpp"
+
+#include "layers.hpp"
 #include <vector>
-
-struct linear_model {
-    Var W, b;
-
-    linear_model(u32 n_features, bool on_gpu,
-                 CudaMemArena *perm_arena = nullptr);
-    std::vector<Var> parameters() const { return {W, b}; }
-    Var predict(Var X, CudaMemArena *arena = nullptr);
-    Var forward(Var X, Var y, CudaMemArena *arena = nullptr);
-};
-
-struct nn_model {
-    std::vector<Var> Wt, b;
-
-    nn_model(u32 in_features, const std::vector<u32> &layer_sizes, bool on_gpu,
-             CudaMemArena *perm_arena = nullptr);
-    std::vector<Var> parameters() const;
-    Var predict(Var X, CudaMemArena *arena = nullptr);
-    Var forward(Var X, Var y, CudaMemArena *arena = nullptr);
-};
 
 struct conv_layer_params {
     u32 C_out;
@@ -32,29 +12,23 @@ struct conv_layer_params {
     bool bn = false;
 };
 
-struct cnn_model {
-    std::vector<conv_layer_params> conv_specs;
+// Linear → (ReLU → Linear) × (n-1). Last layer has no activation.
+Sequential make_mlp(u32 in_features, const std::vector<u32> &sizes, bool on_gpu,
+                    CudaMemArena *perm_arena = nullptr);
 
-    // Conv stage parameters
-    std::vector<Var> kernels, conv_b;
-    std::vector<Var> bn_gamma, bn_beta;         // one entry per BN layer
-    std::vector<Tensor> bn_running_mean, bn_running_var; // [1,C,1,1], perm_arena
+// (Conv2d → [BatchNorm2d] → ReLU → [MaxPool2d]) × N → Flatten
+// → (Linear → ReLU) × (n-1) → Linear
+Sequential make_cnn(u32 C_in, u32 H, u32 W, bool on_gpu,
+                    const std::vector<conv_layer_params> &conv_layers,
+                    const std::vector<u32> &dense_sizes,
+                    CudaMemArena *perm_arena = nullptr);
 
-    // Dense stage parameters
-    std::vector<Var> dense_Wt, dense_b;
-
-    bool training = true;
-    void set_training(bool t) { training = t; }
-
-    // C_in, H, W: input spatial shape — needed to compute flat_features at init
-    cnn_model(u32 C_in, u32 H, u32 W, bool on_gpu,
-              const std::vector<conv_layer_params> &conv_layers,
-              const std::vector<u32> &dense_sizes,
-              CudaMemArena *perm_arena = nullptr);
-
-    std::vector<Var> parameters() const;
-    Var predict(Var X, CudaMemArena *arena = nullptr);
-    Var forward(Var X, Var y, CudaMemArena *arena = nullptr);
-};
+// ResNet for CIFAR-10 (input [N, 3, 32, 32]).
+// stage_blocks: number of ResBlocks per stage, e.g. {2,2,2,2} for ResNet-18.
+// Channels per stage are fixed at {64, 128, 256, 512}.
+// Architecture: Conv→BN→ReLU → 4 stages of ResBlocks → GlobalAvgPool → Linear
+Sequential make_resnet(u32 num_classes, bool on_gpu,
+                       const std::vector<u32> &stage_blocks = {2, 2, 2, 2},
+                       CudaMemArena *perm_arena = nullptr);
 
 #endif

@@ -11,8 +11,10 @@ Built as a learning project to understand how ML frameworks work at the systems 
 - **Tensor module** with two backends (CPU and CUDA): arbitrary strides, zero-copy broadcasting, CPU↔GPU transfers, `.npy` file I/O
 - **CUDA kernels written by hand**: shared-memory tiled matmul, parallel tree reductions, unfold2d/fold2d (im2col), scatter-add, atomic operations
 - **Autograd engine**: computational graph (DAG), 8+ differentiable ops — MatMul, Conv2d, MaxPool2d, BatchNorm (1d/2d), ReLU, softmax, cross-entropy
-- **SGD optimizer** with momentum and L2 regularization
-- **Models**: linear regression, fully-connected network, CNN with strided convolutions, CNN with max pooling, VGG-style CNN with BatchNorm
+- **Layer abstraction**: `Layer` base class with `forward()`, `parameters()`, `train()`/`eval()`; `Sequential` container; `ResBlock` with identity/projection shortcuts
+- **Optimizers**: SGD (momentum + L2), AdamW; MultiStepLR and ReduceLROnPlateau schedulers; EarlyStopping
+- **Models**: linear regression, fully-connected network, CNN with strided convolutions, CNN with max pooling, VGG-style CNN with BatchNorm, ResNet-18
+- **Data augmentation**: CPU preprocessing pipeline (`Augmenter`) with `RandomCrop` and `RandomHorizontalFlip`, applied per batch before GPU upload
 - **Utilities**: DataLoader with Fisher-Yates shuffle, accuracy metric, terminal visualization of predictions (ANSI color)
 
 ---
@@ -65,6 +67,7 @@ Binaries are placed in `build/`. All executables must be run from the **project 
 ./build/main_cnn     # CNN with strided convolutions
 ./build/main_cnn2    # CNN with max pooling
 ./build/main_cnn3    # VGG-B with BatchNorm on CIFAR-10
+./build/main_resnet  # ResNet-18 on CIFAR-10
 ```
 
 Each executable prints per-epoch loss and final test loss + accuracy. The CNN executables also render a terminal visualization of correct and wrong predictions using ANSI color codes.
@@ -197,20 +200,60 @@ CrossEntropyLoss
 
 ---
 
+### `main_resnet` — ResNet-18 (CIFAR-10)
+
+CIFAR-10-adapted ResNet-18. The standard stem MaxPool is removed (32×32 input is too small), and global average pooling is replaced with MaxPool(4,4) to match the spatial size.
+
+```
+Input: [N, 3, 32, 32]
+
+Stem: Conv(3→64, k=3, s=1, p=1) → BN → ReLU          [N,  64, 32, 32]
+
+Stage 0 (×2 blocks, stride=1):  channels 64            [N,  64, 32, 32]
+Stage 1 (×2 blocks, stride=2):  channels 128           [N, 128, 16, 16]
+Stage 2 (×2 blocks, stride=2):  channels 256           [N, 256,  8,  8]
+Stage 3 (×2 blocks, stride=2):  channels 512           [N, 512,  4,  4]
+
+Each ResBlock:
+  Conv(C_in→C_out, k=3, s=stride, p=1) → BN → ReLU
+  Conv(C_out→C_out, k=3, s=1,     p=1) → BN
+  + skip (identity if same shape, else Conv(1×1)+BN projection)
+  → ReLU
+
+MaxPool(4, 4)                                           [N, 512,  1,  1]
+Flatten                                                 [N, 512]
+Linear(512→10)
+CrossEntropyLoss
+```
+
+| Hyperparameter | Value                                     |
+| -------------- | ----------------------------------------- |
+| Optimizer      | SGD                                       |
+| Learning rate  | 0.1 → MultiStepLR ×0.1 at epochs 50, 75  |
+| Momentum       | 0.9                                       |
+| Weight decay   | 1e-4                                      |
+| Batch size     | 128                                       |
+| Epochs         | 100 (EarlyStopping patience=15)           |
+| Augmentation   | RandomCrop(32, padding=4), RandomHorizontalFlip(0.5) |
+| Weight init    | Kaiming normal                            |
+
+---
+
 ## Results on CIFAR-10
 
-| Model                           | Executable  | Test Accuracy |
-| ------------------------------- | ----------- | ------------- |
-| Dense FC (3072→1024→512→256→10) | `main_nn`   | 53.64%        |
-| CNN strided conv                | `main_cnn`  | 70.36%        |
-| CNN + MaxPool                   | `main_cnn2` | 76.53%        |
-| VGG-13/BN-style                 | `main_cnn3` | 89.35%        |
+| Model                                  | Executable     | Test Accuracy |
+| -------------------------------------- | -------------- | ------------- |
+| Dense FC (3072→1024→512→256→10)        | `main_nn`      | 53.64%        |
+| CNN strided conv                       | `main_cnn`     | 70.36%        |
+| CNN + MaxPool                          | `main_cnn2`    | 76.53%        |
+| VGG-13/BN-style                        | `main_cnn3`    | 89.35%        |
+| ResNet-18 + RandomCrop + HFlip         | `main_resnet`  | 92.80%        |
 
 > Results may vary slightly between runs due to random weight initialization and batch shuffling.
 
 ### PyTorch baseline
 
-`pytorch_baseline.py` reimplements all three models in PyTorch with identical architectures and hyperparameters, to verify that the custom framework reaches comparable accuracy:
+`pytorch_baseline.py` reimplements all models in PyTorch with identical architectures and hyperparameters (including augmentation for ResNet-18), to verify that the custom framework reaches comparable accuracy:
 
 ```bash
 python pytorch_baseline.py
@@ -226,8 +269,10 @@ python pytorch_baseline.py
 │   ├── tensor.hpp          # Tensor struct, file I/O, device transfers
 │   ├── autograd.hpp        # Graph, function_var, differentiable function base
 │   ├── ops.hpp             # Operation declarations (forward + backward)
-│   ├── models.hpp          # linear_model, nn_model, cnn_model
-│   ├── optimizers.hpp      # DataLoader, SGD
+│   ├── layers.hpp          # Layer, Sequential, ResBlock, Conv2d, BatchNorm2d, …
+│   ├── models.hpp          # make_mlp, make_cnn, make_resnet factory functions
+│   ├── optimizers.hpp      # DataLoader, SGD, AdamW, MultiStepLR, EarlyStopping
+│   ├── augment.hpp         # Augmenter, RandomCrop, RandomHorizontalFlip
 │   ├── metrics.hpp         # Accuracy
 │   ├── visualize.hpp       # Terminal ANSI rendering
 │   ├── tensor_iterator.hpp # Strided multi-dim iterator
@@ -238,8 +283,10 @@ python pytorch_baseline.py
 │   ├── tensor.cpp
 │   ├── autograd.cpp
 │   ├── ops.cpp
-│   ├── models.cpp
+│   ├── layers.cpp          # Layer forward/backward implementations
+│   ├── models.cpp          # Model factory implementations
 │   ├── optimizers.cpp
+│   ├── augment.cpp         # CPU augmentation transforms
 │   ├── metrics.cpp
 │   ├── visualize.cpp
 │   ├── tensor_iterator.cpp
@@ -254,6 +301,7 @@ python pytorch_baseline.py
 ├── main_cnn.cpp             # Strided CNN on CIFAR-10
 ├── main_cnn2.cpp            # MaxPool CNN on CIFAR-10
 ├── main_cnn3.cpp            # VGG-B with BatchNorm on CIFAR-10
+├── main_resnet.cpp          # ResNet-18 on CIFAR-10
 ├── prepare_dataset.py       # Download and preprocess CIFAR-10 → .npy
 ├── pytorch_baseline.py      # PyTorch reference implementation
 └── CMakeLists.txt

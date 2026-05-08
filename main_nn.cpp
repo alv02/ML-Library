@@ -1,5 +1,6 @@
 #include "include/metrics.hpp"
 #include "include/models.hpp"
+#include "include/ops.hpp"
 #include "include/optimizers.hpp"
 #include "include/tensor.hpp"
 #include "include/visualize.hpp"
@@ -28,8 +29,8 @@ int main() {
     tensor_print(val_X.impl());
 
     // 784 → 1024 → 512 → 256 → 10
-    nn_model model(flat_dim, {1024, 512, 256, 10}, true, &perm_arena);
-    sgd optim(model.parameters(), 0.01f, 1e-4f, 0.9f, &perm_arena);
+    Sequential model = make_mlp(flat_dim, {1024, 512, 256, 10}, true, &perm_arena);
+    sgd optim(model, 0.01f, 1e-4f, 0.9f, &perm_arena);
     DataLoader loader(val_X, val_y, 128);
 
     for (int epoch = 0; epoch < 50; epoch++) {
@@ -39,13 +40,15 @@ int main() {
             cuda_arena_clear(&batch_arena);
             if (!loader.next(Xb, yb, &batch_arena))
                 break;
-            Var loss = model.forward(Var(Xb), Var(yb), &batch_arena);
+            Var logits = model(Var(Xb), &batch_arena);
+            Var loss = cross_entropy_with_logits(logits, Var(yb), &batch_arena);
             backward(loss, &batch_arena);
             optim.step(&batch_arena);
             optim.zero_grad();
         }
     }
 
+    model.eval();
     DataLoader test_loader(test_val_X, test_val_y, 256);
     f32 total_acc = 0.0f, total_loss = 0.0f;
     u32 n_batches = 0;
@@ -54,8 +57,8 @@ int main() {
         cuda_arena_clear(&batch_arena);
         if (!test_loader.next(Xb_test, yb_test, &batch_arena))
             break;
-        Var logits = model.predict(Var(Xb_test), &batch_arena);
-        Var loss = model.forward(Var(Xb_test), Var(yb_test), &batch_arena);
+        Var logits = model(Var(Xb_test), &batch_arena);
+        Var loss = cross_entropy_with_logits(logits, Var(yb_test), &batch_arena);
         Tensor lc = tensor_to_cpu(loss->data);
         total_loss += lc->data()[0];
         total_acc += accuracy(logits->data, yb_test);

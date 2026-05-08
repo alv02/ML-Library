@@ -1,4 +1,5 @@
-#include "include/models.hpp"
+#include "include/layers.hpp"
+#include "include/ops.hpp"
 #include "include/optimizers.hpp"
 #include "include/tensor.hpp"
 
@@ -9,8 +10,8 @@ int main() {
     Tensor val_X = tensor_load("data/X.npy", true);
     Tensor val_y = tensor_load("data/y.npy", true);
 
-    linear_model model(val_X->shape[1], val_X->on_gpu(), &perm_arena);
-    sgd optim(model.parameters(), 0.1f, 0.0f, 0.0f, &perm_arena);
+    Linear model(val_X->shape[1], 1, val_X->on_gpu(), &perm_arena);
+    sgd optim(model, 0.1f, 0.0f, 0.0f, &perm_arena);
 
     DataLoader loader(val_X, val_y, val_X->shape[0]);
 
@@ -21,7 +22,8 @@ int main() {
             cuda_arena_clear(&batch_arena);
             if (!loader.next(Xb, yb, &batch_arena))
                 break;
-            Var loss = model.forward(Var(Xb), Var(yb), &batch_arena);
+            Var pred = model(Var(Xb), &batch_arena);
+            Var loss = mse_loss(pred, Var(yb), &batch_arena);
             backward(loss, &batch_arena);
             optim.step(&batch_arena);
             optim.zero_grad();

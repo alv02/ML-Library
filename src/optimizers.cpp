@@ -5,7 +5,8 @@
 #include <cstdlib>
 #include <numeric>
 
-// ── DataLoader ────────────────────────────────────────────────────────────────
+// ── DataLoader
+// ────────────────────────────────────────────────────────────────
 
 DataLoader::DataLoader(Tensor X, Tensor y, u32 batch_size)
     : X(X), y(y), batch_size(batch_size), cursor(0) {
@@ -33,7 +34,8 @@ bool DataLoader::next(Tensor &X_batch, Tensor &y_batch, CudaMemArena *arena) {
     return true;
 }
 
-// ── Optimizer ─────────────────────────────────────────────────────────────────
+// ── Optimizer
+// ─────────────────────────────────────────────────────────────────
 
 Optimizer::Optimizer(std::vector<Var> params, f32 lr, CudaMemArena *perm_arena)
     : lr(lr), params(std::move(params)), perm_arena(perm_arena) {
@@ -43,11 +45,15 @@ Optimizer::Optimizer(std::vector<Var> params, f32 lr, CudaMemArena *perm_arena)
         p->grad = tensor_zeros_like(p->data, perm_arena);
 }
 
-// ── sgd ───────────────────────────────────────────────────────────────────────
+// ── sgd
+// ───────────────────────────────────────────────────────────────────────
 
 sgd::sgd(std::vector<Var> params, f32 lr, f32 lambda, f32 mu,
          CudaMemArena *perm_arena)
     : Optimizer(std::move(params), lr, perm_arena), lambda(lambda), mu(mu) {}
+
+sgd::sgd(Layer &model, f32 lr, f32 lambda, f32 mu, CudaMemArena *perm_arena)
+    : sgd(model.parameters(), lr, lambda, mu, perm_arena) {}
 
 void sgd::step(CudaMemArena *arena) {
     for (auto &p : params) {
@@ -85,7 +91,12 @@ void sgd::zero_grad() {
     }
 }
 
-// ── AdamW ─────────────────────────────────────────────────────────────────────
+// ── AdamW
+// ─────────────────────────────────────────────────────────────────────
+
+AdamW::AdamW(Layer &model, f32 lr, f32 beta1, f32 beta2, f32 eps, f32 lambda,
+             CudaMemArena *perm_arena)
+    : AdamW(model.parameters(), lr, beta1, beta2, eps, lambda, perm_arena) {}
 
 AdamW::AdamW(std::vector<Var> params, f32 lr, f32 beta1, f32 beta2, f32 eps,
              f32 lambda, CudaMemArena *perm_arena)
@@ -147,9 +158,11 @@ void AdamW::zero_grad() {
     }
 }
 
-// ── MultiStepLR ───────────────────────────────────────────────────────────────
+// ── MultiStepLR
+// ───────────────────────────────────────────────────────────────
 
-MultiStepLR::MultiStepLR(Optimizer &optimizer, std::vector<int> milestones, f32 gamma)
+MultiStepLR::MultiStepLR(Optimizer &optimizer, std::vector<int> milestones,
+                         f32 gamma)
     : optimizer(optimizer), milestones(std::move(milestones)), gamma(gamma),
       base_lr(optimizer.lr) {
     std::sort(this->milestones.begin(), this->milestones.end());
@@ -161,17 +174,18 @@ void MultiStepLR::step(int epoch) {
             f32 old_lr = optimizer.lr;
             f32 new_lr = old_lr * gamma;
             optimizer.set_lr(new_lr);
-            printf("MultiStepLR: epoch %d — lr %.2e → %.2e\n", epoch + 1, old_lr,
-                   new_lr);
+            printf("MultiStepLR: epoch %d — lr %.2e → %.2e\n", epoch + 1,
+                   old_lr, new_lr);
             break;
         }
     }
 }
 
-// ── ReduceLROnPlateau ─────────────────────────────────────────────────────────
+// ── ReduceLROnPlateau
+// ─────────────────────────────────────────────────────────
 
-ReduceLROnPlateau::ReduceLROnPlateau(Optimizer &optimizer, f32 factor, int patience,
-                                     f32 min_lr, f32 min_delta)
+ReduceLROnPlateau::ReduceLROnPlateau(Optimizer &optimizer, f32 factor,
+                                     int patience, f32 min_lr, f32 min_delta)
     : optimizer(optimizer), factor(factor), patience(patience), min_lr(min_lr),
       min_delta(min_delta) {}
 
@@ -187,12 +201,13 @@ void ReduceLROnPlateau::step(f32 loss, int epoch) {
         f32 new_lr = std::max(old_lr * factor, min_lr);
         optimizer.set_lr(new_lr);
         no_improve = 0;
-        printf("ReduceLROnPlateau: epoch %d — lr %.2e → %.2e\n", epoch + 1, old_lr,
-               new_lr);
+        printf("ReduceLROnPlateau: epoch %d — lr %.2e → %.2e\n", epoch + 1,
+               old_lr, new_lr);
     }
 }
 
-// ── EarlyStopping ─────────────────────────────────────────────────────────────
+// ── EarlyStopping
+// ─────────────────────────────────────────────────────────────
 
 EarlyStopping::EarlyStopping(int patience, f32 min_delta)
     : patience(patience), min_delta(min_delta) {}
@@ -205,10 +220,10 @@ bool EarlyStopping::step(f32 loss, int epoch) {
         no_improve++;
     }
     if (no_improve >= patience) {
-        printf("EarlyStopping: no improvement for %d epochs, stopping at epoch %d\n",
+        printf("EarlyStopping: no improvement for %d epochs, stopping at epoch "
+               "%d\n",
                patience, epoch + 1);
         return true;
     }
     return false;
 }
-

@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
+from torchvision import transforms
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -126,6 +127,71 @@ class CNN2(nn.Module):
 def conv_bn(in_c, out_c):
     return [nn.Conv2d(in_c, out_c, 3, padding=1, bias=False), nn.BatchNorm2d(out_c), nn.ReLU()]
 
+
+# ── ResNet-18 (matches make_resnet in models.cpp) ─────────────────────────────
+# Stem: Conv(3→64,k=3,s=1,p=1)+BN+ReLU  (no initial MaxPool — CIFAR-10 32×32)
+# 4 stages × {2,2,2,2} ResBlocks, channels {64,128,256,512}
+# Stage 0: stride=1. Stages 1-3: first block stride=2, rest stride=1.
+# Head: MaxPool(4,4) → Flatten → Linear(512,10)
+# Projection shortcut (1×1 Conv+BN) when channels or stride change.
+
+class ResBlockPT(nn.Module):
+    def __init__(self, C_in, C_out, stride):
+        super().__init__()
+        self.residual = nn.Sequential(
+            nn.Conv2d(C_in, C_out, 3, stride=stride, padding=1, bias=True),
+            nn.BatchNorm2d(C_out),
+            nn.ReLU(),
+            nn.Conv2d(C_out, C_out, 3, stride=1, padding=1, bias=True),
+            nn.BatchNorm2d(C_out),
+        )
+        self.proj = nn.Sequential(
+            nn.Conv2d(C_in, C_out, 1, stride=stride, padding=0, bias=True),
+            nn.BatchNorm2d(C_out),
+        ) if (C_in != C_out or stride != 1) else None
+
+    def forward(self, x):
+        skip = self.proj(x) if self.proj else x
+        return torch.relu(self.residual(x) + skip)
+
+
+class ResNet18(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        channels = [64, 128, 256, 512]
+        stage_blocks = [2, 2, 2, 2]
+
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, 64, 3, stride=1, padding=1, bias=True),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+        )
+
+        stages = []
+        C_in = 64
+        for s, n_blocks in enumerate(stage_blocks):
+            C_out = channels[s]
+            first_stride = 1 if s == 0 else 2
+            for b in range(n_blocks):
+                stages.append(ResBlockPT(C_in, C_out, first_stride if b == 0 else 1))
+                C_in = C_out
+        self.stages = nn.Sequential(*stages)
+
+        self.head = nn.Sequential(
+            nn.MaxPool2d(4, 4),
+            nn.Flatten(),
+            nn.Linear(512, num_classes),
+        )
+
+        for m in self.modules():
+            if isinstance(m, (nn.Conv2d, nn.Linear)):
+                nn.init.kaiming_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        return self.head(self.stages(self.stem(x)))
+
 class CNN3(nn.Module):
     def __init__(self):
         super().__init__()
@@ -150,6 +216,23 @@ class CNN3(nn.Module):
     def forward(self, x):
         return self.classifier(self.features(x))
 
+# ── Augmented dataset ─────────────────────────────────────────────────────────
+
+class AugmentedDataset(torch.utils.data.Dataset):
+    def __init__(self, X, y, transform=None):
+        self.X = X          # CPU tensors [N, C, H, W]
+        self.y = y
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        x = self.X[idx]
+        if self.transform:
+            x = self.transform(x)
+        return x, self.y[idx]
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -162,6 +245,10 @@ if __name__ == "__main__":
     y_test_idx  = y_test.argmax(dim=1)
 
     print(f"X_train: {list(X_train.shape)}")
+
+    # CPU copies kept for augmented dataset (transforms run on CPU)
+    X_train_cpu     = X_train.clone()
+    y_train_idx_cpu = y_train_idx.clone()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     X_train, y_train_idx = X_train.to(device), y_train_idx.to(device)
@@ -228,16 +315,61 @@ if __name__ == "__main__":
     # SGD lr=0.05, weight_decay=5e-4, momentum=0.9, batch=64, epochs=100
     # ReduceLROnPlateau factor=0.1, patience=5 — EarlyStopping patience=10
 
+    # print("=" * 50)
+    # print("main_cnn3  (VGG-13-style + BatchNorm)")
+    # print("=" * 50)
+    # cnn3_model     = CNN3().to(device)
+    # cnn3_optim     = torch.optim.SGD(cnn3_model.parameters(), lr=0.05,
+    #                                  weight_decay=5e-4, momentum=0.9)
+    # cnn3_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    #                      cnn3_optim, factor=0.1, patience=5)
+    # cnn3_loader    = DataLoader(TensorDataset(X_train, y_train_idx),
+    #                             batch_size=64, shuffle=True)
+    # train_with_scheduler(cnn3_model, criterion, cnn3_optim, cnn3_scheduler,
+    #                      cnn3_loader, epochs=100, early_stop_patience=10)
+    # evaluate(cnn3_model, criterion, X_test, y_test_idx)
+
+    # ── main_resnet — ResNet-18 ───────────────────────────────────────────────
+    # Stem: Conv(3→64,k=3,s=1)+BN+ReLU → 4 stages × 2 ResBlocks
+    # → MaxPool(4,4) → Flatten → Linear(512,10)
+    # SGD lr=0.1, weight_decay=1e-4, momentum=0.9, batch=128, epochs=100
+    # MultiStepLR milestones=[50,75] gamma=0.1 — EarlyStopping patience=15
+
     print("=" * 50)
-    print("main_cnn3  (VGG-13-style + BatchNorm)")
+    print("main_resnet  (ResNet-18, RandomCrop+HFlip augmentation)")
     print("=" * 50)
-    cnn3_model     = CNN3().to(device)
-    cnn3_optim     = torch.optim.SGD(cnn3_model.parameters(), lr=0.05,
-                                     weight_decay=5e-4, momentum=0.9)
-    cnn3_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                         cnn3_optim, factor=0.1, patience=5)
-    cnn3_loader    = DataLoader(TensorDataset(X_train, y_train_idx),
-                                batch_size=64, shuffle=True)
-    train_with_scheduler(cnn3_model, criterion, cnn3_optim, cnn3_scheduler,
-                         cnn3_loader, epochs=100, early_stop_patience=10)
-    evaluate(cnn3_model, criterion, X_test, y_test_idx)
+    resnet_model   = ResNet18(num_classes=10).to(device)
+    resnet_optim   = torch.optim.SGD(resnet_model.parameters(), lr=0.1,
+                                     weight_decay=1e-4, momentum=0.9)
+    resnet_sched   = torch.optim.lr_scheduler.MultiStepLR(
+                         resnet_optim, milestones=[50, 75], gamma=0.1)
+
+    aug_transform  = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(0.5),
+    ])
+    resnet_dataset = AugmentedDataset(X_train_cpu, y_train_idx_cpu, aug_transform)
+    resnet_loader  = DataLoader(resnet_dataset, batch_size=128, shuffle=True)
+
+    best_loss, no_improve = float("inf"), 0
+    for epoch in range(100):
+        resnet_model.train()
+        epoch_loss = 0.0
+        for Xb, yb in resnet_loader:
+            Xb, yb = Xb.to(device), yb.to(device)
+            resnet_optim.zero_grad()
+            loss = criterion(resnet_model(Xb), yb)
+            loss.backward()
+            resnet_optim.step()
+            epoch_loss += loss.item()
+        avg_loss = epoch_loss / len(resnet_loader)
+        resnet_sched.step()
+        print(f"Epoch {epoch+1:3d}  loss: {avg_loss:.4f}  lr: {resnet_optim.param_groups[0]['lr']:.2e}")
+        if best_loss - avg_loss > 1e-4:
+            best_loss, no_improve = avg_loss, 0
+        else:
+            no_improve += 1
+        if no_improve >= 15:
+            print(f"EarlyStopping at epoch {epoch+1}")
+            break
+    evaluate(resnet_model, criterion, X_test, y_test_idx)
