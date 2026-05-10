@@ -5,12 +5,12 @@
 Linear::Linear(u32 in_features, u32 out_features, bool on_gpu,
                CudaMemArena *perm_arena) {
     u32 w_shape[2] = {in_features, out_features};
-    W = Var(Tensor::make(2, w_shape, on_gpu, perm_arena),
+    W = Var(Tensor<f32>::make(2, w_shape, on_gpu, perm_arena),
             FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
     tensor_he_init(W->data);
 
     u32 b_shape[2] = {1, out_features};
-    b = Var(tensor_zeros(2, b_shape, on_gpu, perm_arena),
+    b = Var(tensor_zeros<f32>(2, b_shape, on_gpu, perm_arena),
             FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
 }
 
@@ -24,12 +24,12 @@ Conv2d::Conv2d(u32 C_in, u32 C_out, Unfold2dParams params, bool on_gpu,
                CudaMemArena *perm_arena)
     : params(params) {
     u32 w_shape[2] = {C_in * params.k_h * params.k_w, C_out};
-    W = Var(Tensor::make(2, w_shape, on_gpu, perm_arena),
+    W = Var(Tensor<f32>::make(2, w_shape, on_gpu, perm_arena),
             FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
     tensor_he_init(W->data);
 
     u32 b_shape[4] = {1, C_out, 1, 1};
-    b = Var(tensor_zeros(4, b_shape, on_gpu, perm_arena),
+    b = Var(tensor_zeros<f32>(4, b_shape, on_gpu, perm_arena),
             FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
 }
 
@@ -43,17 +43,17 @@ BatchNorm2d::BatchNorm2d(u32 C, bool on_gpu, CudaMemArena *perm_arena,
                          f32 momentum, f32 eps)
     : momentum(momentum), eps(eps) {
     u32 g_shape[1] = {C};
-    gamma = Var(Tensor::make(1, g_shape, on_gpu, perm_arena),
+    gamma = Var(Tensor<f32>::make(1, g_shape, on_gpu, perm_arena),
                 FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
     tensor_fill(gamma->data, 1.0f);
 
-    beta = Var(tensor_zeros(1, g_shape, on_gpu, perm_arena),
+    beta = Var(tensor_zeros<f32>(1, g_shape, on_gpu, perm_arena),
                FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
 
     u32 stat_shape[4] = {1, C, 1, 1};
-    running_mean = Tensor::make(4, stat_shape, on_gpu, perm_arena);
+    running_mean = Tensor<f32>::make(4, stat_shape, on_gpu, perm_arena);
     tensor_fill(running_mean, 0.0f);
-    running_var = Tensor::make(4, stat_shape, on_gpu, perm_arena);
+    running_var = Tensor<f32>::make(4, stat_shape, on_gpu, perm_arena);
     tensor_fill(running_var, 1.0f);
 }
 

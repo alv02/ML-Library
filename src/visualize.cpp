@@ -39,58 +39,59 @@ static void print_predictions(const f32 *prob_row, u32 pred, u32 truth,
     }
 }
 
-void visualize_example(const Tensor &image, const Tensor &logits,
-                       const Tensor &target) {
-    Tensor prob     = tensor_softmax(logits);
-    Tensor img_cpu  = tensor_to_cpu(image);
-    Tensor prob_cpu = tensor_to_cpu(prob);
+void visualize_example(const Tensor<f32> &image, const Tensor<f32> &logits,
+                       const Tensor<f32> &target) {
+    Tensor<f32> prob     = tensor_softmax(logits);
+    Tensor<f32> img_cpu  = tensor_to_cpu(image);
+    Tensor<f32> prob_cpu = tensor_to_cpu(prob);
 
     u32 channels = img_cpu->shape[img_cpu->ndim - 3];
     u32 h        = img_cpu->shape[img_cpu->ndim - 2];
     u32 w        = img_cpu->shape[img_cpu->ndim - 1];
     u32 n_classes = prob_cpu->shape[1];
 
-    Tensor pred_t  = tensor_to_cpu(tensor_argmax(logits, 1));
-    Tensor truth_t = tensor_to_cpu(tensor_argmax(target, 1));
-    u32 pred  = (u32)pred_t->data()[0];
-    u32 truth = (u32)truth_t->data()[0];
+    TensorU32 pred_t  = tensor_to_cpu(tensor_argmax(logits, 1));
+    TensorU32 truth_t = tensor_to_cpu(tensor_argmax(target, 1));
+    u32 pred  = pred_t->data()[0];
+    u32 truth = truth_t->data()[0];
 
     draw_image(img_cpu->data(), h, w, channels);
     print_predictions(prob_cpu->data(), pred, truth, n_classes);
     printf("Result: %s\n\n", pred == truth ? "CORRECT" : "WRONG");
 }
 
-static std::vector<u32> collect_indices(const Tensor &images,
-                                        const Tensor &logits,
-                                        const Tensor &targets,
+static std::vector<u32> collect_indices(const Tensor<f32> &images,
+                                        const Tensor<f32> &logits,
+                                        const Tensor<f32> &targets,
                                         u32 n_examples, b32 want_correct) {
-    Tensor mask_cpu = tensor_to_cpu(
-        tensor_equal(tensor_argmax(logits, 1), tensor_argmax(targets, 1)));
+    TensorU32 pred_cpu  = tensor_to_cpu(tensor_argmax(logits,   1, false));
+    TensorU32 truth_cpu = tensor_to_cpu(tensor_argmax(targets,  1, false));
+    u32 n = pred_cpu->shape[0];
 
     std::vector<u32> indices;
-    for (u32 i = 0; i < mask_cpu->shape[0] && indices.size() < n_examples; i++)
-        if ((mask_cpu->data()[i] != 0.0f) == (bool)want_correct)
+    for (u32 i = 0; i < n && indices.size() < n_examples; i++)
+        if ((pred_cpu->data()[i] == truth_cpu->data()[i]) == (bool)want_correct)
             indices.push_back(i);
     return indices;
 }
 
-void visualize_correct(const Tensor &images, const Tensor &logits,
-                       const Tensor &targets, u32 n_examples) {
+void visualize_correct(const Tensor<f32> &images, const Tensor<f32> &logits,
+                       const Tensor<f32> &targets, u32 n_examples) {
     for (u32 idx : collect_indices(images, logits, targets, n_examples, true)) {
-        Tensor img = tensor_index_select(images,  &idx, 1, 0);
-        Tensor log = tensor_index_select(logits,  &idx, 1, 0);
-        Tensor tgt = tensor_index_select(targets, &idx, 1, 0);
+        Tensor<f32> img = tensor_index_select(images,  &idx, 1, 0);
+        Tensor<f32> log = tensor_index_select(logits,  &idx, 1, 0);
+        Tensor<f32> tgt = tensor_index_select(targets, &idx, 1, 0);
         printf("===== Sample %u =====\n", idx);
         visualize_example(img, log, tgt);
     }
 }
 
-void visualize_wrong(const Tensor &images, const Tensor &logits,
-                     const Tensor &targets, u32 n_examples) {
+void visualize_wrong(const Tensor<f32> &images, const Tensor<f32> &logits,
+                     const Tensor<f32> &targets, u32 n_examples) {
     for (u32 idx : collect_indices(images, logits, targets, n_examples, false)) {
-        Tensor img = tensor_index_select(images,  &idx, 1, 0);
-        Tensor log = tensor_index_select(logits,  &idx, 1, 0);
-        Tensor tgt = tensor_index_select(targets, &idx, 1, 0);
+        Tensor<f32> img = tensor_index_select(images,  &idx, 1, 0);
+        Tensor<f32> log = tensor_index_select(logits,  &idx, 1, 0);
+        Tensor<f32> tgt = tensor_index_select(targets, &idx, 1, 0);
         printf("===== Sample %u =====\n", idx);
         visualize_example(img, log, tgt);
     }

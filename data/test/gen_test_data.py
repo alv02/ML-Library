@@ -299,27 +299,27 @@ def save_scatter(dir_name, src, indices, dim, K):
     os.makedirs(dir_name, exist_ok=True)
     out = scatter_add_ref(src, indices, dim, K)
     np.save(f"{dir_name}/a.npy",   src.astype(np.float32))
-    np.save(f"{dir_name}/b.npy",   indices.astype(np.float32))
+    np.save(f"{dir_name}/b.npy",   indices.astype(np.uint32))
     np.save(f"{dir_name}/out.npy", out.astype(np.float32))
 
 # 2D, dim=1, src [4,1] → out [4,3]
 src = np.random.randn(4, 1).astype(np.float32)
-idx = np.random.randint(0, 3, size=(4, 1)).astype(np.float32)
+idx = np.random.randint(0, 3, size=(4, 1))
 save_scatter("scatter_add_2d_dim1_k3", src, idx, dim=1, K=3)
 
 # 3D, dim=2, src [2,3,1] → out [2,3,4]
 src = np.random.randn(2, 3, 1).astype(np.float32)
-idx = np.random.randint(0, 4, size=(2, 3, 1)).astype(np.float32)
+idx = np.random.randint(0, 4, size=(2, 3, 1))
 save_scatter("scatter_add_3d_dim2_k4", src, idx, dim=2, K=4)
 
 # 4D, dim=3, src [2,4,3,1] → out [2,4,3,9]  (mimics MaxPool backward)
 src = np.random.randn(2, 4, 3, 1).astype(np.float32)
-idx = np.random.randint(0, 9, size=(2, 4, 3, 1)).astype(np.float32)
+idx = np.random.randint(0, 9, size=(2, 4, 3, 1))
 save_scatter("scatter_add_4d_dim3_k9", src, idx, dim=3, K=9)
 
 # 4D, dim=1, src [2,1,3,4] → out [2,5,3,4]
 src = np.random.randn(2, 1, 3, 4).astype(np.float32)
-idx = np.random.randint(0, 5, size=(2, 1, 3, 4)).astype(np.float32)
+idx = np.random.randint(0, 5, size=(2, 1, 3, 4))
 save_scatter("scatter_add_4d_dim1_k5", src, idx, dim=1, K=5)
 
 # ── MaxPool2d forward (full pipeline check) ───────────────────────────────────
@@ -353,15 +353,20 @@ save_maxpool2d("maxpool_2n4c_6x6_k3s1", a, k=3, stride=1, pad=0)
 
 
 # ── tensor_welford_mean_var ───────────────────────────────────────────────────
+# The implementation returns raw M2 (sum of squared deviations from the mean),
+# not variance. Compute in float64 for a high-precision reference; both CPU and
+# CUDA implementations should match within a generous float32 tolerance.
 def save_welford(dir_name, inp, dim):
     os.makedirs(dir_name, exist_ok=True)
-    t = torch.from_numpy(inp.astype(np.float32))
-    all_dims = list(range(t.ndim))
-    all_dims.remove(dim)
-    var, mean = torch.var_mean(t, dim=all_dims, unbiased=True)
+    a = inp.astype(np.float64)
+    all_dims = tuple(i for i in range(a.ndim) if i != dim)
+    mean = a.mean(axis=all_dims)
+    shape = [1] * a.ndim
+    shape[dim] = a.shape[dim]
+    m2 = np.sum((a - mean.reshape(shape)) ** 2, axis=all_dims)
     np.save(f"{dir_name}/a.npy",    inp.astype(np.float32))
-    np.save(f"{dir_name}/mean.npy", mean.numpy().astype(np.float32))
-    np.save(f"{dir_name}/var.npy",  var.numpy().astype(np.float32))
+    np.save(f"{dir_name}/mean.npy", mean.astype(np.float32))
+    np.save(f"{dir_name}/var.npy",  m2.astype(np.float32))
 
 a = np.random.randn(4, 3).astype(np.float32)
 save_welford("welford_2d_dim0", a, dim=0)

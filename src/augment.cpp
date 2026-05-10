@@ -1,12 +1,12 @@
 #include "../include/augment.hpp"
 #include <cstdlib>
 
-Tensor RandomHorizontalFlip::apply(const Tensor &batch) {
-    const TensorImpl &src = *batch.impl_;
+Tensor<f32> RandomHorizontalFlip::apply(const Tensor<f32> &batch) {
+    const TensorImpl<f32> &src = *batch.impl_;
     u32 N = src.shape[0], C = src.shape[1], H = src.shape[2], W = src.shape[3];
 
-    Tensor out = Tensor::make(4, src.shape, false);
-    TensorImpl &dst = *out.impl_;
+    Tensor<f32> out = Tensor<f32>::make(4, src.shape, false);
+    TensorImpl<f32> &dst = *out.impl_;
 
     for (u32 n = 0; n < N; n++) {
         bool flip = ((float)rand() / RAND_MAX) < p;
@@ -18,13 +18,13 @@ Tensor RandomHorizontalFlip::apply(const Tensor &batch) {
     return out;
 }
 
-Tensor RandomCrop::apply(const Tensor &batch) {
-    const TensorImpl &src = *batch.impl_;
+Tensor<f32> RandomCrop::apply(const Tensor<f32> &batch) {
+    const TensorImpl<f32> &src = *batch.impl_;
     u32 N = src.shape[0], C = src.shape[1], H = src.shape[2], W = src.shape[3];
 
     u32 out_shape[4] = {N, C, size, size};
-    Tensor out = Tensor::make(4, out_shape, false);
-    TensorImpl &dst = *out.impl_;
+    Tensor<f32> out = Tensor<f32>::make(4, out_shape, false);
+    TensorImpl<f32> &dst = *out.impl_;
 
     u32 max_top  = H + 2 * padding - size;
     u32 max_left = W + 2 * padding - size;
@@ -50,7 +50,7 @@ Tensor RandomCrop::apply(const Tensor &batch) {
     return out;
 }
 
-bool Augmenter::next(Tensor &X_batch, Tensor &y_batch, CudaMemArena *arena) {
+bool Augmenter::next(Tensor<f32> &X_batch, Tensor<f32> &y_batch, CudaMemArena *arena) {
     if (!loader.next(X_batch, y_batch, nullptr))
         return false;
 

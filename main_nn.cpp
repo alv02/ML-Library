@@ -10,10 +10,10 @@ int main() {
     CudaMemArena perm_arena(MiB(64));
     CudaMemArena batch_arena(GiB(1));
 
-    Tensor val_X = tensor_load("./data/cifar_X_train.npy", true);
-    Tensor val_y = tensor_load("./data/cifar_y_train.npy", true);
-    Tensor test_val_X = tensor_load("./data/cifar_X_test.npy", true);
-    Tensor test_val_y = tensor_load("./data/cifar_y_test.npy", true);
+    Tensor<f32> val_X = tensor_load("./data/cifar_X_train.npy", true);
+    Tensor<f32> val_y = tensor_load("./data/cifar_y_train.npy", true);
+    Tensor<f32> test_val_X = tensor_load("./data/cifar_X_test.npy", true);
+    Tensor<f32> test_val_y = tensor_load("./data/cifar_y_test.npy", true);
 
     u32 flat_dim = val_X->shape[1] * val_X->shape[2] * val_X->shape[3];
     u32 flat_train[2] = {val_X->shape[0], flat_dim};
@@ -35,7 +35,7 @@ int main() {
 
     for (int epoch = 0; epoch < 50; epoch++) {
         loader.shuffle();
-        Tensor Xb, yb;
+        Tensor<f32> Xb, yb;
         while (true) {
             cuda_arena_clear(&batch_arena);
             if (!loader.next(Xb, yb, &batch_arena))
@@ -52,14 +52,14 @@ int main() {
     DataLoader test_loader(test_val_X, test_val_y, 256);
     f32 total_acc = 0.0f, total_loss = 0.0f;
     u32 n_batches = 0;
-    Tensor Xb_test, yb_test;
+    Tensor<f32> Xb_test, yb_test;
     while (true) {
         cuda_arena_clear(&batch_arena);
         if (!test_loader.next(Xb_test, yb_test, &batch_arena))
             break;
         Var logits = model(Var(Xb_test), &batch_arena);
         Var loss = cross_entropy_with_logits(logits, Var(yb_test), &batch_arena);
-        Tensor lc = tensor_to_cpu(loss->data);
+        Tensor<f32> lc = tensor_to_cpu(loss->data);
         total_loss += lc->data()[0];
         total_acc += accuracy(logits->data, yb_test);
         n_batches++;

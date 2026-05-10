@@ -4,46 +4,87 @@
 #define MAX_NDIM 8
 #include "backend/cuda_mem_arena.hpp"
 #include "base.hpp"
+#include <cuda_runtime.h>
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 
 #define ROW_DIM(t) ((t).ndim - 2)
 #define COL_DIM(t) ((t).ndim - 1)
 
+// Forward-declared so TensorImpl's inline constructor can call it.
+// Full declaration appears again in the metadata section below.
+u64 tensor_compute_strides(u64 *stride, const u32 *shape, u32 ndim);
+
+// ---- Storage<T>: owns a typed memory buffer (CPU or GPU) --------------------
+
+template <typename T = f32>
 struct Storage {
-    f32 *data;
+    T *data;
     u64 nbytes;
     b32 on_gpu;
-    // TODO: Change to allocator in the future
     CudaMemArena *arena;
 
-    Storage(u64 nbytes, b32 on_gpu, CudaMemArena *arena = nullptr);
-    ~Storage();
+    Storage(u64 nbytes, b32 on_gpu, CudaMemArena *arena = nullptr)
+        : nbytes(nbytes), on_gpu(on_gpu), arena(arena) {
+        if (on_gpu) {
+            if (arena)
+                data = (T *)cuda_arena_push(arena, nbytes);
+            else
+                cudaMallocAsync(&data, nbytes, 0);
+        } else {
+            data = (T *)malloc(nbytes);
+        }
+    }
+
+    ~Storage() {
+        if (on_gpu) {
+            if (!arena)
+                cudaFreeAsync(data, 0);
+        } else {
+            free(data);
+        }
+    }
 
     Storage(const Storage &) = delete;
     Storage &operator=(const Storage &) = delete;
 };
 
+// ---- TensorImpl<T>: typed tensor metadata + storage reference ---------------
+
+template <typename T = f32>
 struct TensorImpl {
-    std::shared_ptr<Storage> storage;
+    std::shared_ptr<Storage<T>> storage;
     u64 storage_offset = 0;
     u32 shape[MAX_NDIM];
     u64 stride[MAX_NDIM];
     u32 ndim;
 
-    // Allocates a new storage and tensor metadata
     TensorImpl(u32 ndim, const u32 *shape, b32 on_gpu,
-               CudaMemArena *arena = nullptr);
+               CudaMemArena *arena = nullptr) {
+        this->ndim = ndim;
+        memcpy(this->shape, shape, ndim * sizeof(u32));
+        u64 n = tensor_compute_strides(this->stride, this->shape, ndim);
+        storage = std::make_shared<Storage<T>>(n * sizeof(T), on_gpu, arena);
+    }
+
     TensorImpl(u32 ndim, const u32 *shape, const u64 *stride, b32 on_gpu,
-               CudaMemArena *arena = nullptr);
+               CudaMemArena *arena = nullptr) {
+        this->ndim = ndim;
+        memcpy(this->shape, shape, ndim * sizeof(u32));
+        memcpy(this->stride, stride, ndim * sizeof(u64));
+        u64 n = 1;
+        for (u32 i = 0; i < ndim; i++)
+            n *= shape[i];
+        storage = std::make_shared<Storage<T>>(n * sizeof(T), on_gpu, arena);
+    }
 
-    // Default destructor — shared_ptr handles storage cleanup automatically
     ~TensorImpl() = default;
-
     TensorImpl(const TensorImpl &) = delete;
     TensorImpl &operator=(const TensorImpl &) = delete;
 
-    // Forwarding accessors
-    f32 *data() const { return storage->data + storage_offset; }
+    T *data() const { return storage->data + storage_offset; }
     b32 on_gpu() const { return storage->on_gpu; }
     u64 numel() const {
         u64 n = 1;
@@ -52,7 +93,7 @@ struct TensorImpl {
         return n;
     }
 
-    template <typename... Dims> f32 &operator()(Dims... dims) {
+    template <typename... Dims> T &operator()(Dims... dims) {
         u64 offset = 0;
         u32 indices[] = {(u32)dims...};
         for (u32 i = 0; i < sizeof...(dims); i++)
@@ -60,7 +101,7 @@ struct TensorImpl {
         return data()[offset];
     }
 
-    template <typename... Dims> const f32 &operator()(Dims... dims) const {
+    template <typename... Dims> const T &operator()(Dims... dims) const {
         u64 offset = 0;
         u32 indices[] = {(u32)dims...};
         for (u32 i = 0; i < sizeof...(dims); i++)
@@ -69,41 +110,53 @@ struct TensorImpl {
     }
 };
 
-// ---- Tensor: refcounted handle -------------------------------------------
+// ---- Tensor<T>: ref-counted handle around TensorImpl<T> ---------------------
+
+template <typename T = f32>
 struct Tensor {
-    std::shared_ptr<TensorImpl> impl_;
+    std::shared_ptr<TensorImpl<T>> impl_;
 
     Tensor() = default;
-    explicit Tensor(std::shared_ptr<TensorImpl> i) : impl_(std::move(i)) {}
+    explicit Tensor(std::shared_ptr<TensorImpl<T>> i)
+        : impl_(std::move(i)) {}
 
-    static Tensor make(u32 ndim, const u32 *shape, b32 on_gpu,
-                       CudaMemArena *arena = nullptr) {
-        return Tensor(std::make_shared<TensorImpl>(ndim, shape, on_gpu, arena));
-    };
-    static Tensor make(u32 ndim, const u32 *shape, const u64 *stride,
-                       b32 on_gpu, CudaMemArena *arena = nullptr) {
-        return Tensor(
-            std::make_shared<TensorImpl>(ndim, shape, stride, on_gpu, arena));
-    };
+    static Tensor<T> make(u32 ndim, const u32 *shape, b32 on_gpu,
+                          CudaMemArena *arena = nullptr) {
+        return Tensor<T>(
+            std::make_shared<TensorImpl<T>>(ndim, shape, on_gpu, arena));
+    }
+
+    static Tensor<T> make(u32 ndim, const u32 *shape, const u64 *stride,
+                          b32 on_gpu, CudaMemArena *arena = nullptr) {
+        return Tensor<T>(std::make_shared<TensorImpl<T>>(ndim, shape,
+                                                         stride, on_gpu,
+                                                         arena));
+    }
 
     bool defined() const { return impl_ != nullptr; }
     explicit operator bool() const { return defined(); }
 
-    TensorImpl *operator->() const { return impl_.get(); }
-    TensorImpl &operator*() const { return *impl_; }
-
-    TensorImpl &impl() const { return *impl_; }
+    TensorImpl<T> *operator->() const { return impl_.get(); }
+    TensorImpl<T> &operator*() const { return *impl_; }
+    TensorImpl<T> &impl() const { return *impl_; }
 };
+
+// ---- Type aliases -----------------------------------------------------------
+
+using TensorU32  = Tensor<u32>;
+using TensorI32  = Tensor<i32>;
+using TensorF64  = Tensor<f64>;
+
+// ---- Unfold2dParams ---------------------------------------------------------
 
 struct Unfold2dParams {
     u32 k_h, k_w;
     u32 stride_h, stride_w;
     u32 pad_h, pad_w;
     f32 pad_constant;
-    u32 L_h = 0, L_w = 0; // output spatial dims, set by compute_output_size()
+    u32 L_h = 0, L_w = 0;
 
     Unfold2dParams() {}
-    // Square kernel, same value for both dims
     Unfold2dParams(u32 k, u32 stride = 1, u32 pad = 0, u32 dil = 1,
                    f32 pad_constant = 0.0f);
 
@@ -113,159 +166,369 @@ struct Unfold2dParams {
     }
 };
 
-// ---- file I/O / device transfers -----------------------------------------
-Tensor tensor_load(const char *filename, b32 on_gpu,
-                   CudaMemArena *arena = nullptr);
-b32 tensor_copy(Tensor &dst, const Tensor &src);
-Tensor tensor_to_gpu(const Tensor &t, CudaMemArena *arena = nullptr);
-Tensor tensor_to_cpu(const Tensor &t, CudaMemArena *arena = nullptr);
+// ---- file I/O / device transfers --------------------------------------------
 
-void tensor_contiguous(Tensor &t, CudaMemArena *arena = nullptr);
-Tensor tensor_view(const Tensor &src, CudaMemArena *arena = nullptr);
-// Uninitialized allocation with the same shape and device as src.
-Tensor tensor_create_like(const Tensor &src, CudaMemArena *arena = nullptr);
-// Zero-filled allocation (like torch.zeros / torch.zeros_like).
-Tensor tensor_zeros(u32 ndim, const u32 *shape, b32 on_gpu,
-                    CudaMemArena *arena = nullptr);
-Tensor tensor_zeros_like(const Tensor &src, CudaMemArena *arena = nullptr);
+template <typename T = f32>
+Tensor<T> tensor_load(const char *filename, b32 on_gpu,
+                      CudaMemArena *arena = nullptr);
 
-// ---- metadata (these stay on TensorImpl* — they're cheap, internal) ------
-// Rationale: shape helpers don't allocate, don't return tensors, and are
-// called from inside other tensor ops. Keeping them on TensorImpl* avoids
-// pointless refcount bumps in hot paths.
+template <typename T>
+b32 tensor_copy(Tensor<T> &dst, const Tensor<T> &src);
+
+template <typename T>
+void tensor_contiguous(Tensor<T> &t, CudaMemArena *arena = nullptr);
+
+// ---- metadata (device-independent) -----------------------------------------
+
 u64 tensor_compute_strides(u64 *stride, const u32 *shape, u32 ndim);
-b32 tensor_expand_shape(TensorImpl &t, u32 expanded_ndim);
-b32 tensor_is_contiguous(const TensorImpl &t);
-b32 tensor_shape_eq(const TensorImpl &a, const TensorImpl &b);
-b32 tensor_transpose(TensorImpl &t, u32 dim0, u32 dim1);
-b32 tensor_reshape(TensorImpl &t, const u32 *shape, u32 ndim,
+
+template <typename T>
+b32 tensor_reshape(TensorImpl<T> &t, const u32 *shape, u32 ndim,
                    CudaMemArena *arena = nullptr);
-u32 broadcast_shape(const TensorImpl &a, const TensorImpl &b, u32 *out_shape);
-void expanded_shape(const TensorImpl &t, u32 expanded_ndim, u32 *out);
-void expanded_stride(const TensorImpl &t, u32 expanded_ndim, u64 *out);
-void tensor_print(const TensorImpl &t);
-
-// You might want public Tensor& overloads for the few that users call:
-b32 tensor_transpose(Tensor &t, u32 dim0, u32 dim1);
-b32 tensor_reshape(Tensor &t, const u32 *shape, u32 ndim,
+template <typename T>
+b32 tensor_reshape(Tensor<T> &t, const u32 *shape, u32 ndim,
                    CudaMemArena *arena = nullptr);
-b32 tensor_shape_eq(const Tensor &a, const Tensor &b);
-b32 tensor_is_contiguous(const Tensor &t);
+template <typename T>
+void tensor_print(const TensorImpl<T> &t);
 
-// ---- fill / clear --------------------------------------------------------
-void tensor_fill(Tensor &t, f32 value);
-void tensor_clear(Tensor &t);
+// ---- fill -------------------------------------------------------------------
 
-// ---- activations ---------------------------------------------------------
-b32 tensor_relu(Tensor &dst, const Tensor &src);
-Tensor tensor_relu(const Tensor &src, CudaMemArena *arena = nullptr);
-b32 tensor_exp(Tensor &dst, const Tensor &src);
-Tensor tensor_exp(const Tensor &src, CudaMemArena *arena = nullptr);
-b32 tensor_log(Tensor &dst, const Tensor &src);
-Tensor tensor_log(const Tensor &src, CudaMemArena *arena = nullptr);
-b32 tensor_sqrt(Tensor &dst, const Tensor &src);
-Tensor tensor_sqrt(const Tensor &src, CudaMemArena *arena = nullptr);
+template <typename T>
+void tensor_fill(Tensor<T> &t, T value);
 
-// ---- elementwise binary --------------------------------------------------
-b32 tensor_add(Tensor &out, const Tensor &a, const Tensor &b);
-Tensor tensor_add(const Tensor &a, const Tensor &b, CudaMemArena *arena = nullptr);
-b32 tensor_sub(Tensor &out, const Tensor &a, const Tensor &b);
-Tensor tensor_sub(const Tensor &a, const Tensor &b, CudaMemArena *arena = nullptr);
-b32 tensor_mul(Tensor &out, const Tensor &a, const Tensor &b);
-Tensor tensor_mul(const Tensor &a, const Tensor &b, CudaMemArena *arena = nullptr);
-b32 tensor_div(Tensor &out, const Tensor &a, const Tensor &b);
-Tensor tensor_div(const Tensor &a, const Tensor &b, CudaMemArena *arena = nullptr);
-b32 tensor_equal(Tensor &out, const Tensor &a, const Tensor &b);
-Tensor tensor_equal(const Tensor &a, const Tensor &b, CudaMemArena *arena = nullptr);
+// ---- f32 activations --------------------------------------------------------
 
-b32 tensor_relu_backward(Tensor &out, const Tensor &grad, const Tensor &in);
-Tensor tensor_relu_backward(const Tensor &grad, const Tensor &in, CudaMemArena *arena = nullptr);
+b32 tensor_relu(Tensor<f32> &dst, const Tensor<f32> &src);
+Tensor<f32> tensor_relu(const Tensor<f32> &src, CudaMemArena *arena = nullptr);
+b32 tensor_exp(Tensor<f32> &dst, const Tensor<f32> &src);
+Tensor<f32> tensor_exp(const Tensor<f32> &src, CudaMemArena *arena = nullptr);
+b32 tensor_log(Tensor<f32> &dst, const Tensor<f32> &src);
+Tensor<f32> tensor_log(const Tensor<f32> &src, CudaMemArena *arena = nullptr);
+b32 tensor_sqrt(Tensor<f32> &dst, const Tensor<f32> &src);
+Tensor<f32> tensor_sqrt(const Tensor<f32> &src, CudaMemArena *arena = nullptr);
 
-b32 tensor_softmax(Tensor &out, const Tensor &in, CudaMemArena *arena = nullptr);
-Tensor tensor_softmax(const Tensor &in, CudaMemArena *arena = nullptr);
-b32 tensor_log_softmax(Tensor &out, const Tensor &in, CudaMemArena *arena = nullptr);
-Tensor tensor_log_softmax(const Tensor &in, CudaMemArena *arena = nullptr);
+// ---- elementwise binary -----------------------------------------------------
 
-// ---- scalar ops ----------------------------------------------------------
-b32 tensor_add(Tensor &out, const Tensor &a, f32 scalar);
-Tensor tensor_add(const Tensor &a, f32 scalar, CudaMemArena *arena = nullptr);
-b32 tensor_sub(Tensor &out, const Tensor &a, f32 scalar);
-Tensor tensor_sub(const Tensor &a, f32 scalar, CudaMemArena *arena = nullptr);
-b32 tensor_mul(Tensor &out, const Tensor &a, f32 scalar);
-Tensor tensor_mul(const Tensor &a, f32 scalar, CudaMemArena *arena = nullptr);
-b32 tensor_div(Tensor &out, const Tensor &a, f32 scalar);
-Tensor tensor_div(const Tensor &a, f32 scalar, CudaMemArena *arena = nullptr);
+template <typename T>
+b32 tensor_add(Tensor<T> &out, const Tensor<T> &a, const Tensor<T> &b);
+template <typename T>
+Tensor<T> tensor_add(const Tensor<T> &a, const Tensor<T> &b,
+                     CudaMemArena *arena = nullptr);
+template <typename T>
+b32 tensor_sub(Tensor<T> &out, const Tensor<T> &a, const Tensor<T> &b);
+template <typename T>
+Tensor<T> tensor_sub(const Tensor<T> &a, const Tensor<T> &b,
+                     CudaMemArena *arena = nullptr);
+template <typename T>
+b32 tensor_mul(Tensor<T> &out, const Tensor<T> &a, const Tensor<T> &b);
+template <typename T>
+Tensor<T> tensor_mul(const Tensor<T> &a, const Tensor<T> &b,
+                     CudaMemArena *arena = nullptr);
+template <typename T>
+b32 tensor_div(Tensor<T> &out, const Tensor<T> &a, const Tensor<T> &b);
+template <typename T>
+Tensor<T> tensor_div(const Tensor<T> &a, const Tensor<T> &b,
+                     CudaMemArena *arena = nullptr);
+template <typename T>
+b32 tensor_equal(Tensor<T> &out, const Tensor<T> &a, const Tensor<T> &b);
+template <typename T>
+Tensor<T> tensor_equal(const Tensor<T> &a, const Tensor<T> &b,
+                       CudaMemArena *arena = nullptr);
 
-// ---- matmul --------------------------------------------------------------
-b32 tensor_mat_mul(Tensor &out, const Tensor &a, const Tensor &b,
-                   b32 clear_out = true);
-Tensor tensor_mat_mul(const Tensor &a, const Tensor &b, CudaMemArena *arena = nullptr);
+b32 tensor_relu_backward(Tensor<f32> &out, const Tensor<f32> &grad,
+                         const Tensor<f32> &in);
+Tensor<f32> tensor_relu_backward(const Tensor<f32> &grad,
+                                 const Tensor<f32> &in,
+                                 CudaMemArena *arena = nullptr);
 
-// ---- reductions ----------------------------------------------------------
-b32 tensor_sum(Tensor &out, const Tensor &t, b32 clear_out = true);
-b32 tensor_sum(Tensor &out, const Tensor &t, u32 dim, b32 keep_dim = true,
-               b32 clear_out = true);
-Tensor tensor_sum(const Tensor &t, CudaMemArena *arena = nullptr);
-Tensor tensor_sum(const Tensor &t, u32 dim, b32 keep_dim = true,
-                  CudaMemArena *arena = nullptr);
-b32 tensor_max(Tensor &out, const Tensor &t, u32 dim, b32 keep_dim = true);
-Tensor tensor_max(const Tensor &t, u32 dim, b32 keep_dim = true,
-                  CudaMemArena *arena = nullptr);
-b32 tensor_argmax(Tensor &out, const Tensor &t, u32 dim, b32 keep_dim = true);
-Tensor tensor_argmax(const Tensor &t, u32 dim, b32 keep_dim = true,
+b32 tensor_softmax(Tensor<f32> &out, const Tensor<f32> &in,
+                   CudaMemArena *arena = nullptr);
+Tensor<f32> tensor_softmax(const Tensor<f32> &in,
+                           CudaMemArena *arena = nullptr);
+b32 tensor_log_softmax(Tensor<f32> &out, const Tensor<f32> &in,
+                       CudaMemArena *arena = nullptr);
+Tensor<f32> tensor_log_softmax(const Tensor<f32> &in,
+                               CudaMemArena *arena = nullptr);
+
+// ---- scalar ops -------------------------------------------------------------
+
+template <typename T>
+b32 tensor_add(Tensor<T> &out, const Tensor<T> &a, T scalar);
+template <typename T>
+Tensor<T> tensor_add(const Tensor<T> &a, T scalar,
+                     CudaMemArena *arena = nullptr);
+template <typename T>
+b32 tensor_sub(Tensor<T> &out, const Tensor<T> &a, T scalar);
+template <typename T>
+Tensor<T> tensor_sub(const Tensor<T> &a, T scalar,
+                     CudaMemArena *arena = nullptr);
+template <typename T>
+b32 tensor_mul(Tensor<T> &out, const Tensor<T> &a, T scalar);
+template <typename T>
+Tensor<T> tensor_mul(const Tensor<T> &a, T scalar,
+                     CudaMemArena *arena = nullptr);
+template <typename T>
+b32 tensor_div(Tensor<T> &out, const Tensor<T> &a, T scalar);
+template <typename T>
+Tensor<T> tensor_div(const Tensor<T> &a, T scalar,
                      CudaMemArena *arena = nullptr);
 
-// Outputs mean and raw M2 (sum of squared deviations) along `dim`.
-// Divide m2 by N for biased variance, or by N-1 for unbiased.
-b32 tensor_welford_mean_var(Tensor &mean, Tensor &m2, const Tensor &src,
-                            u32 dim);
+// ---- f32 matmul -------------------------------------------------------------
 
-// Fused batch-norm forward: writes xhat = (inp-mean)/sqrt(m2/count+eps)
-// and out = gamma*xhat+beta.  mean, m2, gamma, beta are all [C]-shaped.
-void tensor_bn_fwd_normalize(Tensor &out, Tensor &xhat, const Tensor &inp,
-                             const Tensor &mean, const Tensor &m2,
-                             const Tensor &gamma, const Tensor &beta,
-                             f32 count, f32 eps);
-
-// Fused batch-norm backward: accumulates dx, d_gamma, d_beta.
-// var is the biased variance [C]-shaped; m is the number of elements per channel.
-void tensor_bn_bwd(Tensor &dx, Tensor &d_gamma, Tensor &d_beta,
-                   const Tensor &grad, const Tensor &xhat,
-                   const Tensor &gamma, const Tensor &var, f32 m, f32 eps);
-
-// ---- scatter -------------------------------------------------------------
-b32 tensor_scatter_add(Tensor &out, const Tensor &src, const Tensor &indices,
-                       u32 dim);
-Tensor tensor_scatter_add(const Tensor &src, const Tensor &indices, u32 dim,
-                          u32 dim_size, CudaMemArena *arena = nullptr);
-
-// General row-scatter: out[indices[i]] += src[i]
-// indices: [N] (f32-cast integers), src: [N, ...], out: [V, ...]
-void tensor_scatter_add(Tensor &out, const Tensor &src, const Tensor &indices);
-
-// ---- init ----------------------------------------------------------------
-void tensor_he_init(Tensor &t);
-
-// ---- indexing ------------------------------------------------------------
-b32 tensor_index_select(Tensor &dst, const Tensor &src, const u32 *indices,
-                        u32 n_indices, u32 dim);
-Tensor tensor_index_select(const Tensor &src, const u32 *indices, u32 n_indices,
-                           u32 dim, CudaMemArena *arena = nullptr);
-
-// Tensor-indices variant: indices lives on the same device as src.
-// src [D0, ..., dim_size, ..., Dn], indices [any shape] (f32-cast integers)
-// out shape: src.shape with dim replaced by the full indices shape
-// e.g. src [V, D], indices [B, T], dim=0 → out [B, T, D]
-Tensor tensor_index_select(const Tensor &src, const Tensor &indices, u32 dim,
+b32 tensor_mat_mul(Tensor<f32> &out, const Tensor<f32> &a,
+                   const Tensor<f32> &b, b32 clear_out = true);
+Tensor<f32> tensor_mat_mul(const Tensor<f32> &a, const Tensor<f32> &b,
                            CudaMemArena *arena = nullptr);
 
-// ---- spatial -------------------------------------------------------------
-b32 tensor_unfold2d(Tensor &out, const Tensor &input, Unfold2dParams params);
-Tensor tensor_unfold2d(const Tensor &input, Unfold2dParams params,
-                       CudaMemArena *arena = nullptr);
-b32 tensor_fold2d(Tensor &dst, const Tensor &col, Unfold2dParams params);
+// ---- reductions -------------------------------------------------------------
 
-// ---- comparison ----------------------------------------------------------
-b32 tensor_equals(const Tensor &a, const Tensor &b, f32 tol = 1e-5f);
+template <typename T>
+b32 tensor_sum(Tensor<T> &out, const Tensor<T> &t, b32 clear_out = true);
+template <typename T>
+b32 tensor_sum(Tensor<T> &out, const Tensor<T> &t, u32 dim,
+               b32 keep_dim = true, b32 clear_out = true);
+template <typename T>
+Tensor<T> tensor_sum(const Tensor<T> &t, CudaMemArena *arena = nullptr);
+template <typename T>
+Tensor<T> tensor_sum(const Tensor<T> &t, u32 dim, b32 keep_dim = true,
+                     CudaMemArena *arena = nullptr);
+template <typename T>
+b32 tensor_max(Tensor<T> &out, const Tensor<T> &t, u32 dim,
+               b32 keep_dim = true);
+template <typename T>
+Tensor<T> tensor_max(const Tensor<T> &t, u32 dim, b32 keep_dim = true,
+                     CudaMemArena *arena = nullptr);
+template <typename T>
+b32 tensor_argmax(TensorU32 &out, const Tensor<T> &t, u32 dim,
+                  b32 keep_dim = true);
+template <typename T>
+TensorU32 tensor_argmax(const Tensor<T> &t, u32 dim, b32 keep_dim = true,
+                        CudaMemArena *arena = nullptr);
+
+b32 tensor_welford_mean_var(Tensor<f32> &mean, Tensor<f32> &m2,
+                            const Tensor<f32> &src, u32 dim);
+
+void tensor_bn_fwd_normalize(Tensor<f32> &out, Tensor<f32> &xhat,
+                             const Tensor<f32> &inp, const Tensor<f32> &mean,
+                             const Tensor<f32> &m2, const Tensor<f32> &gamma,
+                             const Tensor<f32> &beta, f32 count, f32 eps);
+
+void tensor_bn_bwd(Tensor<f32> &dx, Tensor<f32> &d_gamma,
+                   Tensor<f32> &d_beta, const Tensor<f32> &grad,
+                   const Tensor<f32> &xhat, const Tensor<f32> &gamma,
+                   const Tensor<f32> &var, f32 m, f32 eps);
+
+// ---- scatter ----------------------------------------------------------------
+
+template <typename T>
+b32 tensor_scatter_add(Tensor<T> &out, const Tensor<T> &src,
+                       const TensorU32 &indices, u32 dim);
+template <typename T>
+Tensor<T> tensor_scatter_add(const Tensor<T> &src, const TensorU32 &indices,
+                             u32 dim, u32 dim_size,
+                             CudaMemArena *arena = nullptr);
+// ---- f32 init ---------------------------------------------------------------
+
+void tensor_he_init(Tensor<f32> &t);
+
+// ---- indexing ---------------------------------------------------------------
+
+template <typename T>
+b32 tensor_index_select(Tensor<T> &dst, const Tensor<T> &src,
+                        const u32 *indices, u32 n_indices, u32 dim);
+template <typename T>
+Tensor<T> tensor_index_select(const Tensor<T> &src, const u32 *indices,
+                              u32 n_indices, u32 dim,
+                              CudaMemArena *arena = nullptr);
+template <typename T>
+Tensor<T> tensor_index_select(const Tensor<T> &src, const TensorU32 &indices,
+                              u32 dim, CudaMemArena *arena = nullptr);
+
+// ---- spatial ----------------------------------------------------------------
+
+template <typename T>
+b32 tensor_unfold2d(Tensor<T> &out, const Tensor<T> &input,
+                    Unfold2dParams params);
+template <typename T>
+Tensor<T> tensor_unfold2d(const Tensor<T> &input, Unfold2dParams params,
+                          CudaMemArena *arena = nullptr);
+template <typename T>
+b32 tensor_fold2d(Tensor<T> &dst, const Tensor<T> &col,
+                  Unfold2dParams params);
+
+// ---- f32 comparison ---------------------------------------------------------
+
+b32 tensor_equals(const Tensor<f32> &a, const Tensor<f32> &b,
+                  f32 tol = 1e-5f);
+
+// ============================================================================
+// Generic template utilities — work for any element type T.
+// ============================================================================
+
+// ---- shape / stride (T-independent) -----------------------------------------
+
+template <typename T>
+inline b32 tensor_is_contiguous(const TensorImpl<T> &t) {
+    u64 expected = 1;
+    for (u32 i = t.ndim; i-- > 0;) {
+        if (t.stride[i] != expected)
+            return false;
+        expected *= t.shape[i];
+    }
+    return true;
+}
+
+template <typename T>
+inline b32 tensor_is_contiguous(const Tensor<T> &t) {
+    return tensor_is_contiguous(t.impl());
+}
+
+template <typename T, typename U = T>
+inline b32 tensor_shape_eq(const TensorImpl<T> &a, const TensorImpl<U> &b) {
+    return a.ndim == b.ndim &&
+           memcmp(a.shape, b.shape, a.ndim * sizeof(u32)) == 0;
+}
+
+template <typename T, typename U = T>
+inline b32 tensor_shape_eq(const Tensor<T> &a, const Tensor<U> &b) {
+    return tensor_shape_eq(a.impl(), b.impl());
+}
+
+template <typename T>
+inline b32 tensor_transpose(TensorImpl<T> &t, u32 dim0, u32 dim1) {
+    if (dim0 == dim1 || dim0 >= t.ndim || dim1 >= t.ndim)
+        return false;
+    u32 ts = t.shape[dim0]; t.shape[dim0] = t.shape[dim1]; t.shape[dim1] = ts;
+    u64 tr = t.stride[dim0]; t.stride[dim0] = t.stride[dim1]; t.stride[dim1] = tr;
+    return true;
+}
+
+template <typename T>
+inline b32 tensor_transpose(Tensor<T> &t, u32 dim0, u32 dim1) {
+    return tensor_transpose(t.impl(), dim0, dim1);
+}
+
+template <typename T>
+inline void expanded_shape(const TensorImpl<T> &t, u32 expanded_ndim,
+                           u32 *out) {
+    u32 n_prepend = expanded_ndim - t.ndim;
+    u32 i = 0;
+    for (; i < n_prepend; i++)
+        out[i] = 1;
+    for (; i < expanded_ndim; i++)
+        out[i] = t.shape[i - n_prepend];
+}
+
+template <typename T>
+inline void expanded_stride(const TensorImpl<T> &t, u32 expanded_ndim,
+                            u64 *out) {
+    u32 n_prepend = expanded_ndim - t.ndim;
+    u32 i = 0;
+    for (; i < n_prepend; i++)
+        out[i] = 0;
+    for (; i < expanded_ndim; i++) {
+        u32 ti = i - n_prepend;
+        out[i] = (t.shape[ti] != 1) ? t.stride[ti] : 0;
+    }
+}
+
+template <typename T>
+inline b32 tensor_expand_shape(TensorImpl<T> &t, u32 expanded_ndim) {
+    if (t.ndim > expanded_ndim)
+        return false;
+    if (t.ndim == expanded_ndim)
+        return true;
+    u32 new_shape[MAX_NDIM];
+    u64 new_stride[MAX_NDIM];
+    expanded_shape(t, expanded_ndim, new_shape);
+    expanded_stride(t, expanded_ndim, new_stride);
+    for (u32 i = 0; i < expanded_ndim; i++) {
+        t.shape[i] = new_shape[i];
+        t.stride[i] = new_stride[i];
+    }
+    t.ndim = expanded_ndim;
+    return true;
+}
+
+template <typename T, typename U = T>
+inline u32 broadcast_shape(const TensorImpl<T> &a, const TensorImpl<U> &b,
+                           u32 *out_shape) {
+    u32 expanded_ndim = a.ndim > b.ndim ? a.ndim : b.ndim;
+    for (u32 i = 0; i < expanded_ndim; i++) {
+        i32 ai = (i32)i - (i32)(expanded_ndim - a.ndim);
+        i32 bi = (i32)i - (i32)(expanded_ndim - b.ndim);
+        u32 da = (ai >= 0) ? a.shape[ai] : 1;
+        u32 db = (bi >= 0) ? b.shape[bi] : 1;
+        u32 smaller = da < db ? da : db;
+        if (da != db && smaller != 1)
+            return 0;
+        out_shape[i] = da > db ? da : db;
+    }
+    return expanded_ndim;
+}
+
+// ---- generic memory utilities -----------------------------------------------
+
+template <typename T>
+inline void tensor_clear(Tensor<T> &t) {
+    if (t->on_gpu())
+        cudaMemset(t->data(), 0, t->numel() * sizeof(T));
+    else
+        memset(t->data(), 0, t->numel() * sizeof(T));
+}
+
+template <typename T>
+inline Tensor<T> tensor_create_like(const Tensor<T> &src,
+                                    CudaMemArena *arena = nullptr) {
+    return Tensor<T>::make(src->ndim, src->shape, src->on_gpu(), arena);
+}
+
+template <typename T>
+inline Tensor<T> tensor_zeros(u32 ndim, const u32 *shape, b32 on_gpu,
+                              CudaMemArena *arena = nullptr) {
+    Tensor<T> t = Tensor<T>::make(ndim, shape, on_gpu, arena);
+    tensor_clear(t);
+    return t;
+}
+
+template <typename T>
+inline Tensor<T> tensor_zeros_like(const Tensor<T> &src,
+                                   CudaMemArena *arena = nullptr) {
+    Tensor<T> t = tensor_create_like(src, arena);
+    tensor_clear(t);
+    return t;
+}
+
+template <typename T>
+inline Tensor<T> tensor_view(const Tensor<T> &src,
+                             CudaMemArena *arena = nullptr) {
+    Tensor<T> v = Tensor<T>::make(src->ndim, src->shape, src->stride,
+                                  src->on_gpu(), arena);
+    v->storage = src->storage;
+    v->storage_offset = src->storage_offset;
+    return v;
+}
+
+template <typename T>
+inline Tensor<T> tensor_to_gpu(const Tensor<T> &t,
+                               CudaMemArena *arena = nullptr) {
+    Tensor<T> dst =
+        Tensor<T>::make(t->ndim, t->shape, t->stride, true, arena);
+    cudaMemcpyKind kind =
+        t->on_gpu() ? cudaMemcpyDeviceToDevice : cudaMemcpyHostToDevice;
+    cudaMemcpy(dst->data(), t->data(), t->numel() * sizeof(T), kind);
+    return dst;
+}
+
+template <typename T>
+inline Tensor<T> tensor_to_cpu(const Tensor<T> &t,
+                               CudaMemArena *arena = nullptr) {
+    Tensor<T> dst =
+        Tensor<T>::make(t->ndim, t->shape, t->stride, false, arena);
+    cudaMemcpyKind kind =
+        t->on_gpu() ? cudaMemcpyDeviceToHost : cudaMemcpyHostToHost;
+    cudaMemcpy(dst->data(), t->data(), t->numel() * sizeof(T), kind);
+    return dst;
+}
 
 #endif

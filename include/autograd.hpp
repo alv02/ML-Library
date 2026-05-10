@@ -16,11 +16,11 @@ struct Function;
 
 struct VarImpl {
     u32 flags;
-    Tensor data;
-    Tensor grad;
+    Tensor<f32> data;
+    Tensor<f32> grad;
     std::shared_ptr<Function> grad_fn;
 
-    VarImpl(Tensor data, u32 flags) : data(data), flags(flags) {};
+    VarImpl(Tensor<f32> data, u32 flags) : data(data), flags(flags) {};
     ~VarImpl();
 };
 
@@ -29,7 +29,7 @@ struct Var {
 
     Var() = default;
 
-    Var(Tensor data, u32 flags = FV_FLAG_NONE);
+    Var(Tensor<f32> data, u32 flags = FV_FLAG_NONE);
     bool defined() const { return impl_ != nullptr; }
     explicit operator bool() { return defined(); }
     VarImpl *operator->() const { return impl_.get(); }
@@ -37,7 +37,7 @@ struct Var {
 
 struct Function {
     std::vector<Var> inputs;
-    virtual void backward(Tensor grad_output) = 0;
+    virtual void backward(Tensor<f32> grad_output) = 0;
     virtual ~Function() = default;
 };
 

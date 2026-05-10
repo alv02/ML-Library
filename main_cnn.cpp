@@ -10,10 +10,10 @@ int main() {
     CudaMemArena perm_arena(MiB(256));
     CudaMemArena batch_arena(GiB(4));
 
-    Tensor val_X      = tensor_load("data/X_train.npy", true);
-    Tensor val_y      = tensor_load("data/y_train.npy", true);
-    Tensor test_val_X = tensor_load("data/X_test.npy",  true);
-    Tensor test_val_y = tensor_load("data/y_test.npy",  true);
+    Tensor<f32> val_X      = tensor_load("data/X_train.npy", true);
+    Tensor<f32> val_y      = tensor_load("data/y_train.npy", true);
+    Tensor<f32> test_val_X = tensor_load("data/X_test.npy",  true);
+    Tensor<f32> test_val_y = tensor_load("data/y_test.npy",  true);
 
     tensor_print(val_X.impl());
 
@@ -38,7 +38,7 @@ int main() {
 
     for (int epoch = 0; epoch < 50; epoch++) {
         loader.shuffle();
-        Tensor Xb, yb;
+        Tensor<f32> Xb, yb;
         while (true) {
             cuda_arena_clear(&batch_arena);
             if (!loader.next(Xb, yb, &batch_arena))
@@ -56,14 +56,14 @@ int main() {
     f32 total_loss = 0.0f, total_acc = 0.0f;
     u32 n_batches = 0;
 
-    Tensor Xb_test, yb_test;
+    Tensor<f32> Xb_test, yb_test;
     while (true) {
         cuda_arena_clear(&batch_arena);
         if (!test_loader.next(Xb_test, yb_test, &batch_arena))
             break;
         Var logits = model(Var(Xb_test), &batch_arena);
         Var loss = cross_entropy_with_logits(logits, Var(yb_test), &batch_arena);
-        Tensor lc = tensor_to_cpu(loss->data);
+        Tensor<f32> lc = tensor_to_cpu(loss->data);
         total_loss += lc->data()[0];
         total_acc += accuracy(logits->data, yb_test);
         n_batches++;
@@ -74,7 +74,7 @@ int main() {
     {
         cuda_arena_clear(&batch_arena);
         DataLoader vis_loader(test_val_X, test_val_y, 256);
-        Tensor vis_X, vis_y;
+        Tensor<f32> vis_X, vis_y;
         vis_loader.next(vis_X, vis_y, &batch_arena);
         Var vis_logits = model(Var(vis_X), &batch_arena);
         printf("\n--- Wrong predictions ---\n");

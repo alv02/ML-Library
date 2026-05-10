@@ -5,11 +5,11 @@
 
 VarImpl::~VarImpl() = default;
 
-Var::Var(Tensor data, u32 flags) {
+Var::Var(Tensor<f32> data, u32 flags) {
 
     impl_ = std::make_shared<VarImpl>(data, flags);
 
-    impl_->grad = Tensor();
+    impl_->grad = Tensor<f32>();
     impl_->grad_fn = nullptr;
 }
 
@@ -30,7 +30,7 @@ void backward(Var loss, CudaMemArena *arena) {
     std::reverse(order.begin(), order.end());
 
     u32 one_shape[] = {1};
-    loss->grad = Tensor::make(1, one_shape, loss->data->on_gpu(), arena);
+    loss->grad = Tensor<f32>::make(1, one_shape, loss->data->on_gpu(), arena);
     tensor_fill(loss->grad, 1.0f);
 
     for (auto &v : order)

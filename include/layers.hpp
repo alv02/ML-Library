@@ -79,7 +79,7 @@ struct MaxPool2d : Layer {
 
 struct BatchNorm2d : Layer {
     Var gamma, beta;
-    Tensor running_mean, running_var;
+    Tensor<f32> running_mean, running_var;
     f32 momentum, eps;
 
     BatchNorm2d(u32 C, bool on_gpu, CudaMemArena *perm_arena = nullptr,

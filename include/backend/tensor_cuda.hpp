@@ -10,36 +10,30 @@
 #endif
 
 // GPU-side mirror of a Tensor's shape and stride metadata.
-// Copied to the device so kernels can do multi-dimensional indexing without
-// accessing the host-side Tensor struct.
 struct TensorMeta {
-    u64 size;             // total number of elements
-    u32 ndim;             // number of dimensions
-    u32 shape[MAX_NDIM];  // size of each dimension
-    u64 stride[MAX_NDIM]; // stride per dimension (0 = broadcast that dim)
+    u64 size;
+    u32 ndim;
+    u32 shape[MAX_NDIM];
+    u64 stride[MAX_NDIM];
 
     TensorMeta() = default;
-    // Copies shape and strides directly from t.
-    TensorMeta(const TensorImpl &t);
-    // Broadcast-expanded constructor: left-pads shape with 1s and strides with
-    // 0s to reach bcast_ndim. Dims where t->shape==1 also get stride=0 so
-    // kernels using offset_from() automatically repeat the same element there.
-    TensorMeta(const TensorImpl &t, const u32 *bcast_shape, u32 bcast_ndim);
+    template <typename T>
+    TensorMeta(const TensorImpl<T> &t) : size(t.numel()), ndim(t.ndim) {
+        memcpy(shape, t.shape, ndim * sizeof(u32));
+        memcpy(stride, t.stride, ndim * sizeof(u64));
+    }
+    template <typename T>
+    TensorMeta(const TensorImpl<T> &t, const u32 *bcast_shape, u32 bcast_ndim)
+        : size(t.numel()), ndim(bcast_ndim) {
+        expanded_shape(t, bcast_ndim, shape);
+        expanded_stride(t, bcast_ndim, stride);
+    }
 
     ML_DEVICE u32 rows() const { return shape[ndim - 2]; }
     ML_DEVICE u32 cols() const { return shape[ndim - 1]; }
-    // Returns the flat offset for the element at (row, col) using the last two
-    // dims.
     ML_DEVICE u64 at(u64 row, u64 col) const {
         return row * stride[ndim - 2] + col * stride[ndim - 1];
     }
-    // Maps a flat output index to a flat source offset, handling broadcasting.
-    // Uses *this* tensor's strides as divisors to decompose flat_idx into
-    // per-dimension indices, then re-indexes with src.stride.
-    // Because src may have stride=0 on broadcast dims, those dimensions always
-    // resolve to offset 0 regardless of the index — same element is reused.
-    // Example: out is [3,2,4], src is [1,2,4] (broadcast on dim 0).
-    //   flat_idx=9 → out divides to coords (1,0,1) → src offset = 0+0+1 = 1.
     ML_DEVICE u64 offset_from(u64 flat_idx, const TensorMeta &src) const {
         u64 remaining = flat_idx;
         u64 offset = 0;
@@ -52,93 +46,127 @@ struct TensorMeta {
     }
 };
 
-// ---- memory management transfers) ----------------------------------------
-void tensor_cuda_copy(TensorImpl &dst, const TensorImpl &src);
-void tensor_cuda_contiguous(TensorImpl &t, CudaMemArena *arena = nullptr);
+// ---- memory management ---------------------------------------------------
+
+template <typename T>
+void tensor_cuda_copy(TensorImpl<T> &dst, const TensorImpl<T> &src);
+template <typename T>
+void tensor_cuda_contiguous(TensorImpl<T> &t, CudaMemArena *arena = nullptr);
+
 // ---- fill / clear --------------------------------------------------------
 
-void tensor_cuda_fill(TensorImpl &tensor, f32 value);
-void tensor_cuda_clear(TensorImpl &tensor);
+template <typename T>
+void tensor_cuda_fill(TensorImpl<T> &tensor, T value);
+template <typename T>
+void tensor_cuda_clear(TensorImpl<T> &tensor);
 
-// ---- activations (relu, exp) ---------------------------------------------
+// ---- activations — f32 only ----------------------------------------------
 
-void tensor_cuda_relu(TensorImpl &dst, const TensorImpl &src);
-void tensor_cuda_exp(TensorImpl &dst, const TensorImpl &src);
-void tensor_cuda_log(TensorImpl &dst, const TensorImpl &src);
-void tensor_cuda_sqrt(TensorImpl &dst, const TensorImpl &src);
+void tensor_cuda_relu(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
+void tensor_cuda_exp(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
+void tensor_cuda_log(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
+void tensor_cuda_sqrt(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
 
-// ---- elementwise binary (add / sub / mul / div) --------------------------
+// ---- elementwise binary --------------------------------------------------
 
-void tensor_cuda_add(TensorImpl &out, const TensorImpl &a, const TensorImpl &b);
-void tensor_cuda_sub(TensorImpl &out, const TensorImpl &a, const TensorImpl &b);
-void tensor_cuda_mul(TensorImpl &out, const TensorImpl &a, const TensorImpl &b);
-void tensor_cuda_div(TensorImpl &out, const TensorImpl &a, const TensorImpl &b);
-void tensor_cuda_equal(TensorImpl &out, const TensorImpl &a,
-                       const TensorImpl &b);
-void tensor_cuda_relu_backward(TensorImpl &out, const TensorImpl &grad,
-                               const TensorImpl &in);
+template <typename T>
+void tensor_cuda_add(TensorImpl<T> &out, const TensorImpl<T> &a,
+                     const TensorImpl<T> &b);
+template <typename T>
+void tensor_cuda_sub(TensorImpl<T> &out, const TensorImpl<T> &a,
+                     const TensorImpl<T> &b);
+template <typename T>
+void tensor_cuda_mul(TensorImpl<T> &out, const TensorImpl<T> &a,
+                     const TensorImpl<T> &b);
+template <typename T>
+void tensor_cuda_div(TensorImpl<T> &out, const TensorImpl<T> &a,
+                     const TensorImpl<T> &b);
+template <typename T>
+void tensor_cuda_equal(TensorImpl<T> &out, const TensorImpl<T> &a,
+                       const TensorImpl<T> &b);
+void tensor_cuda_relu_backward(TensorImpl<f32> &out, const TensorImpl<f32> &grad,
+                               const TensorImpl<f32> &in);
 
 // ---- scalar operations ---------------------------------------------------
 
-void tensor_cuda_add(TensorImpl &out, const TensorImpl &tensor, f32 scalar);
-void tensor_cuda_sub(TensorImpl &out, const TensorImpl &tensor, f32 scalar);
-void tensor_cuda_mul(TensorImpl &out, const TensorImpl &tensor, f32 scalar);
-void tensor_cuda_div(TensorImpl &out, const TensorImpl &tensor, f32 scalar);
+template <typename T>
+void tensor_cuda_add(TensorImpl<T> &out, const TensorImpl<T> &tensor, T scalar);
+template <typename T>
+void tensor_cuda_sub(TensorImpl<T> &out, const TensorImpl<T> &tensor, T scalar);
+template <typename T>
+void tensor_cuda_mul(TensorImpl<T> &out, const TensorImpl<T> &tensor, T scalar);
+template <typename T>
+void tensor_cuda_div(TensorImpl<T> &out, const TensorImpl<T> &tensor, T scalar);
 
-// ---- matrix multiply -----------------------------------------------------
+// ---- matrix multiply — f32 only -----------------------------------------
 
-// Hand-written tiled kernel (kept for reference/comparison)
-void tensor_cuda_mat_mul(TensorImpl &out, const TensorImpl &a,
-                         const TensorImpl &b, b32 clear_out);
+void tensor_cuda_mat_mul(TensorImpl<f32> &out, const TensorImpl<f32> &a,
+                         const TensorImpl<f32> &b, b32 clear_out);
+void tensor_cuda_mat_mul_cublas(TensorImpl<f32> &out, const TensorImpl<f32> &a,
+                                const TensorImpl<f32> &b, b32 clear_out);
 
-// cuBLAS SGEMM — requires row-major contiguous inputs (stride[1] == 1)
-void tensor_cuda_mat_mul_cublas(TensorImpl &out, const TensorImpl &a,
-                                const TensorImpl &b, b32 clear_out);
+// ---- fused batch norm — f32 only ----------------------------------------
 
-// ---- fused batch norm -------------------------------------------------------
-// Forward: out = gamma*(inp-mean)/sqrt(m2/count+eps) + beta, also writes xhat.
-// Backward: accumulates dx, d_gamma, d_beta in a single two-pass kernel per channel.
-void tensor_cuda_bn_fwd_normalize(TensorImpl &out, TensorImpl &xhat,
-                                   const TensorImpl &inp,
-                                   const TensorImpl &mean, const TensorImpl &m2,
-                                   const TensorImpl &gamma, const TensorImpl &beta,
-                                   f32 count, f32 eps);
-void tensor_cuda_bn_bwd(TensorImpl &dx, TensorImpl &d_gamma, TensorImpl &d_beta,
-                         const TensorImpl &grad, const TensorImpl &xhat,
-                         const TensorImpl &gamma, const TensorImpl &var,
-                         f32 m, f32 eps);
+void tensor_cuda_bn_fwd_normalize(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
+                                  const TensorImpl<f32> &inp,
+                                  const TensorImpl<f32> &mean,
+                                  const TensorImpl<f32> &m2,
+                                  const TensorImpl<f32> &gamma,
+                                  const TensorImpl<f32> &beta,
+                                  f32 count, f32 eps);
+void tensor_cuda_bn_bwd(TensorImpl<f32> &dx, TensorImpl<f32> &d_gamma,
+                        TensorImpl<f32> &d_beta, const TensorImpl<f32> &grad,
+                        const TensorImpl<f32> &xhat,
+                        const TensorImpl<f32> &gamma,
+                        const TensorImpl<f32> &var, f32 m, f32 eps);
 
-// ---- reduction (sum, max, argmax) ----------------------------------------
+// ---- reduction -----------------------------------------------------------
 
-void tensor_cuda_sum(TensorImpl &out, const TensorImpl &tensor);
-void tensor_cuda_sum(TensorImpl &out, const TensorImpl &tensor, u32 dim);
-void tensor_cuda_welford_mean_var(TensorImpl &mean, TensorImpl &m2,
-                                  const TensorImpl &src, u32 dim);
-void tensor_cuda_max(TensorImpl &out, const TensorImpl &tensor);
-void tensor_cuda_max(TensorImpl &out, const TensorImpl &tensor, u32 dim);
-void tensor_cuda_argmax(TensorImpl &out, const TensorImpl &tensor, u32 dim);
+template <typename T>
+void tensor_cuda_sum(TensorImpl<T> &out, const TensorImpl<T> &tensor);
+template <typename T>
+void tensor_cuda_sum(TensorImpl<T> &out, const TensorImpl<T> &tensor, u32 dim);
+void tensor_cuda_welford_mean_var(TensorImpl<f32> &mean, TensorImpl<f32> &m2,
+                                  const TensorImpl<f32> &src, u32 dim);
+template <typename T>
+void tensor_cuda_max(TensorImpl<T> &out, const TensorImpl<T> &tensor);
+template <typename T>
+void tensor_cuda_max(TensorImpl<T> &out, const TensorImpl<T> &tensor, u32 dim);
+template <typename T>
+void tensor_cuda_argmax(TensorImpl<u32> &out, const TensorImpl<T> &tensor,
+                        u32 dim);
 
 // ---- scattering ----------------------------------------------------------
-void tensor_cuda_scatter_add(TensorImpl &out, const TensorImpl &src,
-                             const TensorImpl &indices, u32 dim);
-// ---- initializing --------------------------------------------------------
 
-void tensor_cuda_he_init(TensorImpl &tensor);
+template <typename T>
+void tensor_cuda_scatter_add(TensorImpl<T> &out, const TensorImpl<T> &src,
+                             const TensorImpl<u32> &indices, u32 dim);
+
+// ---- initializing — f32 only --------------------------------------------
+
+void tensor_cuda_he_init(TensorImpl<f32> &tensor);
 
 // ---- indexing ------------------------------------------------------------
 
-void tensor_cuda_index_select(TensorImpl &dst, const TensorImpl &src,
+template <typename T>
+void tensor_cuda_index_select(TensorImpl<T> &dst, const TensorImpl<T> &src,
                               const u32 *indices, u32 n_indices, u32 dim);
-void tensor_cuda_index_select(TensorImpl &dst, const TensorImpl &src,
-                              const TensorImpl &indices, u32 dim);
+template <typename T>
+void tensor_cuda_index_select(TensorImpl<T> &dst, const TensorImpl<T> &src,
+                              const TensorImpl<u32> &indices, u32 dim);
 
-void tensor_cuda_unfold2d(TensorImpl &dst, const TensorImpl &src,
+// ---- spatial -------------------------------------------------------------
+
+template <typename T>
+void tensor_cuda_unfold2d(TensorImpl<T> &dst, const TensorImpl<T> &src,
                           Unfold2dParams params);
-void tensor_cuda_fold2d(TensorImpl &dst, const TensorImpl &col,
+template <typename T>
+void tensor_cuda_fold2d(TensorImpl<T> &dst, const TensorImpl<T> &col,
                         Unfold2dParams params);
 
-// ---- comparison ----------------------------------------------------------
+// ---- comparison — f32 only ----------------------------------------------
 
-b32 tensor_cuda_equals(const TensorImpl &a, const TensorImpl &b, f32 tol);
+b32 tensor_cuda_equals(const TensorImpl<f32> &a, const TensorImpl<f32> &b,
+                       f32 tol);
 
 #endif // TENSOR_CUDA_HPP

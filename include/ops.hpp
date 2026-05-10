@@ -27,13 +27,13 @@ Var flatten(Var input, CudaMemArena *arena = nullptr);
 // training=false → normalize with running stats, no grad_fn
 // momentum: weight given to the incoming batch estimate (PyTorch convention, default 0.1)
 Var batch_norm(Var input, Var gamma, Var beta,
-               Tensor running_mean, Tensor running_var,
+               Tensor<f32> running_mean, Tensor<f32> running_var,
                bool training = true, f32 momentum = 0.1f, f32 eps = 1e-5f,
                CudaMemArena *arena = nullptr);
 
-// weight [vocab_size, d_model], indices [B, T] plain Tensor (not differentiable)
+// weight [vocab_size, d_model], indices [B, T] (u32, not differentiable)
 // → out [B, T, d_model]
-Var embedding(Var weight, Tensor indices, CudaMemArena *arena = nullptr);
+Var embedding(Var weight, TensorU32 indices, CudaMemArena *arena = nullptr);
 
 Var mse_loss(Var pred, Var target, CudaMemArena *arena = nullptr);
 

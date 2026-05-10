@@ -10,7 +10,7 @@
 // Each sample in the batch gets an independent random transform.
 
 struct Transform {
-    virtual Tensor apply(const Tensor &batch) = 0;
+    virtual Tensor<f32> apply(const Tensor<f32> &batch) = 0;
     virtual ~Transform() = default;
 };
 
@@ -18,7 +18,7 @@ struct Transform {
 struct RandomHorizontalFlip : Transform {
     float p;
     RandomHorizontalFlip(float p = 0.5f) : p(p) {}
-    Tensor apply(const Tensor &batch) override;
+    Tensor<f32> apply(const Tensor<f32> &batch) override;
 };
 
 // Zero-pad by `padding` pixels on each side, then take a random size×size crop.
@@ -26,7 +26,7 @@ struct RandomHorizontalFlip : Transform {
 struct RandomCrop : Transform {
     u32 size, padding;
     RandomCrop(u32 size, u32 padding) : size(size), padding(padding) {}
-    Tensor apply(const Tensor &batch) override;
+    Tensor<f32> apply(const Tensor<f32> &batch) override;
 };
 
 // Wraps a CPU DataLoader: applies transforms to each batch, then uploads to GPU.
@@ -45,7 +45,7 @@ struct Augmenter {
     void shuffle() { loader.shuffle(); }
 
     // Gets next CPU batch, runs transforms, uploads X and y to GPU via arena.
-    bool next(Tensor &X_batch, Tensor &y_batch, CudaMemArena *arena = nullptr);
+    bool next(Tensor<f32> &X_batch, Tensor<f32> &y_batch, CudaMemArena *arena = nullptr);
 };
 
 #endif

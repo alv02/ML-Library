@@ -15,10 +15,10 @@ int main() {
     CudaMemArena perm_arena(GiB(1));
     CudaMemArena batch_arena(GiB(8));
 
-    Tensor train_X = tensor_load("data/X_train.npy", false); // CPU — augmented per batch
-    Tensor train_y = tensor_load("data/y_train.npy", false);
-    Tensor test_X  = tensor_load("data/X_test.npy",  true);  // GPU — no augmentation
-    Tensor test_y  = tensor_load("data/y_test.npy",  true);
+    Tensor<f32> train_X = tensor_load("data/X_train.npy", false); // CPU — augmented per batch
+    Tensor<f32> train_y = tensor_load("data/y_train.npy", false);
+    Tensor<f32> test_X  = tensor_load("data/X_test.npy",  true);  // GPU — no augmentation
+    Tensor<f32> test_y  = tensor_load("data/y_test.npy",  true);
 
     tensor_print(train_X.impl());
 
@@ -37,12 +37,12 @@ int main() {
     aug.add<RandomHorizontalFlip>(0.5f);
 
     u32 scalar_shape[1] = {1};
-    Tensor loss_accum = Tensor::make(1, scalar_shape, true, &perm_arena);
+    Tensor<f32> loss_accum = Tensor<f32>::make(1, scalar_shape, true, &perm_arena);
 
     for (int epoch = 0; epoch < epochs; epoch++) {
         tensor_fill(loss_accum, 0.0f);
         aug.shuffle();
-        Tensor Xb, yb;
+        Tensor<f32> Xb, yb;
         int batch = 0;
         while (true) {
             cuda_arena_clear(&batch_arena);
@@ -56,7 +56,7 @@ int main() {
             optim.step(&batch_arena);
             optim.zero_grad();
         }
-        Tensor lc = tensor_to_cpu(loss_accum);
+        Tensor<f32> lc = tensor_to_cpu(loss_accum);
         f32 avg_loss = lc->data()[0] / batch;
         printf("Epoch %d/%d — avg loss %.4f\n", epoch + 1, epochs, avg_loss);
 
@@ -71,7 +71,7 @@ int main() {
     f32 total_acc = 0.0f;
     u32 n_batches = 0;
 
-    Tensor Xb_test, yb_test;
+    Tensor<f32> Xb_test, yb_test;
     while (true) {
         cuda_arena_clear(&batch_arena);
         if (!test_loader.next(Xb_test, yb_test, &batch_arena))
@@ -83,14 +83,14 @@ int main() {
         total_acc += accuracy(logits->data, yb_test);
         n_batches++;
     }
-    Tensor test_lc = tensor_to_cpu(loss_accum);
+    Tensor<f32> test_lc = tensor_to_cpu(loss_accum);
     printf("\nTest loss:     %.4f\n", test_lc->data()[0] / n_batches);
     printf("Test accuracy: %.2f%%\n", total_acc / n_batches * 100.0f);
 
     {
         cuda_arena_clear(&batch_arena);
         DataLoader vis_loader(test_X, test_y, 128);
-        Tensor vis_X, vis_y;
+        Tensor<f32> vis_X, vis_y;
         vis_loader.next(vis_X, vis_y, &batch_arena);
         Var vis_logits = model(Var(vis_X), &batch_arena);
         printf("\n--- Wrong predictions ---\n");

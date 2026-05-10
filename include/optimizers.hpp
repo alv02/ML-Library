@@ -11,15 +11,15 @@
 // ────────────────────────────────────────────────────────────────
 
 struct DataLoader {
-    Tensor X, y;
+    Tensor<f32> X, y;
     u32 batch_size;
     u32 n_samples;
     u32 cursor;
     std::vector<u32> indices;
 
-    DataLoader(Tensor X, Tensor y, u32 batch_size);
+    DataLoader(Tensor<f32> X, Tensor<f32> y, u32 batch_size);
     void shuffle();
-    bool next(Tensor &X_batch, Tensor &y_batch, CudaMemArena *arena = nullptr);
+    bool next(Tensor<f32> &X_batch, Tensor<f32> &y_batch, CudaMemArena *arena = nullptr);
 };
 
 // ── Optimizer (base)
@@ -45,7 +45,7 @@ struct Optimizer {
 struct sgd : Optimizer {
     f32 lambda; // L2 weight decay
     f32 mu;     // momentum coefficient (0 = plain SGD)
-    std::unordered_map<VarImpl *, Tensor> velocity;
+    std::unordered_map<VarImpl *, Tensor<f32>> velocity;
 
     sgd(std::vector<Var> params, f32 lr, f32 lambda = 0.0f, f32 mu = 0.0f,
         CudaMemArena *perm_arena = nullptr);
@@ -64,8 +64,8 @@ struct AdamW : Optimizer {
     f32 eps;
     f32 lambda;                              // decoupled weight decay
     u32 t;                                   // step counter for bias correction
-    std::unordered_map<VarImpl *, Tensor> m; // first moment
-    std::unordered_map<VarImpl *, Tensor> v; // second moment
+    std::unordered_map<VarImpl *, Tensor<f32>> m; // first moment
+    std::unordered_map<VarImpl *, Tensor<f32>> v; // second moment
 
     AdamW(std::vector<Var> params, f32 lr = 1e-3f, f32 beta1 = 0.9f,
           f32 beta2 = 0.999f, f32 eps = 1e-8f, f32 lambda = 0.0f,
