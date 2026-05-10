@@ -1266,6 +1266,28 @@ Tensor tensor_index_select(const Tensor &src, const u32 *indices, u32 n_indices,
     return dst;
 }
 
+Tensor tensor_index_select(const Tensor &src, const Tensor &indices, u32 dim,
+                           CudaMemArena *arena) {
+    // Output shape: src.shape with dim replaced by the full indices shape.
+    // e.g. src [V, D], indices [B, T], dim=0 → out [B, T, D]
+    u32 out_ndim = src->ndim - 1 + indices->ndim;
+    u32 out_shape[MAX_NDIM];
+    u32 o = 0;
+    for (u32 i = 0; i < dim; i++)
+        out_shape[o++] = src->shape[i];
+    for (u32 i = 0; i < indices->ndim; i++)
+        out_shape[o++] = indices->shape[i];
+    for (u32 i = dim + 1; i < src->ndim; i++)
+        out_shape[o++] = src->shape[i];
+
+    Tensor dst = Tensor::make(out_ndim, out_shape, src->on_gpu(), arena);
+    if (src->on_gpu())
+        tensor_cuda_index_select(dst.impl(), src.impl(), indices.impl(), dim);
+    else
+        tensor_cpu_index_select(dst.impl(), src.impl(), indices.impl(), dim);
+    return dst;
+}
+
 // ---- Conv2dParams constructor -------------------------------------------
 
 Unfold2dParams::Unfold2dParams(u32 k, u32 stride, u32 pad, u32 dil,

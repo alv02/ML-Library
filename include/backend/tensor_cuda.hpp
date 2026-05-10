@@ -129,6 +129,8 @@ void tensor_cuda_he_init(TensorImpl &tensor);
 
 void tensor_cuda_index_select(TensorImpl &dst, const TensorImpl &src,
                               const u32 *indices, u32 n_indices, u32 dim);
+void tensor_cuda_index_select(TensorImpl &dst, const TensorImpl &src,
+                              const TensorImpl &indices, u32 dim);
 
 void tensor_cuda_unfold2d(TensorImpl &dst, const TensorImpl &src,
                           Unfold2dParams params);

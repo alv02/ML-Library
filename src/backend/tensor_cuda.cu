@@ -369,6 +369,25 @@ __global__ void tensor_index_select(TensorMeta dst_meta, TensorMeta src_meta,
     dst[workIdx] = src[offset];
 }
 
+// Same logic as above but indices live in device memory as f32-cast integers.
+__global__ void tensor_index_select_tensor(TensorMeta dst_meta,
+                                           TensorMeta src_meta, f32 *dst,
+                                           const f32 *src, const f32 *indices,
+                                           u32 dim) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (workIdx >= dst_meta.size)
+        return;
+    u64 remaining = workIdx;
+    u64 offset = 0;
+    for (u32 i = 0; i < src_meta.ndim; i++) {
+        u64 idx_i = remaining / dst_meta.stride[i];
+        remaining -= idx_i * dst_meta.stride[i];
+        offset += (i == dim) ? (u32)indices[idx_i] * src_meta.stride[i]
+                             : idx_i * src_meta.stride[i];
+    }
+    dst[workIdx] = src[offset];
+}
+
 __global__ void tensor_unfold2d(TensorMeta dst_meta, TensorMeta dst_meta_contig,
                                 TensorMeta src_meta, Unfold2dParams params,
                                 f32 *dst, const f32 *src) {
@@ -996,6 +1015,17 @@ void tensor_cuda_index_select(TensorImpl &dst, const TensorImpl &src,
                                              src.data(), indices_gpu, n_indices,
                                              dim);
     cudaFreeAsync(indices_gpu, 0);
+}
+
+void tensor_cuda_index_select(TensorImpl &dst, const TensorImpl &src,
+                              const TensorImpl &indices, u32 dim) {
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(dst.numel(), u64(threads));
+    TensorMeta dst_meta(dst);
+    TensorMeta src_meta(src);
+    tensor_index_select_tensor<<<blocks, threads>>>(dst_meta, src_meta,
+                                                    dst.data(), src.data(),
+                                                    indices.data(), dim);
 }
 
 // ---- spatial / patch operations ------------------------------------------

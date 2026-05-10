@@ -86,6 +86,8 @@ void tensor_cpu_he_init(TensorImpl &tensor);
 
 void tensor_cpu_index_select(TensorImpl &dst, const TensorImpl &src,
                              const u32 *indices, u32 n_indices, u32 dim);
+void tensor_cpu_index_select(TensorImpl &dst, const TensorImpl &src,
+                             const TensorImpl &indices, u32 dim);
 
 // ---- spatial / patch operations ------------------------------------------
 

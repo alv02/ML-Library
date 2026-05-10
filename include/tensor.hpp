@@ -239,6 +239,10 @@ b32 tensor_scatter_add(Tensor &out, const Tensor &src, const Tensor &indices,
 Tensor tensor_scatter_add(const Tensor &src, const Tensor &indices, u32 dim,
                           u32 dim_size, CudaMemArena *arena = nullptr);
 
+// General row-scatter: out[indices[i]] += src[i]
+// indices: [N] (f32-cast integers), src: [N, ...], out: [V, ...]
+void tensor_scatter_add(Tensor &out, const Tensor &src, const Tensor &indices);
+
 // ---- init ----------------------------------------------------------------
 void tensor_he_init(Tensor &t);
 
@@ -247,6 +251,13 @@ b32 tensor_index_select(Tensor &dst, const Tensor &src, const u32 *indices,
                         u32 n_indices, u32 dim);
 Tensor tensor_index_select(const Tensor &src, const u32 *indices, u32 n_indices,
                            u32 dim, CudaMemArena *arena = nullptr);
+
+// Tensor-indices variant: indices lives on the same device as src.
+// src [D0, ..., dim_size, ..., Dn], indices [any shape] (f32-cast integers)
+// out shape: src.shape with dim replaced by the full indices shape
+// e.g. src [V, D], indices [B, T], dim=0 → out [B, T, D]
+Tensor tensor_index_select(const Tensor &src, const Tensor &indices, u32 dim,
+                           CudaMemArena *arena = nullptr);
 
 // ---- spatial -------------------------------------------------------------
 b32 tensor_unfold2d(Tensor &out, const Tensor &input, Unfold2dParams params);

@@ -456,6 +456,23 @@ void tensor_cpu_index_select(TensorImpl &dst, const TensorImpl &src,
     }
 }
 
+void tensor_cpu_index_select(TensorImpl &dst, const TensorImpl &src,
+                             const TensorImpl &indices, u32 dim) {
+    u64 inner_size = src.stride[dim];
+    u64 outer_size = src.numel() / (src.shape[dim] * inner_size);
+    u32 n_indices = indices.numel();
+    const f32 *idx_data = indices.data();
+
+    for (u64 o = 0; o < outer_size; o++) {
+        for (u32 n = 0; n < n_indices; n++) {
+            f32 *dst_ptr = dst.data() + (o * n_indices + n) * inner_size;
+            const f32 *src_ptr =
+                src.data() + (o * src.shape[dim] + (u32)idx_data[n]) * inner_size;
+            memcpy(dst_ptr, src_ptr, inner_size * sizeof(f32));
+        }
+    }
+}
+
 // ---- comparison ----------------------------------------------------------
 
 b32 tensor_cpu_equals(const TensorImpl &a, const TensorImpl &b, f32 tol) {

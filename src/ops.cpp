@@ -432,6 +432,37 @@ Var batch_norm(Var input, Var gamma, Var beta,
     return out;
 }
 
+// ── embedding ────────────────────────────────────────────────────────────────
+
+Var embedding(Var weight, Tensor indices, CudaMemArena *arena) {
+    Var out(tensor_index_select(weight->data, indices, 0, arena));
+
+    if (!(weight->flags & FV_FLAG_REQUIERES_GRAD))
+        return out;
+    out->flags |= FV_FLAG_REQUIERES_GRAD;
+
+    struct Fn : Function {
+        Tensor indices;
+        u32 vocab_size;
+        CudaMemArena *arena;
+        void backward(Tensor grad) override {
+            if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
+                return;
+            if (!inputs[0]->grad.defined())
+                inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
+            // scatter_add along dim=0: grad_weight[indices[b,t], :] += grad[b, t, :]
+            tensor_scatter_add(inputs[0]->grad, grad, indices, 0);
+        }
+    };
+    auto fn = std::make_shared<Fn>();
+    fn->indices = indices;
+    fn->vocab_size = weight->data->shape[0];
+    fn->arena = arena;
+    fn->inputs = {weight};
+    out->grad_fn = fn;
+    return out;
+}
+
 // ── mse_loss ─────────────────────────────────────────────────────────────────
 
 Var mse_loss(Var pred, Var target, CudaMemArena *arena) {
