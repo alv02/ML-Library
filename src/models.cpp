@@ -42,9 +42,9 @@ Sequential make_cnn(u32 C_in, u32 H, u32 W, bool on_gpu,
         C_cur = spec.C_out;
     }
 
-    model.add<Flatten>();
-
     u32 flat = C_cur * H_cur * W_cur;
+    u32 flat_shape[2] = {0, flat};
+    model.add<Reshape>(2, flat_shape);
     for (u32 i = 0; i < (u32)dense_sizes.size(); i++) {
         model.add<Linear>(flat, dense_sizes[i], on_gpu, perm_arena);
         if (i < (u32)dense_sizes.size() - 1)
@@ -79,9 +79,10 @@ Sequential make_resnet(u32 num_classes, bool on_gpu,
     }
 
     // Global average pool: after 3 stride-2 stages on 32×32, spatial size is 4×4.
-    // MaxPool(4,4) collapses it to 1×1 → Flatten → 512.
+    // MaxPool(4,4) collapses it to 1×1 → [N, 512, 1, 1] → [N, 512].
     model.add<MaxPool2d>(Unfold2dParams(4, 4, 0));
-    model.add<Flatten>();
+    u32 resnet_flat[2] = {0, channels[stage_blocks.size() - 1]};
+    model.add<Reshape>(2, resnet_flat);
     model.add<Linear>(channels[stage_blocks.size() - 1], num_classes, on_gpu, perm_arena);
 
     return model;

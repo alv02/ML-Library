@@ -16,7 +16,7 @@ struct conv_layer_params {
 Sequential make_mlp(u32 in_features, const std::vector<u32> &sizes, bool on_gpu,
                     CudaMemArena *perm_arena = nullptr);
 
-// (Conv2d → [BatchNorm2d] → ReLU → [MaxPool2d]) × N → Flatten
+// (Conv2d → [BatchNorm2d] → ReLU → [MaxPool2d]) × N → Reshape
 // → (Linear → ReLU) × (n-1) → Linear
 Sequential make_cnn(u32 C_in, u32 H, u32 W, bool on_gpu,
                     const std::vector<conv_layer_params> &conv_layers,

@@ -40,16 +40,27 @@ struct ReLU : Layer {
     }
 };
 
-// ── Flatten ───────────────────────────────────────────────────────────────────
+// ── Reshape ───────────────────────────────────────────────────────────────────
+// shape[i] == 0 means "copy dim i from input at runtime"
 
-struct Flatten : Layer {
+struct Reshape : Layer {
+    u32 ndim;
+    u32 shape[MAX_NDIM];
+
+    Reshape(u32 ndim, const u32 *shape) : ndim(ndim) {
+        memcpy(this->shape, shape, ndim * sizeof(u32));
+    }
+
     Var forward(Var input, CudaMemArena *arena = nullptr) override {
-        return flatten(input, arena);
+        u32 resolved[MAX_NDIM];
+        for (u32 i = 0; i < ndim; i++)
+            resolved[i] = shape[i] ? shape[i] : input->data->shape[i];
+        return reshape(input, resolved, ndim, arena);
     }
 };
 
 // ── Conv2d ────────────────────────────────────────────────────────────────────
-// W shape: [C_in * kH * kW, C_out]  (Wt convention matching the conv2d op)
+// W shape: [C_out, C_in * kH * kW]
 // b shape: [1, C_out, 1, 1]
 
 struct Conv2d : Layer {

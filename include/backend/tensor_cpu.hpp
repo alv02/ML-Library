@@ -5,19 +5,19 @@
 
 template <typename T>
 void tensor_cpu_copy(TensorImpl<T> &dst, const TensorImpl<T> &src);
-template <typename T>
-void tensor_cpu_contigous(TensorImpl<T> &t);
+template <typename T> void tensor_cpu_contigous(TensorImpl<T> &t);
 
 // ---- fill / clear --------------------------------------------------------
 
-template <typename T>
-void tensor_cpu_fill(TensorImpl<T> &tensor, T value);
-template <typename T>
-void tensor_cpu_clear(TensorImpl<T> &tensor);
+template <typename T> void tensor_cpu_fill(TensorImpl<T> &tensor, T value);
+template <typename T> void tensor_cpu_clear(TensorImpl<T> &tensor);
 
 // ---- activations (relu, exp) — f32 only ---------------------------------
 
 void tensor_cpu_relu(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
+void tensor_cpu_gelu(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
+void tensor_cpu_gelu_backward(TensorImpl<f32> &out, const TensorImpl<f32> &grad,
+                              const TensorImpl<f32> &input);
 void tensor_cpu_exp(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
 void tensor_cpu_log(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
 void tensor_cpu_sqrt(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
@@ -41,6 +41,7 @@ void tensor_cpu_equal(TensorImpl<T> &out, const TensorImpl<T> &a,
                       const TensorImpl<T> &b);
 void tensor_cpu_relu_backward(TensorImpl<f32> &out, const TensorImpl<f32> &grad,
                               const TensorImpl<f32> &in);
+void tensor_cpu_dropout_mask(TensorImpl<f32> &mask, f32 p);
 
 // ---- scalar operations ---------------------------------------------------
 
@@ -57,6 +58,8 @@ void tensor_cpu_div(TensorImpl<T> &out, const TensorImpl<T> &a, T scalar);
 
 void tensor_cpu_mat_mul(TensorImpl<f32> &out, const TensorImpl<f32> &a,
                         const TensorImpl<f32> &b, b32 clear_out);
+void tensor_cpu_mat_mul_batched(TensorImpl<f32> &out, const TensorImpl<f32> &a,
+                                const TensorImpl<f32> &b, b32 clear_out);
 
 // ---- reduction (sum, max, argmax) ----------------------------------------
 
@@ -64,8 +67,8 @@ template <typename T>
 void tensor_cpu_sum(TensorImpl<T> &out, const TensorImpl<T> &tensor,
                     b32 clear_out);
 template <typename T>
-void tensor_cpu_sum(TensorImpl<T> &out, const TensorImpl<T> &tensor,
-                    u32 dim, b32 clear_out);
+void tensor_cpu_sum(TensorImpl<T> &out, const TensorImpl<T> &tensor, u32 dim,
+                    b32 clear_out);
 template <typename T>
 void tensor_cpu_max(TensorImpl<T> &out, const TensorImpl<T> &tensor);
 template <typename T>
@@ -86,14 +89,14 @@ void tensor_cpu_bn_fwd_normalize(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
                                  const TensorImpl<f32> &mean,
                                  const TensorImpl<f32> &m2,
                                  const TensorImpl<f32> &gamma,
-                                 const TensorImpl<f32> &beta,
-                                 f32 count, f32 eps);
+                                 const TensorImpl<f32> &beta, f32 count,
+                                 f32 eps);
 
 void tensor_cpu_bn_bwd(TensorImpl<f32> &dx, TensorImpl<f32> &d_gamma,
                        TensorImpl<f32> &d_beta, const TensorImpl<f32> &grad,
                        const TensorImpl<f32> &xhat,
-                       const TensorImpl<f32> &gamma,
-                       const TensorImpl<f32> &var, f32 m, f32 eps);
+                       const TensorImpl<f32> &gamma, const TensorImpl<f32> &var,
+                       f32 m, f32 eps);
 
 // ---- scattering ----------------------------------------------------------
 

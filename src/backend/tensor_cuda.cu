@@ -1,4 +1,6 @@
 #include "../../include/backend/tensor_cuda.hpp"
+#include <atomic>
+#include <ctime>
 #include <cublas_v2.h>
 #include <cuda/cmath>
 #include <curand_kernel.h>
@@ -10,40 +12,75 @@ static constexpr u32 N_THREADS = 512;
 
 template <typename T> __device__ T cuda_type_lowest() { return T(0); }
 template <> __device__ float cuda_type_lowest<float>() { return -__FLT_MAX__; }
-template <> __device__ unsigned int cuda_type_lowest<unsigned int>() { return 0; }
+template <> __device__ unsigned int cuda_type_lowest<unsigned int>() {
+    return 0;
+}
 
 // ── Functors ─────────────────────────────────────────────────────────────────
 
 // Generic arithmetic functors (template operator() works for any T)
 struct AddOp {
-    template <typename T> __device__ T operator()(T a, T b) const { return a + b; }
+    template <typename T> __device__ T operator()(T a, T b) const {
+        return a + b;
+    }
 };
 struct SubOp {
-    template <typename T> __device__ T operator()(T a, T b) const { return a - b; }
+    template <typename T> __device__ T operator()(T a, T b) const {
+        return a - b;
+    }
 };
 struct MulOp {
-    template <typename T> __device__ T operator()(T a, T b) const { return a * b; }
+    template <typename T> __device__ T operator()(T a, T b) const {
+        return a * b;
+    }
 };
 struct DivOp {
-    template <typename T> __device__ T operator()(T a, T b) const { return a / b; }
+    template <typename T> __device__ T operator()(T a, T b) const {
+        return a / b;
+    }
 };
 struct EqualOp {
-    template <typename T>
-    __device__ T operator()(T a, T b) const { return a == b ? T(1) : T(0); }
+    template <typename T> __device__ T operator()(T a, T b) const {
+        return a == b ? T(1) : T(0);
+    }
 };
 
 // f32-only functors
 struct ReluFwdOp {
     __device__ f32 operator()(f32 x) const { return x > 0.0f ? x : 0.0f; }
 };
+// GELU(x) ≈ x * 0.5 * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))
+struct GeluFwdOp {
+    __device__ f32 operator()(f32 x) const {
+        constexpr f32 c = 0.7978845608f;
+        constexpr f32 k = 0.044715f;
+        return 0.5f * x * (1.0f + tanhf(c * (x + k * x * x * x)));
+    }
+};
+
 struct ReluBackwardOp {
     __device__ f32 operator()(f32 grad, f32 input) const {
         return input > 0.0f ? grad : 0.0f;
     }
 };
-struct ExpOp  { __device__ f32 operator()(f32 x) const { return expf(x); } };
-struct LogOp  { __device__ f32 operator()(f32 x) const { return logf(x); } };
-struct SqrtOp { __device__ f32 operator()(f32 x) const { return sqrtf(x); } };
+struct GeluBackwardOp {
+    __device__ f32 operator()(f32 g, f32 x) const {
+        constexpr f32 c = 0.7978845608f;
+        constexpr f32 k = 0.044715f;
+        f32 t    = tanhf(c * (x + k * x * x * x));
+        f32 dtdx = (1.0f - t * t) * c * (1.0f + 3.0f * k * x * x);
+        return g * 0.5f * (1.0f + t + x * dtdx);
+    }
+};
+struct ExpOp {
+    __device__ f32 operator()(f32 x) const { return expf(x); }
+};
+struct LogOp {
+    __device__ f32 operator()(f32 x) const { return logf(x); }
+};
+struct SqrtOp {
+    __device__ f32 operator()(f32 x) const { return sqrtf(x); }
+};
 
 // ── Kernels ──────────────────────────────────────────────────────────────────
 
@@ -63,12 +100,13 @@ __global__ void elementwise_unary(u64 size, T *out, const T *a, Op op) {
 
 template <typename T, typename Op>
 __global__ void elementwise_unary(TensorMeta out_contig, TensorMeta out_actual,
-                                  TensorMeta a_meta, T *out, const T *a, Op op) {
+                                  TensorMeta a_meta, T *out, const T *a,
+                                  Op op) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= out_contig.size)
         return;
     u64 out_offset = out_contig.offset_from(workIdx, out_actual);
-    u64 a_offset   = out_contig.offset_from(workIdx, a_meta);
+    u64 a_offset = out_contig.offset_from(workIdx, a_meta);
     out[out_offset] = op(a[a_offset]);
 }
 
@@ -82,14 +120,14 @@ __global__ void elementwise_binary(u64 size, T *out, T *a, T *b, Op op) {
 template <typename T, typename Op>
 __global__ void
 elementwise_broadcast(const TensorMeta out_contig, const TensorMeta out_actual,
-                      const TensorMeta a_meta, const TensorMeta b_meta,
-                      T *out, const T *a, const T *b, Op op) {
+                      const TensorMeta a_meta, const TensorMeta b_meta, T *out,
+                      const T *a, const T *b, Op op) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= out_contig.size)
         return;
     u64 out_offset = out_contig.offset_from(workIdx, out_actual);
-    u64 a_offset   = out_contig.offset_from(workIdx, a_meta);
-    u64 b_offset   = out_contig.offset_from(workIdx, b_meta);
+    u64 a_offset = out_contig.offset_from(workIdx, a_meta);
+    u64 b_offset = out_contig.offset_from(workIdx, b_meta);
     out[out_offset] = op(a[a_offset], b[b_offset]);
 }
 
@@ -109,7 +147,7 @@ __global__ void elementwise_scalar(TensorMeta out_contig, TensorMeta out_actual,
     if (workIdx >= out_contig.size)
         return;
     u64 out_offset = out_contig.offset_from(workIdx, out_actual);
-    u64 a_offset   = out_contig.offset_from(workIdx, a_meta);
+    u64 a_offset = out_contig.offset_from(workIdx, a_meta);
     out[out_offset] = op(a[a_offset], scalar);
 }
 
@@ -187,8 +225,10 @@ __global__ void mat_mul_tiled(TensorMeta out_meta, TensorMeta a_meta,
             f32 a1 = a_tile[(threadIdx.y * 2 + 1) * TILE + k];
             f32 b0 = b_tile[k * TILE + threadIdx.x * 2];
             f32 b1 = b_tile[k * TILE + threadIdx.x * 2 + 1];
-            v00 += a0 * b0; v01 += a0 * b1;
-            v10 += a1 * b0; v11 += a1 * b1;
+            v00 += a0 * b0;
+            v01 += a0 * b1;
+            v10 += a1 * b0;
+            v11 += a1 * b1;
         }
 
         __syncthreads();
@@ -196,13 +236,17 @@ __global__ void mat_mul_tiled(TensorMeta out_meta, TensorMeta a_meta,
 
     u64 rows = out_meta.rows(), cols = out_meta.cols();
     if (row0 < rows && col0 < cols)
-        out[out_meta.at(row0, col0)] = v00 + beta * out[out_meta.at(row0, col0)];
+        out[out_meta.at(row0, col0)] =
+            v00 + beta * out[out_meta.at(row0, col0)];
     if (row0 < rows && col1 < cols)
-        out[out_meta.at(row0, col1)] = v01 + beta * out[out_meta.at(row0, col1)];
+        out[out_meta.at(row0, col1)] =
+            v01 + beta * out[out_meta.at(row0, col1)];
     if (row1 < rows && col0 < cols)
-        out[out_meta.at(row1, col0)] = v10 + beta * out[out_meta.at(row1, col0)];
+        out[out_meta.at(row1, col0)] =
+            v10 + beta * out[out_meta.at(row1, col0)];
     if (row1 < rows && col1 < cols)
-        out[out_meta.at(row1, col1)] = v11 + beta * out[out_meta.at(row1, col1)];
+        out[out_meta.at(row1, col1)] =
+            v11 + beta * out[out_meta.at(row1, col1)];
 }
 
 template <typename T>
@@ -240,7 +284,7 @@ __global__ void welford_mean_var(f32 *mean, f32 *m2, const f32 *src,
         M2 += delta * (delta - delta / n);
     }
 
-    partial_n[threadIdx.x]  = n;
+    partial_n[threadIdx.x] = n;
     partial_mu[threadIdx.x] = mu;
     partial_M2[threadIdx.x] = M2;
     __syncthreads();
@@ -252,16 +296,17 @@ __global__ void welford_mean_var(f32 *mean, f32 *m2, const f32 *src,
             f32 ma = partial_M2[threadIdx.x], mb = partial_M2[threadIdx.x + s];
             u32 nc = na + nb;
             f32 delta = ub - ua;
-            partial_n[threadIdx.x]  = nc;
+            partial_n[threadIdx.x] = nc;
             partial_mu[threadIdx.x] = ua + delta * ((f32)nb / nc);
-            partial_M2[threadIdx.x] = ma + mb + delta * delta * ((f32)na * nb / nc);
+            partial_M2[threadIdx.x] =
+                ma + mb + delta * delta * ((f32)na * nb / nc);
         }
         __syncthreads();
     }
 
     if (threadIdx.x == 0) {
         mean[c] = partial_mu[0];
-        m2[c]   = partial_M2[0];
+        m2[c] = partial_M2[0];
     }
 }
 
@@ -282,7 +327,8 @@ template <typename T>
 __global__ void tensor_max_step(u64 size, T *out, T *tensor) {
     __shared__ T partial[N_THREADS];
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
-    partial[threadIdx.x] = (workIdx < size) ? tensor[workIdx] : cuda_type_lowest<T>();
+    partial[threadIdx.x] =
+        (workIdx < size) ? tensor[workIdx] : cuda_type_lowest<T>();
     __syncthreads();
     for (u32 stride = blockDim.x / 2; stride > 0; stride >>= 1) {
         if (threadIdx.x < stride) {
@@ -332,19 +378,18 @@ __global__ void tensor_argmax_kernel(TensorMeta out_meta,
 }
 
 template <typename T>
-__global__ void tensor_scatter_add_kernel(TensorMeta out_meta,
-                                          TensorMeta out_base_meta,
-                                          TensorMeta indices_meta,
-                                          TensorMeta src_meta,
-                                          TensorMeta src_contig, T *out,
-                                          u32 *indices, T *src, u32 dim) {
+__global__ void
+tensor_scatter_add_kernel(TensorMeta out_meta, TensorMeta out_base_meta,
+                          TensorMeta indices_meta, TensorMeta src_meta,
+                          TensorMeta src_contig, T *out, u32 *indices, T *src,
+                          u32 dim) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= src_contig.size)
         return;
 
-    u64 src_offset      = src_contig.offset_from(workIdx, src_meta);
+    u64 src_offset = src_contig.offset_from(workIdx, src_meta);
     u64 out_base_offset = src_contig.offset_from(workIdx, out_base_meta);
-    u64 indices_offset  = src_contig.offset_from(workIdx, indices_meta);
+    u64 indices_offset = src_contig.offset_from(workIdx, indices_meta);
     out_base_offset += indices[indices_offset] * out_meta.stride[dim];
 
     atomicAdd(&out[out_base_offset], src[src_offset]);
@@ -389,11 +434,10 @@ __global__ void tensor_index_select_tensor_kernel(TensorMeta dst_meta,
 }
 
 template <typename T>
-__global__ void tensor_unfold2d_kernel(TensorMeta dst_meta,
-                                       TensorMeta dst_meta_contig,
-                                       TensorMeta src_meta,
-                                       Unfold2dParams params, T *dst,
-                                       const T *src) {
+__global__ void
+tensor_unfold2d_kernel(TensorMeta dst_meta, TensorMeta dst_meta_contig,
+                       TensorMeta src_meta, Unfold2dParams params, T *dst,
+                       const T *src) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= dst_meta.size)
         return;
@@ -415,7 +459,8 @@ __global__ void tensor_unfold2d_kernel(TensorMeta dst_meta,
                      lw * dst_meta.stride[2] + c * dst_meta.stride[3] +
                      kh * dst_meta.stride[4] + kw * dst_meta.stride[5];
 
-    if (h < 0 || h >= (i32)src_meta.shape[2] || w < 0 || w >= (i32)src_meta.shape[3]) {
+    if (h < 0 || h >= (i32)src_meta.shape[2] || w < 0 ||
+        w >= (i32)src_meta.shape[3]) {
         dst[dst_offset] = T(params.pad_constant);
         return;
     }
@@ -466,7 +511,8 @@ __global__ void tensor_check_close(u64 size, u32 *ok, const f32 *a,
         *ok = 0;
 }
 
-// ── Template dispatch helpers ─────────────────────────────────────────────────
+// ── Template dispatch helpers
+// ─────────────────────────────────────────────────
 
 template <typename T>
 static TensorMeta make_contig_meta(const TensorImpl<T> &t) {
@@ -529,7 +575,8 @@ static void cuda_elementwise_scalar(TensorImpl<T> &out, const TensorImpl<T> &a,
                                             out.data(), a.data(), scalar, op);
 }
 
-// ── Host functions ────────────────────────────────────────────────────────────
+// ── Host functions
+// ────────────────────────────────────────────────────────────
 
 // ---- memory management ---------------------------------------------------
 
@@ -570,15 +617,13 @@ void tensor_cuda_contiguous(TensorImpl<T> &t, CudaMemArena *arena) {
 
 // ---- fill / clear --------------------------------------------------------
 
-template <typename T>
-void tensor_cuda_fill(TensorImpl<T> &tensor, T value) {
+template <typename T> void tensor_cuda_fill(TensorImpl<T> &tensor, T value) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(tensor.numel(), (u64)threads);
     fill_kernel<<<blocks, threads>>>(tensor.numel(), tensor.data(), value);
 }
 
-template <typename T>
-void tensor_cuda_clear(TensorImpl<T> &tensor) {
+template <typename T> void tensor_cuda_clear(TensorImpl<T> &tensor) {
     cudaMemsetAsync(tensor.data(), 0, sizeof(T) * tensor.numel(), 0);
 }
 
@@ -586,6 +631,10 @@ void tensor_cuda_clear(TensorImpl<T> &tensor) {
 
 void tensor_cuda_relu(TensorImpl<f32> &dst, const TensorImpl<f32> &src) {
     cuda_elementwise_unary(dst, src, ReluFwdOp{});
+}
+
+void tensor_cuda_gelu(TensorImpl<f32> &dst, const TensorImpl<f32> &src) {
+    cuda_elementwise_unary(dst, src, GeluFwdOp{});
 }
 
 void tensor_cuda_exp(TensorImpl<f32> &dst, const TensorImpl<f32> &src) {
@@ -632,30 +681,41 @@ void tensor_cuda_equal(TensorImpl<T> &out, const TensorImpl<T> &a,
     cuda_elementwise_binary(out, a, b, EqualOp{});
 }
 
-void tensor_cuda_relu_backward(TensorImpl<f32> &out, const TensorImpl<f32> &grad,
+void tensor_cuda_relu_backward(TensorImpl<f32> &out,
+                               const TensorImpl<f32> &grad,
                                const TensorImpl<f32> &in) {
     cuda_elementwise_binary(out, grad, in, ReluBackwardOp{});
+}
+
+void tensor_cuda_gelu_backward(TensorImpl<f32> &out,
+                               const TensorImpl<f32> &grad,
+                               const TensorImpl<f32> &input) {
+    cuda_elementwise_binary(out, grad, input, GeluBackwardOp{});
 }
 
 // ---- scalar operations ---------------------------------------------------
 
 template <typename T>
-void tensor_cuda_add(TensorImpl<T> &out, const TensorImpl<T> &tensor, T scalar) {
+void tensor_cuda_add(TensorImpl<T> &out, const TensorImpl<T> &tensor,
+                     T scalar) {
     cuda_elementwise_scalar(out, tensor, scalar, AddOp{});
 }
 
 template <typename T>
-void tensor_cuda_sub(TensorImpl<T> &out, const TensorImpl<T> &tensor, T scalar) {
+void tensor_cuda_sub(TensorImpl<T> &out, const TensorImpl<T> &tensor,
+                     T scalar) {
     cuda_elementwise_scalar(out, tensor, scalar, SubOp{});
 }
 
 template <typename T>
-void tensor_cuda_mul(TensorImpl<T> &out, const TensorImpl<T> &tensor, T scalar) {
+void tensor_cuda_mul(TensorImpl<T> &out, const TensorImpl<T> &tensor,
+                     T scalar) {
     cuda_elementwise_scalar(out, tensor, scalar, MulOp{});
 }
 
 template <typename T>
-void tensor_cuda_div(TensorImpl<T> &out, const TensorImpl<T> &tensor, T scalar) {
+void tensor_cuda_div(TensorImpl<T> &out, const TensorImpl<T> &tensor,
+                     T scalar) {
     cuda_elementwise_scalar(out, tensor, scalar, DivOp{});
 }
 
@@ -691,7 +751,7 @@ void tensor_cuda_mat_mul_cublas(TensorImpl<f32> &out, const TensorImpl<f32> &a,
                                 const TensorImpl<f32> &b, b32 clear_out) {
     int M = (int)a.shape[0], K = (int)a.shape[1], N = (int)b.shape[1];
     float alpha = 1.0f;
-    float beta  = clear_out ? 0.0f : 1.0f;
+    float beta = clear_out ? 0.0f : 1.0f;
 
     cublasOperation_t op_b = (b.stride[1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
     int ld_b = (b.stride[1] == 1) ? (int)b.stride[0] : (int)b.stride[1];
@@ -701,55 +761,68 @@ void tensor_cuda_mat_mul_cublas(TensorImpl<f32> &out, const TensorImpl<f32> &a,
 
     int ldc = (int)out.stride[0];
 
-    cublasSgemm(cublas_handle(),
-                op_b, op_a,
-                N, M, K,
-                &alpha, b.data(), ld_b,
-                        a.data(), ld_a,
-                &beta,  out.data(), ldc);
+    cublasSgemm(cublas_handle(), op_b, op_a, N, M, K, &alpha, b.data(), ld_b,
+                a.data(), ld_a, &beta, out.data(), ldc);
+}
+
+void tensor_cuda_mat_mul_batched(TensorImpl<f32> &out, const TensorImpl<f32> &a,
+                                 const TensorImpl<f32> &b, b32 clear_out) {
+    u32 nd = a.ndim;
+    int M = (int)a.shape[nd - 2], K = (int)a.shape[nd - 1], N = (int)b.shape[nd - 1];
+    int batch = (int)(a.numel() / ((u64)M * K));
+    float alpha = 1.0f, beta = clear_out ? 0.0f : 1.0f;
+
+    // Same transpose detection as the 2D path, but using the last two strides.
+    cublasOperation_t op_b = (b.stride[nd - 1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
+    int ld_b = (int)((b.stride[nd - 1] == 1) ? b.stride[nd - 2] : b.stride[nd - 1]);
+    cublasOperation_t op_a = (a.stride[nd - 1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
+    int ld_a = (int)((a.stride[nd - 1] == 1) ? a.stride[nd - 2] : a.stride[nd - 1]);
+    int ld_c = (int)out.stride[nd - 2];
+
+    // Stride between successive batch slices (in elements).
+    long long sb = (batch > 1) ? (long long)b.stride[nd - 3] : (long long)K * N;
+    long long sa = (batch > 1) ? (long long)a.stride[nd - 3] : (long long)M * K;
+    long long sc = (batch > 1) ? (long long)out.stride[nd - 3] : (long long)M * N;
+
+    // cuBLAS is column-major, so pass (B, A) to compute C = A @ B in row-major.
+    cublasSgemmStridedBatched(cublas_handle(), op_b, op_a, N, M, K,
+                              &alpha, b.data(), ld_b, sb,
+                              a.data(), ld_a, sa,
+                              &beta, out.data(), ld_c, sc, batch);
 }
 
 // ---- fused batch norm — f32 only ----------------------------------------
 
-__global__ void bn_fwd_normalize(
-    f32 *out, f32 *xhat,
-    const f32 *inp,
-    const f32 *mean, const f32 *m2,
-    const f32 *gamma, const f32 *beta,
-    f32 count_inv, f32 eps,
-    u64 stride_c,
-    TensorMeta meta_contig, TensorMeta meta_src,
-    u64 other_dims_size
-) {
+__global__ void bn_fwd_normalize(f32 *out, f32 *xhat, const f32 *inp,
+                                 const f32 *mean, const f32 *m2,
+                                 const f32 *gamma, const f32 *beta,
+                                 f32 count_inv, f32 eps, u64 stride_c,
+                                 TensorMeta meta_contig, TensorMeta meta_src,
+                                 u64 other_dims_size) {
     u32 c = blockIdx.x;
-    f32 mu      = mean[c];
+    f32 mu = mean[c];
     f32 inv_std = rsqrtf(m2[c] * count_inv + eps);
-    f32 g       = gamma[c];
-    f32 b       = beta[c];
-    u64 base    = (u64)c * stride_c;
+    f32 g = gamma[c];
+    f32 b = beta[c];
+    u64 base = (u64)c * stride_c;
 
     for (u64 i = threadIdx.x; i < other_dims_size; i += blockDim.x) {
         u64 off = base + meta_contig.offset_from(i, meta_src);
-        f32 xh  = (inp[off] - mu) * inv_std;
+        f32 xh = (inp[off] - mu) * inv_std;
         xhat[off] = xh;
-        out[off]  = fmaf(g, xh, b);
+        out[off] = fmaf(g, xh, b);
     }
 }
 
-__global__ void bn_bwd_fused(
-    f32 *dx,
-    f32 *d_gamma, f32 *d_beta,
-    const f32 *grad, const f32 *xhat,
-    const f32 *gamma, const f32 *var,
-    f32 m_inv, f32 eps,
-    u64 stride_c,
-    TensorMeta meta_contig, TensorMeta meta_src,
-    u64 other_dims_size
-) {
+__global__ void bn_bwd_fused(f32 *dx, f32 *d_gamma, f32 *d_beta,
+                             const f32 *grad, const f32 *xhat, const f32 *gamma,
+                             const f32 *var, f32 m_inv, f32 eps, u64 stride_c,
+                             TensorMeta meta_contig, TensorMeta meta_src,
+                             u64 other_dims_size) {
     u32 c = blockIdx.x;
-    f32 g       = gamma[c];
+    f32 g = gamma[c];
     f32 inv_std = rsqrtf(var[c] + eps);
-    u64 base    = (u64)c * stride_c;
+    u64 base = (u64)c * stride_c;
 
     __shared__ f32 s_sum_grad[N_THREADS];
     __shared__ f32 s_sum_grad_xhat[N_THREADS];
@@ -758,19 +831,19 @@ __global__ void bn_bwd_fused(
 
     for (u64 i = threadIdx.x; i < other_dims_size; i += blockDim.x) {
         u64 off = base + meta_contig.offset_from(i, meta_src);
-        f32 gv  = grad[off];
-        f32 xh  = xhat[off];
-        sum_grad      += gv;
+        f32 gv = grad[off];
+        f32 xh = xhat[off];
+        sum_grad += gv;
         sum_grad_xhat += gv * xh;
     }
 
-    s_sum_grad[threadIdx.x]      = sum_grad;
+    s_sum_grad[threadIdx.x] = sum_grad;
     s_sum_grad_xhat[threadIdx.x] = sum_grad_xhat;
     __syncthreads();
 
     for (u32 s = blockDim.x / 2; s > 0; s >>= 1) {
         if (threadIdx.x < s) {
-            s_sum_grad[threadIdx.x]      += s_sum_grad[threadIdx.x + s];
+            s_sum_grad[threadIdx.x] += s_sum_grad[threadIdx.x + s];
             s_sum_grad_xhat[threadIdx.x] += s_sum_grad_xhat[threadIdx.x + s];
         }
         __syncthreads();
@@ -778,13 +851,13 @@ __global__ void bn_bwd_fused(
 
     if (threadIdx.x == 0) {
         d_gamma[c] += s_sum_grad_xhat[0];
-        d_beta[c]  += s_sum_grad[0];
+        d_beta[c] += s_sum_grad[0];
     }
     __syncthreads();
 
-    f32 mean_grad      = s_sum_grad[0] * m_inv;
+    f32 mean_grad = s_sum_grad[0] * m_inv;
     f32 mean_grad_xhat = s_sum_grad_xhat[0] * m_inv;
-    f32 coeff          = g * inv_std;
+    f32 coeff = g * inv_std;
 
     for (u64 i = threadIdx.x; i < other_dims_size; i += blockDim.x) {
         u64 off = base + meta_contig.offset_from(i, meta_src);
@@ -795,49 +868,52 @@ __global__ void bn_bwd_fused(
 static void bn_build_meta(u64 &stride_c, u64 &other_dims_size,
                           TensorMeta &meta_contig, TensorMeta &meta_src,
                           const TensorImpl<f32> &t) {
-    stride_c        = t.stride[1];
+    stride_c = t.stride[1];
     other_dims_size = t.numel() / t.shape[1];
     meta_contig.ndim = meta_src.ndim = t.ndim - 1;
     meta_contig.size = meta_src.size = other_dims_size;
     for (u32 d = 0, o = 0; d < t.ndim; d++) {
-        if (d == 1) continue;
+        if (d == 1)
+            continue;
         meta_contig.shape[o] = t.shape[d];
-        meta_src.shape[o]    = t.shape[d];
-        meta_src.stride[o]   = t.stride[d];
+        meta_src.shape[o] = t.shape[d];
+        meta_src.stride[o] = t.stride[d];
         o++;
     }
-    tensor_compute_strides(meta_contig.stride, meta_contig.shape, meta_contig.ndim);
+    tensor_compute_strides(meta_contig.stride, meta_contig.shape,
+                           meta_contig.ndim);
 }
 
 void tensor_cuda_bn_fwd_normalize(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
-                                   const TensorImpl<f32> &inp,
-                                   const TensorImpl<f32> &mean, const TensorImpl<f32> &m2,
-                                   const TensorImpl<f32> &gamma, const TensorImpl<f32> &beta,
-                                   f32 count, f32 eps) {
+                                  const TensorImpl<f32> &inp,
+                                  const TensorImpl<f32> &mean,
+                                  const TensorImpl<f32> &m2,
+                                  const TensorImpl<f32> &gamma,
+                                  const TensorImpl<f32> &beta, f32 count,
+                                  f32 eps) {
     u64 stride_c, other_dims_size;
     TensorMeta meta_contig, meta_src;
     bn_build_meta(stride_c, other_dims_size, meta_contig, meta_src, inp);
     u32 C = inp.shape[1];
-    bn_fwd_normalize<<<C, N_THREADS>>>(
-        out.data(), xhat.data(), inp.data(),
-        mean.data(), m2.data(), gamma.data(), beta.data(),
-        1.0f / count, eps,
-        stride_c, meta_contig, meta_src, other_dims_size);
+    bn_fwd_normalize<<<C, N_THREADS>>>(out.data(), xhat.data(), inp.data(),
+                                       mean.data(), m2.data(), gamma.data(),
+                                       beta.data(), 1.0f / count, eps, stride_c,
+                                       meta_contig, meta_src, other_dims_size);
 }
 
-void tensor_cuda_bn_bwd(TensorImpl<f32> &dx, TensorImpl<f32> &d_gamma, TensorImpl<f32> &d_beta,
-                         const TensorImpl<f32> &grad, const TensorImpl<f32> &xhat,
-                         const TensorImpl<f32> &gamma, const TensorImpl<f32> &var,
-                         f32 m, f32 eps) {
+void tensor_cuda_bn_bwd(TensorImpl<f32> &dx, TensorImpl<f32> &d_gamma,
+                        TensorImpl<f32> &d_beta, const TensorImpl<f32> &grad,
+                        const TensorImpl<f32> &xhat,
+                        const TensorImpl<f32> &gamma,
+                        const TensorImpl<f32> &var, f32 m, f32 eps) {
     u64 stride_c, other_dims_size;
     TensorMeta meta_contig, meta_src;
     bn_build_meta(stride_c, other_dims_size, meta_contig, meta_src, grad);
     u32 C = grad.shape[1];
-    bn_bwd_fused<<<C, N_THREADS>>>(
-        dx.data(), d_gamma.data(), d_beta.data(),
-        grad.data(), xhat.data(), gamma.data(), var.data(),
-        1.0f / m, eps,
-        stride_c, meta_contig, meta_src, other_dims_size);
+    bn_bwd_fused<<<C, N_THREADS>>>(dx.data(), d_gamma.data(), d_beta.data(),
+                                   grad.data(), xhat.data(), gamma.data(),
+                                   var.data(), 1.0f / m, eps, stride_c,
+                                   meta_contig, meta_src, other_dims_size);
 }
 
 // ---- reduction -----------------------------------------------------------
@@ -889,10 +965,11 @@ void tensor_cuda_welford_mean_var(TensorImpl<f32> &mean, TensorImpl<f32> &m2,
     meta_contig.ndim = meta_src.ndim = src.ndim - 1;
     meta_contig.size = meta_src.size = other_dims_size;
     for (u32 d = 0, o = 0; d < src.ndim; d++) {
-        if (d == dim) continue;
+        if (d == dim)
+            continue;
         meta_contig.shape[o] = src.shape[d];
-        meta_src.shape[o]    = src.shape[d];
-        meta_src.stride[o]   = src.stride[d];
+        meta_src.shape[o] = src.shape[d];
+        meta_src.stride[o] = src.stride[d];
         o++;
     }
     tensor_compute_strides(meta_contig.stride, meta_contig.shape,
@@ -938,7 +1015,8 @@ void tensor_cuda_max(TensorImpl<T> &out, const TensorImpl<T> &tensor, u32 dim) {
 }
 
 template <typename T>
-void tensor_cuda_argmax(TensorImpl<u32> &out, const TensorImpl<T> &tensor, u32 dim) {
+void tensor_cuda_argmax(TensorImpl<u32> &out, const TensorImpl<T> &tensor,
+                        u32 dim) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(out.numel(), u64(threads));
     TensorMeta out_meta(out);
@@ -972,11 +1050,32 @@ void tensor_cuda_scatter_add(TensorImpl<T> &out, const TensorImpl<T> &src,
 void tensor_cuda_he_init(TensorImpl<f32> &tensor) {
     curandGenerator_t gen;
     curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
-    curandSetPseudoRandomGeneratorSeed(gen, 1234ULL);
-    u32 in_features = tensor.shape[ROW_DIM(tensor)];
+    static u64 seed_counter = 0;
+    curandSetPseudoRandomGeneratorSeed(gen, (u64)time(nullptr) ^ (seed_counter++ * 6364136223846793005ULL));
+    u32 in_features = tensor.shape[COL_DIM(tensor)];
     float stddev = sqrtf(2.0f / in_features);
     curandGenerateNormal(gen, tensor.data(), tensor.numel(), 0.0f, stddev);
     curandDestroyGenerator(gen);
+}
+
+__global__ void dropout_mask_kernel(f32 *mask, u64 n, f32 p, f32 scale) {
+    u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    mask[i] = (mask[i] >= p) ? scale : 0.0f;
+}
+
+void tensor_cuda_dropout_mask(TensorImpl<f32> &mask, f32 p) {
+    static std::atomic<u64> seed_counter{0};
+    curandGenerator_t gen;
+    curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
+    curandSetPseudoRandomGeneratorSeed(gen, seed_counter.fetch_add(1) ^ 0xdeadbeefULL);
+    curandGenerateUniform(gen, mask.data(), mask.numel());
+    curandDestroyGenerator(gen);
+
+    f32 scale = 1.0f / (1.0f - p);
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(mask.numel(), (u64)threads);
+    dropout_mask_kernel<<<blocks, threads>>>(mask.data(), mask.numel(), p, scale);
 }
 
 // ---- indexing ------------------------------------------------------------
@@ -992,10 +1091,9 @@ void tensor_cuda_index_select(TensorImpl<T> &dst, const TensorImpl<T> &src,
     cudaMallocAsync(&indices_gpu, n_indices * sizeof(u32), 0);
     cudaMemcpyAsync(indices_gpu, indices, n_indices * sizeof(u32),
                     cudaMemcpyHostToDevice, 0);
-    tensor_index_select_kernel<<<blocks, threads>>>(dst_meta, src_meta,
-                                                    dst.data(), src.data(),
-                                                    indices_gpu, n_indices,
-                                                    dim);
+    tensor_index_select_kernel<<<blocks, threads>>>(
+        dst_meta, src_meta, dst.data(), src.data(), indices_gpu, n_indices,
+        dim);
     cudaFreeAsync(indices_gpu, 0);
 }
 
@@ -1034,9 +1132,8 @@ void tensor_cuda_unfold2d(TensorImpl<T> &dst, const TensorImpl<T> &src,
     TensorMeta dst_meta_contig = make_contig_meta(dst);
     TensorMeta src_meta(src);
 
-    tensor_unfold2d_kernel<<<blocks, threads>>>(dst_meta, dst_meta_contig,
-                                                src_meta, params, dst.data(),
-                                                src.data());
+    tensor_unfold2d_kernel<<<blocks, threads>>>(
+        dst_meta, dst_meta_contig, src_meta, params, dst.data(), src.data());
 
     u32 shape_[MAX_NDIM] = {N, L, C * params.k_h * params.k_w};
     tensor_reshape(dst, shape_, 3);
@@ -1067,14 +1164,14 @@ void tensor_cuda_fold2d(TensorImpl<T> &dst, const TensorImpl<T> &col,
 
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(col.numel(), u64(threads));
-    tensor_fold2d_kernel<<<blocks, threads>>>(col_meta, col_meta_contig,
-                                              dst_meta, params, col.data(),
-                                              dst.data());
+    tensor_fold2d_kernel<<<blocks, threads>>>(
+        col_meta, col_meta_contig, dst_meta, params, col.data(), dst.data());
 }
 
 // ---- comparison — f32 only ----------------------------------------------
 
-b32 tensor_cuda_equals(const TensorImpl<f32> &a, const TensorImpl<f32> &b, f32 tol) {
+b32 tensor_cuda_equals(const TensorImpl<f32> &a, const TensorImpl<f32> &b,
+                       f32 tol) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(a.numel(), (u64)threads);
     u32 *ok_gpu;
@@ -1088,47 +1185,45 @@ b32 tensor_cuda_equals(const TensorImpl<f32> &a, const TensorImpl<f32> &b, f32 t
     return (b32)ok_cpu;
 }
 
-// ── Explicit instantiations ───────────────────────────────────────────────────
+// ── Explicit instantiations
+// ───────────────────────────────────────────────────
 
 #define INST(T)                                                                \
-    template void tensor_cuda_copy(TensorImpl<T> &, const TensorImpl<T> &);   \
-    template void tensor_cuda_contiguous(TensorImpl<T> &, CudaMemArena *);    \
-    template void tensor_cuda_fill(TensorImpl<T> &, T);                       \
-    template void tensor_cuda_clear(TensorImpl<T> &);                         \
-    template void tensor_cuda_add(TensorImpl<T> &, const TensorImpl<T> &,     \
+    template void tensor_cuda_copy(TensorImpl<T> &, const TensorImpl<T> &);    \
+    template void tensor_cuda_contiguous(TensorImpl<T> &, CudaMemArena *);     \
+    template void tensor_cuda_fill(TensorImpl<T> &, T);                        \
+    template void tensor_cuda_clear(TensorImpl<T> &);                          \
+    template void tensor_cuda_add(TensorImpl<T> &, const TensorImpl<T> &,      \
                                   const TensorImpl<T> &);                      \
-    template void tensor_cuda_sub(TensorImpl<T> &, const TensorImpl<T> &,     \
+    template void tensor_cuda_sub(TensorImpl<T> &, const TensorImpl<T> &,      \
                                   const TensorImpl<T> &);                      \
-    template void tensor_cuda_mul(TensorImpl<T> &, const TensorImpl<T> &,     \
+    template void tensor_cuda_mul(TensorImpl<T> &, const TensorImpl<T> &,      \
                                   const TensorImpl<T> &);                      \
-    template void tensor_cuda_div(TensorImpl<T> &, const TensorImpl<T> &,     \
+    template void tensor_cuda_div(TensorImpl<T> &, const TensorImpl<T> &,      \
                                   const TensorImpl<T> &);                      \
-    template void tensor_cuda_equal(TensorImpl<T> &, const TensorImpl<T> &,   \
+    template void tensor_cuda_equal(TensorImpl<T> &, const TensorImpl<T> &,    \
                                     const TensorImpl<T> &);                    \
-    template void tensor_cuda_add(TensorImpl<T> &, const TensorImpl<T> &, T); \
-    template void tensor_cuda_sub(TensorImpl<T> &, const TensorImpl<T> &, T); \
-    template void tensor_cuda_mul(TensorImpl<T> &, const TensorImpl<T> &, T); \
-    template void tensor_cuda_div(TensorImpl<T> &, const TensorImpl<T> &, T); \
-    template void tensor_cuda_sum(TensorImpl<T> &, const TensorImpl<T> &);    \
-    template void tensor_cuda_sum(TensorImpl<T> &, const TensorImpl<T> &,     \
+    template void tensor_cuda_add(TensorImpl<T> &, const TensorImpl<T> &, T);  \
+    template void tensor_cuda_sub(TensorImpl<T> &, const TensorImpl<T> &, T);  \
+    template void tensor_cuda_mul(TensorImpl<T> &, const TensorImpl<T> &, T);  \
+    template void tensor_cuda_div(TensorImpl<T> &, const TensorImpl<T> &, T);  \
+    template void tensor_cuda_sum(TensorImpl<T> &, const TensorImpl<T> &);     \
+    template void tensor_cuda_sum(TensorImpl<T> &, const TensorImpl<T> &,      \
                                   u32);                                        \
-    template void tensor_cuda_max(TensorImpl<T> &, const TensorImpl<T> &);    \
-    template void tensor_cuda_max(TensorImpl<T> &, const TensorImpl<T> &,     \
+    template void tensor_cuda_max(TensorImpl<T> &, const TensorImpl<T> &);     \
+    template void tensor_cuda_max(TensorImpl<T> &, const TensorImpl<T> &,      \
                                   u32);                                        \
-    template void tensor_cuda_argmax(TensorImpl<u32> &,                       \
-                                     const TensorImpl<T> &, u32);              \
-    template void tensor_cuda_scatter_add(TensorImpl<T> &,                    \
-                                          const TensorImpl<T> &,               \
-                                          const TensorImpl<u32> &, u32);       \
-    template void tensor_cuda_index_select(TensorImpl<T> &,                   \
-                                           const TensorImpl<T> &, const u32 *, \
-                                           u32, u32);                          \
-    template void tensor_cuda_index_select(TensorImpl<T> &,                   \
-                                           const TensorImpl<T> &,              \
-                                           const TensorImpl<u32> &, u32);      \
-    template void tensor_cuda_unfold2d(TensorImpl<T> &,                       \
-                                       const TensorImpl<T> &, Unfold2dParams); \
-    template void tensor_cuda_fold2d(TensorImpl<T> &, const TensorImpl<T> &,  \
+    template void tensor_cuda_argmax(TensorImpl<u32> &, const TensorImpl<T> &, \
+                                     u32);                                     \
+    template void tensor_cuda_scatter_add(                                     \
+        TensorImpl<T> &, const TensorImpl<T> &, const TensorImpl<u32> &, u32); \
+    template void tensor_cuda_index_select(                                    \
+        TensorImpl<T> &, const TensorImpl<T> &, const u32 *, u32, u32);        \
+    template void tensor_cuda_index_select(                                    \
+        TensorImpl<T> &, const TensorImpl<T> &, const TensorImpl<u32> &, u32); \
+    template void tensor_cuda_unfold2d(TensorImpl<T> &, const TensorImpl<T> &, \
+                                       Unfold2dParams);                        \
+    template void tensor_cuda_fold2d(TensorImpl<T> &, const TensorImpl<T> &,   \
                                      Unfold2dParams);
 
 INST(f32)

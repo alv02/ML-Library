@@ -58,6 +58,32 @@ static void test_add(const char *name, const char *dir) {
     check_tensors(name, out_cpu, exp);
 }
 
+static void test_mat_mul_batched(const char *name, const char *dir,
+                                  bool trans_a = false, bool trans_b = false) {
+    char pa[256], pb[256], pout[256];
+    snprintf(pa,   sizeof(pa),   "../data/test/%s/a.npy",   dir);
+    snprintf(pb,   sizeof(pb),   "../data/test/%s/b.npy",   dir);
+    snprintf(pout, sizeof(pout), "../data/test/%s/out.npy", dir);
+
+    Tensor<f32> a   = tensor_load(pa,   g_on_gpu);
+    Tensor<f32> b   = tensor_load(pb,   g_on_gpu);
+    Tensor<f32> exp = tensor_load(pout, false);
+
+    if (!a || !b || !exp) {
+        printf("  [%sFAIL%s] %s — could not load data files\n", RED, RESET, name);
+        failed++;
+        return;
+    }
+
+    if (trans_a) tensor_transpose(a, a->ndim - 2, a->ndim - 1);
+    if (trans_b) tensor_transpose(b, b->ndim - 2, b->ndim - 1);
+
+    Tensor<f32> out     = tensor_mat_mul(a, b);
+    sync();
+    Tensor<f32> out_cpu = tensor_to_cpu(out);
+    check_tensors(name, out_cpu, exp, 1e-4f);
+}
+
 static void test_mat_mul(const char *name, const char *dir, bool trans_a = false) {
     char pa[256], pb[256], pout[256];
     snprintf(pa,   sizeof(pa),   "../data/test/%s/a.npy",   dir);
@@ -330,6 +356,13 @@ int main(int argc, char **argv) {
     test_mat_mul("square        (4,4)@(4,4)",   "matmul_square");
     test_mat_mul("rect          (3,4)@(4,5)",   "matmul_rect");
     test_mat_mul("transposed A  (4,3)^T@(4,5)", "matmul_transA", true);
+
+    printf("\n-- tensor_mat_mul batched --\n");
+    test_mat_mul_batched("3D             [2,3,4]@[2,4,5]→[2,3,5]",       "matmul_batched_3d");
+    test_mat_mul_batched("3D trans_b     [2,3,4]@[2,5,4]^T→[2,3,5]",    "matmul_batched_3d_transB", false, true);
+    test_mat_mul_batched("3D trans_a     [2,4,3]^T@[2,4,5]→[2,3,5]",    "matmul_batched_3d_transA", true,  false);
+    test_mat_mul_batched("4D             [2,3,4,5]@[2,3,5,6]→[2,3,4,6]","matmul_batched_4d");
+    test_mat_mul_batched("4D trans_b     [2,3,4,5]@[2,3,6,5]^T→[2,3,4,6]","matmul_batched_4d_transB", false, true);
 
     printf("\n-- tensor_sum --\n");
     test_sum("single element  (1,1)",    "sum_single");

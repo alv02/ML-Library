@@ -55,14 +55,15 @@ void tensor_cuda_contiguous(TensorImpl<T> &t, CudaMemArena *arena = nullptr);
 
 // ---- fill / clear --------------------------------------------------------
 
-template <typename T>
-void tensor_cuda_fill(TensorImpl<T> &tensor, T value);
-template <typename T>
-void tensor_cuda_clear(TensorImpl<T> &tensor);
+template <typename T> void tensor_cuda_fill(TensorImpl<T> &tensor, T value);
+template <typename T> void tensor_cuda_clear(TensorImpl<T> &tensor);
 
 // ---- activations — f32 only ----------------------------------------------
 
 void tensor_cuda_relu(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
+void tensor_cuda_gelu(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
+void tensor_cuda_gelu_backward(TensorImpl<f32> &out, const TensorImpl<f32> &grad,
+                               const TensorImpl<f32> &input);
 void tensor_cuda_exp(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
 void tensor_cuda_log(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
 void tensor_cuda_sqrt(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
@@ -84,8 +85,10 @@ void tensor_cuda_div(TensorImpl<T> &out, const TensorImpl<T> &a,
 template <typename T>
 void tensor_cuda_equal(TensorImpl<T> &out, const TensorImpl<T> &a,
                        const TensorImpl<T> &b);
-void tensor_cuda_relu_backward(TensorImpl<f32> &out, const TensorImpl<f32> &grad,
+void tensor_cuda_relu_backward(TensorImpl<f32> &out,
+                               const TensorImpl<f32> &grad,
                                const TensorImpl<f32> &in);
+void tensor_cuda_dropout_mask(TensorImpl<f32> &mask, f32 p);
 
 // ---- scalar operations ---------------------------------------------------
 
@@ -104,6 +107,8 @@ void tensor_cuda_mat_mul(TensorImpl<f32> &out, const TensorImpl<f32> &a,
                          const TensorImpl<f32> &b, b32 clear_out);
 void tensor_cuda_mat_mul_cublas(TensorImpl<f32> &out, const TensorImpl<f32> &a,
                                 const TensorImpl<f32> &b, b32 clear_out);
+void tensor_cuda_mat_mul_batched(TensorImpl<f32> &out, const TensorImpl<f32> &a,
+                                 const TensorImpl<f32> &b, b32 clear_out);
 
 // ---- fused batch norm — f32 only ----------------------------------------
 
@@ -112,8 +117,8 @@ void tensor_cuda_bn_fwd_normalize(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
                                   const TensorImpl<f32> &mean,
                                   const TensorImpl<f32> &m2,
                                   const TensorImpl<f32> &gamma,
-                                  const TensorImpl<f32> &beta,
-                                  f32 count, f32 eps);
+                                  const TensorImpl<f32> &beta, f32 count,
+                                  f32 eps);
 void tensor_cuda_bn_bwd(TensorImpl<f32> &dx, TensorImpl<f32> &d_gamma,
                         TensorImpl<f32> &d_beta, const TensorImpl<f32> &grad,
                         const TensorImpl<f32> &xhat,

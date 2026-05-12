@@ -1,10 +1,11 @@
 #include "../include/layers.hpp"
 
-// ── Linear ────────────────────────────────────────────────────────────────────
+// ── Linear
+// ────────────────────────────────────────────────────────────────────
 
 Linear::Linear(u32 in_features, u32 out_features, bool on_gpu,
                CudaMemArena *perm_arena) {
-    u32 w_shape[2] = {in_features, out_features};
+    u32 w_shape[2] = {out_features, in_features};
     W = Var(Tensor<f32>::make(2, w_shape, on_gpu, perm_arena),
             FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
     tensor_he_init(W->data);
@@ -15,15 +16,16 @@ Linear::Linear(u32 in_features, u32 out_features, bool on_gpu,
 }
 
 Var Linear::forward(Var input, CudaMemArena *arena) {
-    return add(mat_mul(input, W, arena), b, arena);
+    return add(mat_mul(input, transpose(W, 0, 1, arena), arena), b, arena);
 }
 
-// ── Conv2d ────────────────────────────────────────────────────────────────────
+// ── Conv2d
+// ────────────────────────────────────────────────────────────────────
 
 Conv2d::Conv2d(u32 C_in, u32 C_out, Unfold2dParams params, bool on_gpu,
                CudaMemArena *perm_arena)
     : params(params) {
-    u32 w_shape[2] = {C_in * params.k_h * params.k_w, C_out};
+    u32 w_shape[2] = {C_out, C_in * params.k_h * params.k_w};
     W = Var(Tensor<f32>::make(2, w_shape, on_gpu, perm_arena),
             FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
     tensor_he_init(W->data);
@@ -34,10 +36,11 @@ Conv2d::Conv2d(u32 C_in, u32 C_out, Unfold2dParams params, bool on_gpu,
 }
 
 Var Conv2d::forward(Var input, CudaMemArena *arena) {
-    return add(conv2d(input, W, params, arena), b, arena);
+    return add(conv2d(input, transpose(W, 0, 1, arena), params, arena), b, arena);
 }
 
-// ── BatchNorm2d ───────────────────────────────────────────────────────────────
+// ── BatchNorm2d
+// ───────────────────────────────────────────────────────────────
 
 BatchNorm2d::BatchNorm2d(u32 C, bool on_gpu, CudaMemArena *perm_arena,
                          f32 momentum, f32 eps)
@@ -58,26 +61,32 @@ BatchNorm2d::BatchNorm2d(u32 C, bool on_gpu, CudaMemArena *perm_arena,
 }
 
 Var BatchNorm2d::forward(Var input, CudaMemArena *arena) {
-    return batch_norm(input, gamma, beta, running_mean, running_var,
-                      training, momentum, eps, arena);
+    return batch_norm(input, gamma, beta, running_mean, running_var, training,
+                      momentum, eps, arena);
 }
 
-// ── ResBlock ──────────────────────────────────────────────────────────────────
+// ── ResBlock
+// ──────────────────────────────────────────────────────────────────
 
 ResBlock::ResBlock(u32 C_in, u32 C_out, u32 stride, bool on_gpu,
                    CudaMemArena *perm_arena) {
     // residual path: Conv(stride) → BN → ReLU → Conv(1) → BN
-    // ReLU is NOT added here — it's applied after the skip addition in forward()
-    residual.add<Conv2d>(C_in, C_out, Unfold2dParams(3, stride, 1), on_gpu, perm_arena);
+    // ReLU is NOT added here — it's applied after the skip addition in
+    // forward()
+    residual.add<Conv2d>(C_in, C_out, Unfold2dParams(3, stride, 1), on_gpu,
+                         perm_arena);
     residual.add<BatchNorm2d>(C_out, on_gpu, perm_arena);
     residual.add<ReLU>();
-    residual.add<Conv2d>(C_out, C_out, Unfold2dParams(3, 1, 1), on_gpu, perm_arena);
+    residual.add<Conv2d>(C_out, C_out, Unfold2dParams(3, 1, 1), on_gpu,
+                         perm_arena);
     residual.add<BatchNorm2d>(C_out, on_gpu, perm_arena);
 
-    // projection shortcut: 1×1 Conv(stride) → BN to match spatial dims and channels
+    // projection shortcut: 1×1 Conv(stride) → BN to match spatial dims and
+    // channels
     has_proj = (C_in != C_out || stride != 1);
     if (has_proj) {
-        proj.add<Conv2d>(C_in, C_out, Unfold2dParams(1, stride, 0), on_gpu, perm_arena);
+        proj.add<Conv2d>(C_in, C_out, Unfold2dParams(1, stride, 0), on_gpu,
+                         perm_arena);
         proj.add<BatchNorm2d>(C_out, on_gpu, perm_arena);
     }
 }

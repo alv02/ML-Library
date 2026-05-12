@@ -383,4 +383,42 @@ save_welford("welford_4d_8n16c_8x8", a, dim=1)
 a = np.random.randn(16, 32, 16, 16).astype(np.float32)
 save_welford("welford_4d_16n32c_16x16", a, dim=1)
 
+# ── tensor_mat_mul batched ───────────────────────────────────────────────────
+# trans_a/trans_b indicate the expected computation; the raw tensors are always
+# saved in their pre-transpose shape so the C++ test can transpose with strides
+# and verify the non-contiguous path through cuBLAS.
+
+def save_matmul_batched(dir, a, b, trans_a=False, trans_b=False):
+    os.makedirs(dir, exist_ok=True)
+    at = np.swapaxes(a, -1, -2) if trans_a else a
+    bt = np.swapaxes(b, -1, -2) if trans_b else b
+    np.save(f"{dir}/a.npy",   a.astype(np.float32))   # original shape, C++ transposes
+    np.save(f"{dir}/b.npy",   b.astype(np.float32))
+    np.save(f"{dir}/out.npy", (at @ bt).astype(np.float32))
+
+# 3D basic: [2,3,4] @ [2,4,5] → [2,3,5]
+a = np.random.randn(2, 3, 4).astype(np.float32)
+b = np.random.randn(2, 4, 5).astype(np.float32)
+save_matmul_batched("matmul_batched_3d", a, b)
+
+# 3D trans_b: [2,3,4] @ [2,5,4]^T → [2,3,5]  (attention forward: Q @ K^T)
+a = np.random.randn(2, 3, 4).astype(np.float32)
+b = np.random.randn(2, 5, 4).astype(np.float32)   # stored [2,5,4], transposed in C++
+save_matmul_batched("matmul_batched_3d_transB", a, b, trans_b=True)
+
+# 3D trans_a: [2,4,3]^T @ [2,4,5] → [2,3,5]  (attention backward: dV, dK)
+a = np.random.randn(2, 4, 3).astype(np.float32)   # stored [2,4,3], transposed in C++
+b = np.random.randn(2, 4, 5).astype(np.float32)
+save_matmul_batched("matmul_batched_3d_transA", a, b, trans_a=True)
+
+# 4D basic: [2,3,4,5] @ [2,3,5,6] → [2,3,4,6]  (multi-head attention values)
+a = np.random.randn(2, 3, 4, 5).astype(np.float32)
+b = np.random.randn(2, 3, 5, 6).astype(np.float32)
+save_matmul_batched("matmul_batched_4d", a, b)
+
+# 4D trans_b: [2,3,4,5] @ [2,3,6,5]^T → [2,3,4,6]  (multi-head Q @ K^T)
+a = np.random.randn(2, 3, 4, 5).astype(np.float32)
+b = np.random.randn(2, 3, 6, 5).astype(np.float32)   # stored [2,3,6,5], transposed in C++
+save_matmul_batched("matmul_batched_4d_transB", a, b, trans_b=True)
+
 print("Test data generated.")
