@@ -51,16 +51,19 @@ static TensorU32 gather_row_idx(const u32 *row_ids, u32 n, u32 ndim,
     return idx;
 }
 
-bool DataLoader::next(Tensor<f32> &X_batch, Tensor<f32> &y_batch, CudaMemArena *arena) {
+bool DataLoader::next(Tensor<f32> &X_batch, Tensor<f32> &y_batch,
+                      CudaMemArena *arena) {
     if (cursor >= n_samples)
         return false;
     u32 end = std::min(cursor + batch_size, n_samples);
     u32 n = end - cursor;
     const u32 *row_ids = indices.data() + cursor;
-    TensorU32 X_idx = gather_row_idx(row_ids, n, X->ndim, X->shape, X->on_gpu());
-    TensorU32 y_idx = gather_row_idx(row_ids, n, y->ndim, y->shape, y->on_gpu());
-    X_batch = gather(X, X_idx, 0, arena);
-    y_batch = gather(y, y_idx, 0, arena);
+    TensorU32 X_idx =
+        gather_row_idx(row_ids, n, X->ndim, X->shape, X->on_gpu());
+    TensorU32 y_idx =
+        gather_row_idx(row_ids, n, y->ndim, y->shape, y->on_gpu());
+    X_batch = tensor_gather(X, X_idx, 0, arena);
+    y_batch = tensor_gather(y, y_idx, 0, arena);
     cursor = end;
     return true;
 }

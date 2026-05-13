@@ -7,9 +7,25 @@
 // [M,K]×[K,N]→[M,N].
 Var mat_mul(Var a, Var b, CudaMemArena *arena = nullptr);
 // Zero-copy shape reinterpretation (copies only if input is non-contiguous).
-Var reshape(Var a, const u32 *shape, u32 ndim, CudaMemArena *arena = nullptr);
-// Zero-copy dim swap (view with swapped strides). Backward swaps the same dims.
-Var transpose(Var a, u32 d0, u32 d1, CudaMemArena *arena = nullptr);
+// For f32: differentiable (backward reshapes grad back). For other T: metadata
+// only.
+template <typename T = f32>
+Var_<T> reshape(Var_<T> a, const u32 *shape, u32 ndim,
+                CudaMemArena *arena = nullptr);
+// Zero-copy dim swap. For f32: backward swaps the same dims. For other T:
+// metadata only.
+template <typename T = f32>
+Var_<T> transpose(Var_<T> a, u32 d0, u32 d1, CudaMemArena *arena = nullptr);
+// Insert a size-1 dim at position `dim`. For f32: backward squeezes it out.
+template <typename T = f32>
+Var_<T> unsqueeze(Var_<T> a, u32 dim, CudaMemArena *arena = nullptr);
+// Expand to target shape via stride-0 views (numpy left-alignment). For f32:
+// backward sums over all broadcast dims. For other T: metadata only.
+template <typename T = f32>
+Var_<T> broadcast_to(Var_<T> a, const u32 *shape, u32 ndim,
+                     CudaMemArena *arena = nullptr);
+// Differentiable gather. Backward accumulates via scatter_add.
+Var gather(Var src, TensorU32 indices, u32 dim, CudaMemArena *arena = nullptr);
 Var add(Var a, Var b, CudaMemArena *arena = nullptr);
 // Elementwise multiply by a constant scalar — gradient is grad*scalar.
 Var mul(Var a, f32 scalar, CudaMemArena *arena = nullptr);
@@ -30,16 +46,7 @@ Var conv2d(Var input, Var weight, Unfold2dParams params,
 // input [N, C, H, W] → output [N, C, L_h, L_w]
 Var max_pool2d(Var input, Unfold2dParams params, CudaMemArena *arena = nullptr);
 
-// input [N, C, ...], gamma/beta [C], running_mean/var shape [1,C,1,...,1]
-// matching input ndim Normalizes per channel (dim 1) over all other dims —
-// works for dense (N,C) and conv (N,C,H,W) etc. training=true  → normalize with
-// biased batch variance (divide by N);
-//                  updates running_var with unbiased variance (divide by N-1)
-//                  via EMA: running = (1-momentum)*running + momentum*batch
-// training=false → normalize with running stats, no grad_fn
-// momentum: weight given to the incoming batch estimate (PyTorch convention,
-// default 0.1) input [..., D], gamma [D], beta [D] — normalizes over last
-// dimension
+// input [..., D], gamma [D], beta [D] — normalizes over last dimension
 Var layer_norm(Var input, Var gamma, Var beta, f32 eps = 1e-5f,
                CudaMemArena *arena = nullptr);
 
@@ -47,10 +54,6 @@ Var batch_norm(Var input, Var gamma, Var beta, Tensor<f32> running_mean,
                Tensor<f32> running_var, bool training = true,
                f32 momentum = 0.1f, f32 eps = 1e-5f,
                CudaMemArena *arena = nullptr);
-
-// weight [vocab_size, d_model], indices [B, T] (VarU32, no gradient)
-// → out [B, T, d_model]
-Var embedding(Var weight, VarU32 indices, CudaMemArena *arena = nullptr);
 
 // training=true: zeros p fraction of elements and scales remainder by 1/(1-p).
 // training=false or p==0: identity (no-op, returns input directly).

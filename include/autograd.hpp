@@ -13,14 +13,10 @@ enum var_flags {
 
 struct Function;
 
-// ── VarImpl_<T> ───────────────────────────────────────────────────────────────
-// Internal template. Use the aliases below (Var, VarU32, …) in user code.
-
-template <typename T>
-struct VarImpl_ {
+template <typename T = f32> struct VarImpl_ {
     u32 flags;
     Tensor<T> data;
-    Tensor<T> grad;       // same type as data; left undefined for non-differentiable T
+    Tensor<T> grad;
     std::shared_ptr<Function> grad_fn;
 
     VarImpl_(Tensor<T> data, u32 flags)
@@ -28,13 +24,7 @@ struct VarImpl_ {
     ~VarImpl_() = default;
 };
 
-// Backward-compat alias so existing code that names VarImpl still compiles.
-using VarImpl = VarImpl_<f32>;
-
-// ── Var_<T> ───────────────────────────────────────────────────────────────────
-
-template <typename T>
-struct Var_ {
+template <typename T = f32> struct Var_ {
     std::shared_ptr<VarImpl_<T>> impl_;
 
     Var_() = default;
@@ -49,9 +39,10 @@ struct Var_ {
 
 // ── Public aliases ────────────────────────────────────────────────────────────
 
-using Var   = Var_<f32>;   // differentiable — existing code unchanged
-using VarU32 = Var_<u32>;  // non-differentiable integer indices
-using VarI32 = Var_<i32>;
+using Var     = Var_<f32>;
+using VarImpl = VarImpl_<f32>;
+using VarU32  = Var_<u32>;
+using VarI32  = Var_<i32>;
 
 // ── Function ──────────────────────────────────────────────────────────────────
 

@@ -77,7 +77,18 @@ EmbeddingLayer::EmbeddingLayer(u32 vocab_size, u32 d_model, bool on_gpu,
 }
 
 Var EmbeddingLayer::forward(VarU32 indices, CudaMemArena *arena) {
-    return embedding(weight, indices, arena);
+    u32 D        = weight->data->shape[1];
+    u32 idx_ndim = indices->data->ndim;
+    u32 numel    = indices->data->numel();
+    u32 flat[1]  = {numel};
+    u32 bcast[2] = {numel, D};
+    VarU32 idx_b = broadcast_to(unsqueeze(reshape(indices, flat, 1, arena), 1, arena),
+                                bcast, 2, arena);
+    Var out_flat = gather(weight, idx_b->data, 0, arena);
+    u32 out_shape[MAX_NDIM];
+    memcpy(out_shape, indices->data->shape, idx_ndim * sizeof(u32));
+    out_shape[idx_ndim] = D;
+    return reshape(out_flat, out_shape, idx_ndim + 1, arena);
 }
 
 // ── PositionalEmbeddingLayer ──────────────────────────────────────────────────
@@ -98,7 +109,13 @@ PositionalEmbeddingLayer::PositionalEmbeddingLayer(u32 max_seq_len, u32 d_model,
 Var PositionalEmbeddingLayer::forward(u32 T, CudaMemArena *arena) {
     TensorU32 pos = tensor_view<u32>(positions);
     pos->shape[0] = T;
-    return embedding(weight, VarU32(pos), arena);
+    VarU32 indices(pos);
+    u32 D        = weight->data->shape[1];
+    u32 bcast[2] = {T, D};
+    VarU32 idx_b = broadcast_to(unsqueeze(indices, 1, arena), bcast, 2, arena);
+    Var out_flat = gather(weight, idx_b->data, 0, arena);
+    u32 out_shape[2] = {T, D};
+    return reshape(out_flat, out_shape, 2, arena);
 }
 
 // ── InputEmbedding ────────────────────────────────────────────────────────────

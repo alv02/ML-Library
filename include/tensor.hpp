@@ -345,11 +345,11 @@ void tensor_he_init(Tensor<f32> &t);
 // ---- indexing ---------------------------------------------------------------
 
 template <typename T>
-b32 gather(Tensor<T> &dst, const Tensor<T> &src, const TensorU32 &indices,
-           u32 dim);
+b32 tensor_gather(Tensor<T> &dst, const Tensor<T> &src,
+                  const TensorU32 &indices, u32 dim);
 template <typename T>
-Tensor<T> gather(const Tensor<T> &src, const TensorU32 &indices, u32 dim,
-                 CudaMemArena *arena = nullptr);
+Tensor<T> tensor_gather(const Tensor<T> &src, const TensorU32 &indices, u32 dim,
+                        CudaMemArena *arena = nullptr);
 // ---- spatial ----------------------------------------------------------------
 
 template <typename T>
@@ -448,6 +448,9 @@ inline void expanded_stride(const TensorImpl<T> &t, u32 expanded_ndim,
     }
 }
 
+// Left-pad t with size-1/stride-0 dims so t.ndim == expanded_ndim.
+// Existing size-1 dims also get stride=0. Shapes stay minimal (all new dims
+// are size 1); use tensor_broadcast_to if you know the target shape.
 template <typename T>
 inline b32 tensor_expand_shape(TensorImpl<T> &t, u32 expanded_ndim) {
     if (t.ndim > expanded_ndim)
@@ -463,6 +466,26 @@ inline b32 tensor_expand_shape(TensorImpl<T> &t, u32 expanded_ndim) {
         t.stride[i] = new_stride[i];
     }
     t.ndim = expanded_ndim;
+    return true;
+}
+
+// General broadcast-to: left-pad to target_ndim, then expand every
+// broadcast dim (stride==0) to the matching size in target_shape.
+// Returns false if a non-broadcast dim doesn't match target_shape.
+// Handles numpy-style right-alignment: to broadcast a middle dim
+// (e.g. [C] → [N,C,H,W]) unsqueeze to [1,C,1,1] first.
+template <typename T>
+inline b32 tensor_broadcast_to(TensorImpl<T> &t, const u32 *target_shape,
+                               u32 target_ndim) {
+    if (!tensor_expand_shape(t, target_ndim))
+        return false;
+    for (u32 i = 0; i < target_ndim; i++) {
+        if (t.stride[i] == 0) {
+            t.shape[i] = target_shape[i];
+        } else if (t.shape[i] != target_shape[i]) {
+            return false;
+        }
+    }
     return true;
 }
 

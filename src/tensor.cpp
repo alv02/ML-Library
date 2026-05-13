@@ -1149,8 +1149,8 @@ b32 tensor_scatter_add(Tensor<T> &out, const Tensor<T> &src,
 // ---- indexing ------------------------------------------------------------
 
 template <typename T>
-b32 gather(Tensor<T> &dst, const Tensor<T> &src, const TensorU32 &indices,
-           u32 dim) {
+b32 tensor_gather(Tensor<T> &dst, const Tensor<T> &src,
+                  const TensorU32 &indices, u32 dim) {
     if (dim >= src->ndim) {
         printf("gather: dim out of range\n");
         return false;
@@ -1192,13 +1192,13 @@ b32 gather(Tensor<T> &dst, const Tensor<T> &src, const TensorU32 &indices,
 }
 
 template <typename T>
-Tensor<T> gather(const Tensor<T> &src, const TensorU32 &indices, u32 dim,
-                 CudaMemArena *arena) {
+Tensor<T> tensor_gather(const Tensor<T> &src, const TensorU32 &indices, u32 dim,
+                        CudaMemArena *arena) {
 
     Tensor<T> dst =
         Tensor<T>::make(indices->ndim, indices->shape, src->on_gpu(), arena);
 
-    if (!gather(dst, src, indices, dim))
+    if (!tensor_gather(dst, src, indices, dim))
         return Tensor<T>{};
     return dst;
 }
@@ -1382,10 +1382,10 @@ b32 tensor_equals(const Tensor<f32> &a, const Tensor<f32> &b, f32 tol) {
                                      CudaMemArena *);                          \
     template b32 tensor_scatter_add(Tensor<T> &, const Tensor<T> &,            \
                                     const TensorU32 &, u32);                   \
-    template b32 gather(Tensor<T> &, const Tensor<T> &, const TensorU32 &,     \
-                        u32);                                                  \
-    template Tensor<T> gather(const Tensor<T> &, const TensorU32 &, u32,       \
-                              CudaMemArena *);                                 \
+    template b32 tensor_gather(Tensor<T> &, const Tensor<T> &,                 \
+                               const TensorU32 &, u32);                        \
+    template Tensor<T> tensor_gather(const Tensor<T> &, const TensorU32 &,     \
+                                     u32, CudaMemArena *);                     \
     template b32 tensor_unfold2d(Tensor<T> &, const Tensor<T> &,               \
                                  Unfold2dParams);                              \
     template Tensor<T> tensor_unfold2d(const Tensor<T> &, Unfold2dParams,      \
