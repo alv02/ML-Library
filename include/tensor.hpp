@@ -182,11 +182,18 @@ b32 tensor_reshape(TensorImpl<T> &t, const u32 *shape, u32 ndim,
 template <typename T>
 b32 tensor_reshape(Tensor<T> &t, const u32 *shape, u32 ndim,
                    CudaMemArena *arena = nullptr);
+template <typename T>
+
+b32 tensor_flatten(Tensor<T> &t, u32 start_dim, u32 end_dim,
+                   CudaMemArena *arena = nullptr);
+
 template <typename T> void tensor_print(const TensorImpl<T> &t);
 
-// ---- fill -------------------------------------------------------------------
+// ---- fill / arange ----------------------------------------------------------
 
 template <typename T> void tensor_fill(Tensor<T> &t, T value);
+// Fills t in-place with 0, 1, …, numel-1 cast to T.
+template <typename T> void tensor_arange(Tensor<T> &t);
 
 // ---- f32 activations --------------------------------------------------------
 
@@ -196,7 +203,8 @@ b32 tensor_gelu(Tensor<f32> &dst, const Tensor<f32> &src);
 Tensor<f32> tensor_gelu(const Tensor<f32> &src, CudaMemArena *arena = nullptr);
 b32 tensor_gelu_backward(Tensor<f32> &out, const Tensor<f32> &grad,
                          const Tensor<f32> &input);
-Tensor<f32> tensor_gelu_backward(const Tensor<f32> &grad, const Tensor<f32> &input,
+Tensor<f32> tensor_gelu_backward(const Tensor<f32> &grad,
+                                 const Tensor<f32> &input,
                                  CudaMemArena *arena = nullptr);
 b32 tensor_exp(Tensor<f32> &dst, const Tensor<f32> &src);
 Tensor<f32> tensor_exp(const Tensor<f32> &src, CudaMemArena *arena = nullptr);
@@ -241,14 +249,14 @@ Tensor<f32> tensor_relu_backward(const Tensor<f32> &grad, const Tensor<f32> &in,
 // Fills mask in-place: each element is 0 (dropped, prob p) or 1/(1-p) (kept).
 void tensor_dropout_mask(Tensor<f32> &mask, f32 p);
 
-b32 tensor_softmax(Tensor<f32> &out, const Tensor<f32> &in,
-                   i32 dim = -1, CudaMemArena *arena = nullptr);
-Tensor<f32> tensor_softmax(const Tensor<f32> &in,
-                           i32 dim = -1, CudaMemArena *arena = nullptr);
-b32 tensor_log_softmax(Tensor<f32> &out, const Tensor<f32> &in,
-                       i32 dim = -1, CudaMemArena *arena = nullptr);
-Tensor<f32> tensor_log_softmax(const Tensor<f32> &in,
-                               i32 dim = -1, CudaMemArena *arena = nullptr);
+b32 tensor_softmax(Tensor<f32> &out, const Tensor<f32> &in, i32 dim = -1,
+                   CudaMemArena *arena = nullptr);
+Tensor<f32> tensor_softmax(const Tensor<f32> &in, i32 dim = -1,
+                           CudaMemArena *arena = nullptr);
+b32 tensor_log_softmax(Tensor<f32> &out, const Tensor<f32> &in, i32 dim = -1,
+                       CudaMemArena *arena = nullptr);
+Tensor<f32> tensor_log_softmax(const Tensor<f32> &in, i32 dim = -1,
+                               CudaMemArena *arena = nullptr);
 
 // ---- scalar ops -------------------------------------------------------------
 
@@ -320,13 +328,16 @@ void tensor_bn_bwd(Tensor<f32> &dx, Tensor<f32> &d_gamma, Tensor<f32> &d_beta,
 
 // ---- scatter ----------------------------------------------------------------
 
+// dst[outer(p), index[idx(p)], inner(p)] += src[p]
+//   index.shape == src.shape[:src.ndim - (dst.ndim - dim - 1)]
 template <typename T>
 b32 tensor_scatter_add(Tensor<T> &out, const Tensor<T> &src,
                        const TensorU32 &indices, u32 dim);
+
 template <typename T>
-Tensor<T> tensor_scatter_add(const Tensor<T> &src, const TensorU32 &indices,
-                             u32 dim, u32 dim_size,
-                             CudaMemArena *arena = nullptr);
+Tensor<T> scatter_add(const Tensor<T> &src, const TensorU32 &indices, u32 dim,
+                      CudaMemArena *arena = nullptr);
+
 // ---- f32 init ---------------------------------------------------------------
 
 void tensor_he_init(Tensor<f32> &t);
@@ -334,16 +345,11 @@ void tensor_he_init(Tensor<f32> &t);
 // ---- indexing ---------------------------------------------------------------
 
 template <typename T>
-b32 tensor_index_select(Tensor<T> &dst, const Tensor<T> &src,
-                        const u32 *indices, u32 n_indices, u32 dim);
+b32 gather(Tensor<T> &dst, const Tensor<T> &src, const TensorU32 &indices,
+           u32 dim);
 template <typename T>
-Tensor<T> tensor_index_select(const Tensor<T> &src, const u32 *indices,
-                              u32 n_indices, u32 dim,
-                              CudaMemArena *arena = nullptr);
-template <typename T>
-Tensor<T> tensor_index_select(const Tensor<T> &src, const TensorU32 &indices,
-                              u32 dim, CudaMemArena *arena = nullptr);
-
+Tensor<T> gather(const Tensor<T> &src, const TensorU32 &indices, u32 dim,
+                 CudaMemArena *arena = nullptr);
 // ---- spatial ----------------------------------------------------------------
 
 template <typename T>

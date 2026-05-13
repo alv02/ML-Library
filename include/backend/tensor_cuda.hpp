@@ -53,10 +53,11 @@ void tensor_cuda_copy(TensorImpl<T> &dst, const TensorImpl<T> &src);
 template <typename T>
 void tensor_cuda_contiguous(TensorImpl<T> &t, CudaMemArena *arena = nullptr);
 
-// ---- fill / clear --------------------------------------------------------
+// ---- fill / clear / arange -----------------------------------------------
 
 template <typename T> void tensor_cuda_fill(TensorImpl<T> &tensor, T value);
 template <typename T> void tensor_cuda_clear(TensorImpl<T> &tensor);
+template <typename T> void tensor_cuda_arange(TensorImpl<T> &out);
 
 // ---- activations — f32 only ----------------------------------------------
 
@@ -154,11 +155,8 @@ void tensor_cuda_he_init(TensorImpl<f32> &tensor);
 // ---- indexing ------------------------------------------------------------
 
 template <typename T>
-void tensor_cuda_index_select(TensorImpl<T> &dst, const TensorImpl<T> &src,
-                              const u32 *indices, u32 n_indices, u32 dim);
-template <typename T>
-void tensor_cuda_index_select(TensorImpl<T> &dst, const TensorImpl<T> &src,
-                              const TensorImpl<u32> &indices, u32 dim);
+void tensor_cuda_gather(TensorImpl<T> &dst, const TensorImpl<T> &src,
+                        const TensorImpl<u32> &indices, u32 dim);
 
 // ---- spatial -------------------------------------------------------------
 

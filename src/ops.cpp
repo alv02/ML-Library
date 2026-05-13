@@ -72,19 +72,21 @@ Var mat_mul(Var a, Var b, CudaMemArena *arena) {
     return out;
 }
 
-// ── reshape ───────────────────────────────────────────────────────────────────
+// ── reshape
+// ───────────────────────────────────────────────────────────────────
 
 Var reshape(Var a, const u32 *shape, u32 ndim, CudaMemArena *arena) {
     // tensor_reshape calls tensor_contiguous_impl internally, which writes back
-    // to the tensor's own storage — unsafe on a shared view when non-contiguous.
-    // Safe path: share storage when already contiguous (contiguous_impl is no-op).
-    // Unsafe path: copy to fresh storage first so the source is never touched.
+    // to the tensor's own storage — unsafe on a shared view when
+    // non-contiguous. Safe path: share storage when already contiguous
+    // (contiguous_impl is no-op). Unsafe path: copy to fresh storage first so
+    // the source is never touched.
     Tensor<f32> out_data;
     if (tensor_is_contiguous(a->data)) {
         out_data = tensor_view(a->data);
     } else {
         out_data = Tensor<f32>::make(a->data->ndim, a->data->shape,
-                                    a->data->on_gpu(), arena);
+                                     a->data->on_gpu(), arena);
         tensor_copy(out_data, a->data);
     }
     tensor_reshape(out_data, shape, ndim, arena);
@@ -105,8 +107,8 @@ Var reshape(Var a, const u32 *shape, u32 ndim, CudaMemArena *arena) {
             if (tensor_is_contiguous(grad)) {
                 dA = tensor_view(grad);
             } else {
-                dA = Tensor<f32>::make(grad->ndim, grad->shape,
-                                      grad->on_gpu(), arena);
+                dA = Tensor<f32>::make(grad->ndim, grad->shape, grad->on_gpu(),
+                                       arena);
                 tensor_copy(dA, grad);
             }
             tensor_reshape(dA, orig_shape, orig_ndim, arena);
@@ -124,7 +126,8 @@ Var reshape(Var a, const u32 *shape, u32 ndim, CudaMemArena *arena) {
     return out;
 }
 
-// ── transpose ─────────────────────────────────────────────────────────────────
+// ── transpose
+// ─────────────────────────────────────────────────────────────────
 
 Var transpose(Var a, u32 d0, u32 d1, CudaMemArena *arena) {
     // Pure metadata swap — never touches data.
@@ -277,7 +280,46 @@ Var mul(Var a, f32 scalar, CudaMemArena *arena) {
     return out;
 }
 
-// ── softmax ───────────────────────────────────────────────────────────────────
+// ── mul (elementwise Var×Var) ────────────────────────────────────────────────
+
+Var mul(Var a, Var b, CudaMemArena *arena) {
+    Var out(tensor_mul(a->data, b->data, arena));
+
+    if (!((a->flags | b->flags) & FV_FLAG_REQUIERES_GRAD))
+        return out;
+    out->flags |= FV_FLAG_REQUIERES_GRAD;
+
+    struct Fn : Function {
+        CudaMemArena *arena;
+        Tensor<f32> saved_a, saved_b;
+        void backward(Tensor<f32> grad) override {
+            if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
+                Tensor<f32> dA = reduce_grad(tensor_mul(grad, saved_b, arena),
+                                             inputs[0]->data, arena);
+                if (!inputs[0]->grad.defined())
+                    inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
+                tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+            }
+            if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
+                Tensor<f32> dB = reduce_grad(tensor_mul(grad, saved_a, arena),
+                                             inputs[1]->data, arena);
+                if (!inputs[1]->grad.defined())
+                    inputs[1]->grad = tensor_zeros_like(inputs[1]->data, arena);
+                tensor_add(inputs[1]->grad, inputs[1]->grad, dB);
+            }
+        }
+    };
+    auto fn = std::make_shared<Fn>();
+    fn->arena = arena;
+    fn->inputs = {a, b};
+    fn->saved_a = a->data;
+    fn->saved_b = b->data;
+    out->grad_fn = fn;
+    return out;
+}
+
+// ── softmax
+// ───────────────────────────────────────────────────────────────────
 
 Var softmax(Var a, i32 dim, CudaMemArena *arena) {
     Tensor<f32> s = tensor_softmax(a->data, dim, arena);
@@ -482,8 +524,10 @@ Var max_pool2d(Var input, Unfold2dParams params, CudaMemArena *arena) {
             tensor_reshape(g, s_nlc1, 4, arena);
 
             // Route grads to max positions → [N, L, C, K]
+            u32 s_nlck[4] = {N, L, C, K};
             Tensor<f32> scattered =
-                tensor_scatter_add(g, saved_max_idx, 3, K, arena);
+                tensor_zeros<f32>(4, s_nlck, g->on_gpu(), arena);
+            tensor_scatter_add(scattered, g, saved_max_idx, 3);
 
             // [N, L, C, K] → [N, L, C*K]
             u32 s3[3] = {N, L, C * K};
@@ -615,39 +659,52 @@ Var batch_norm(Var input, Var gamma, Var beta, Tensor<f32> running_mean,
 
 // ── embedding ────────────────────────────────────────────────────────────────
 
-Var embedding(Var weight, TensorU32 indices, CudaMemArena *arena) {
-    Var out(tensor_index_select(weight->data, indices, 0, arena));
+Var embedding(Var weight, VarU32 indices, CudaMemArena *arena) {
+    u32 src_ndim = indices->data->ndim;
+    u32 numel    = indices->data->numel();
+    u32 D        = weight->data->shape[1];
+    bool on_gpu  = indices->data->on_gpu();
+
+    // Flatten indices to [numel, D] with stride[1]=0 so each token id
+    // broadcasts across all D embedding dims during gather.
+    u32 shape2[2] = {numel, D};
+    u64 stride2[2] = {1, 0};
+    TensorU32 indices_ = TensorU32::make(2, shape2, stride2, on_gpu, arena);
+    indices_->storage       = indices->data->storage;
+    indices_->storage_offset = indices->data->storage_offset;
+
+    // gather → [numel, D], then reshape to [s0,...,s_{k-1}, D] so the output
+    // shape mirrors the index shape: [B,T] → [B,T,D], [T] → [T,D], etc.
+    Var out(gather(weight->data, indices_, 0, arena));
+    u32 out_shape[MAX_NDIM];
+    memcpy(out_shape, indices->data->shape, src_ndim * sizeof(u32));
+    out_shape[src_ndim] = D;
+    tensor_reshape(out->data, out_shape, src_ndim + 1, arena);
 
     if (!(weight->flags & FV_FLAG_REQUIERES_GRAD))
         return out;
     out->flags |= FV_FLAG_REQUIERES_GRAD;
 
     struct Fn : Function {
-        TensorU32 indices;
-        u32 vocab_size;
+        TensorU32 indices;  // [numel, D] broadcast view
         CudaMemArena *arena;
         void backward(Tensor<f32> grad) override {
             if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
                 return;
             if (!inputs[0]->grad.defined())
                 inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
-            // indices is [N] but scatter_add needs it to match grad's shape [N,
-            // D, ...]. Unsqueeze trailing dims with stride=0 (broadcast, no
-            // data copy).
-            TensorU32 idx_view = tensor_view<u32>(indices);
-            while (idx_view->ndim < grad->ndim) {
-                tensor_unsqueeze(idx_view.impl(), idx_view->ndim);
-                idx_view->shape[idx_view->ndim - 1] =
-                    grad->shape[idx_view->ndim - 1];
-            }
-            tensor_scatter_add(inputs[0]->grad, grad, idx_view, 0);
+            // Flatten grad from [s0,...,s_{k-1},D] to [numel,D] so its ndim
+            // matches indices (2D), keeping out_base_strides fully defined.
+            Tensor<f32> grad_flat = tensor_view(grad);
+            u32 flat[2] = {grad->numel() / indices->shape[1], indices->shape[1]};
+            tensor_reshape(grad_flat, flat, 2, arena);
+            tensor_scatter_add(inputs[0]->grad, grad_flat, indices, 0);
         }
     };
     auto fn = std::make_shared<Fn>();
-    fn->indices = indices;
-    fn->vocab_size = weight->data->shape[0];
-    fn->arena = arena;
-    fn->inputs = {weight};
+    fn->indices = indices_;
+    fn->arena   = arena;
+    fn->inputs  = {weight};
     out->grad_fn = fn;
     return out;
 }
@@ -657,15 +714,15 @@ Var embedding(Var weight, TensorU32 indices, CudaMemArena *arena) {
 Var layer_norm(Var input, Var gamma, Var beta, f32 eps, CudaMemArena *arena) {
     const Tensor<f32> &inp = input->data;
     u32 last_dim = inp->ndim - 1;
-    u32 D        = inp->shape[last_dim];
-    bool on_gpu  = inp->on_gpu();
+    u32 D = inp->shape[last_dim];
+    bool on_gpu = inp->on_gpu();
 
     // mean and m2 over last dim, shape [..., 1] (keep_dim)
     u32 stat_shape[MAX_NDIM];
     memcpy(stat_shape, inp->shape, inp->ndim * sizeof(u32));
     stat_shape[last_dim] = 1;
     Tensor<f32> mean = Tensor<f32>::make(inp->ndim, stat_shape, on_gpu, arena);
-    Tensor<f32> m2   = Tensor<f32>::make(inp->ndim, stat_shape, on_gpu, arena);
+    Tensor<f32> m2 = Tensor<f32>::make(inp->ndim, stat_shape, on_gpu, arena);
     tensor_welford_mean_var(mean, m2, inp, last_dim);
 
     // var = m2 / D,  std = sqrt(var + eps)
@@ -709,12 +766,13 @@ Var layer_norm(Var input, Var gamma, Var beta, f32 eps, CudaMemArena *arena) {
                 Tensor<f32> mean_gn = tensor_sum(grad_n, last_dim, true, arena);
                 tensor_div(mean_gn, mean_gn, (f32)D);
 
-                Tensor<f32> gn_x    = tensor_mul(grad_n, saved_xhat, arena);
+                Tensor<f32> gn_x = tensor_mul(grad_n, saved_xhat, arena);
                 Tensor<f32> mean_gnx = tensor_sum(gn_x, last_dim, true, arena);
                 tensor_div(mean_gnx, mean_gnx, (f32)D);
 
                 Tensor<f32> dx = tensor_sub(grad_n, mean_gn, arena);
-                Tensor<f32> correction = tensor_mul(saved_xhat, mean_gnx, arena);
+                Tensor<f32> correction =
+                    tensor_mul(saved_xhat, mean_gnx, arena);
                 tensor_sub(dx, dx, correction);
                 tensor_div(dx, dx, saved_std);
 
@@ -728,7 +786,8 @@ Var layer_norm(Var input, Var gamma, Var beta, f32 eps, CudaMemArena *arena) {
                 Tensor<f32> g = tensor_mul(grad, saved_xhat, arena);
                 for (i32 d = (i32)grad->ndim - 2; d >= 0; d--)
                     g = tensor_sum(g, (u32)d, true, arena);
-                tensor_reshape(g, inputs[1]->data->shape, inputs[1]->data->ndim, arena);
+                tensor_reshape(g, inputs[1]->data->shape, inputs[1]->data->ndim,
+                               arena);
                 if (!inputs[1]->grad.defined())
                     inputs[1]->grad = tensor_zeros_like(inputs[1]->data, arena);
                 tensor_add(inputs[1]->grad, inputs[1]->grad, g);
@@ -739,21 +798,22 @@ Var layer_norm(Var input, Var gamma, Var beta, f32 eps, CudaMemArena *arena) {
                 Tensor<f32> g = tensor_view(grad);
                 for (i32 d = (i32)grad->ndim - 2; d >= 0; d--)
                     g = tensor_sum(g, (u32)d, true, arena);
-                tensor_reshape(g, inputs[2]->data->shape, inputs[2]->data->ndim, arena);
+                tensor_reshape(g, inputs[2]->data->shape, inputs[2]->data->ndim,
+                               arena);
                 if (!inputs[2]->grad.defined())
                     inputs[2]->grad = tensor_zeros_like(inputs[2]->data, arena);
                 tensor_add(inputs[2]->grad, inputs[2]->grad, g);
             }
         }
     };
-    auto fn      = std::make_shared<Fn>();
-    fn->arena     = arena;
-    fn->eps       = eps;
-    fn->D         = D;
+    auto fn = std::make_shared<Fn>();
+    fn->arena = arena;
+    fn->eps = eps;
+    fn->D = D;
     fn->saved_xhat = xhat;
-    fn->saved_std  = std;
-    fn->inputs    = {input, gamma, beta};
-    out->grad_fn  = fn;
+    fn->saved_std = std;
+    fn->inputs = {input, gamma, beta};
+    out->grad_fn = fn;
     return out;
 }
 

@@ -156,6 +156,34 @@ b32 tensor_reshape(Tensor<T> &t, const u32 *shape, u32 ndim,
     return tensor_reshape(t.impl(), shape, ndim, arena);
 }
 
+template <typename T>
+b32 tensor_flatten(Tensor<T> &t, u32 start_dim, u32 end_dim,
+                   CudaMemArena *arena) {
+
+    if (start_dim >= t->ndim || end_dim >= t->ndim || start_dim > end_dim)
+        return false;
+
+    u32 new_shape[MAX_NDIM];
+    u32 new_ndim = 0;
+
+    // dims before flattened region
+    for (u32 i = 0; i < start_dim; i++)
+        new_shape[new_ndim++] = t->shape[i];
+
+    // flattened dimension
+    u32 flat = 1;
+    for (u32 i = start_dim; i <= end_dim; i++)
+        flat *= t->shape[i];
+
+    new_shape[new_ndim++] = flat;
+
+    // dims after flattened region
+    for (u32 i = end_dim + 1; i < t->ndim; i++)
+        new_shape[new_ndim++] = t->shape[i];
+
+    return tensor_reshape(t.impl(), new_shape, new_ndim, arena);
+}
+
 template <typename T> void tensor_print(const TensorImpl<T> &tensor) {
     printf("Tensor(shape=[");
     for (u32 i = 0; i < tensor.ndim; i++) {
@@ -172,13 +200,20 @@ template <typename T> void tensor_print(const TensorImpl<T> &tensor) {
     printf("])\n");
 }
 
-// ---- fill ----------------------------------------------------------------
+// ---- fill / arange -------------------------------------------------------
 
 template <typename T> void tensor_fill(Tensor<T> &t, T value) {
     if (t->on_gpu())
         tensor_cuda_fill(t.impl(), value);
     else
         tensor_cpu_fill(t.impl(), value);
+}
+
+template <typename T> void tensor_arange(Tensor<T> &t) {
+    if (t->on_gpu())
+        tensor_cuda_arange(t.impl());
+    else
+        tensor_cpu_arange(t.impl());
 }
 
 // ---- Dispatch helpers ----------------------------------------------------
@@ -223,27 +258,6 @@ static b32 check_argmax_shape(const TensorImpl<u32> &out,
 }
 
 template <typename T>
-static b32
-check_scatter_shape(const TensorImpl<T> &out, const TensorImpl<T> &src,
-                    const TensorImpl<u32> &indices, u32 dim, const char *op) {
-    if (out.ndim != src.ndim || src.ndim != indices.ndim) {
-        printf("%s: ndim mismatch\n", op);
-        return false;
-    }
-    for (u32 i = 0; i < src.ndim; i++) {
-        if (src.shape[i] != indices.shape[i]) {
-            printf("%s: src and indices shape mismatch at dim %u\n", op, i);
-            return false;
-        }
-        if (i != dim && out.shape[i] != src.shape[i]) {
-            printf("%s: out and src shape mismatch at dim %u\n", op, i);
-            return false;
-        }
-    }
-    return true;
-}
-
-template <typename T>
 static b32 check_broadcast(const TensorImpl<T> &out, const TensorImpl<T> &a,
                            const TensorImpl<T> &b, const char *op) {
     u32 bcast[MAX_NDIM];
@@ -259,36 +273,6 @@ static b32 check_broadcast(const TensorImpl<T> &out, const TensorImpl<T> &a,
     for (u32 i = 0; i < bndim; i++) {
         if (bcast[i] != out.shape[i]) {
             printf("%s: out shape mismatch at dim %u\n", op, i);
-            return false;
-        }
-    }
-    return true;
-}
-
-template <typename T>
-static b32 check_index_select(const TensorImpl<T> &dst,
-                              const TensorImpl<T> &src, u32 n_indices,
-                              u32 dim) {
-    if (dim >= src.ndim) {
-        printf("tensor_index_select: dim %u out of range (ndim=%u)\n", dim,
-               src.ndim);
-        return false;
-    }
-    if (dst.ndim != src.ndim) {
-        printf("tensor_index_select: dst and src must have the same ndim\n");
-        return false;
-    }
-    if (dst.shape[dim] != n_indices) {
-        printf("tensor_index_select: dst->shape[%u]=%u does not match "
-               "n_indices=%u\n",
-               dim, dst.shape[dim], n_indices);
-        return false;
-    }
-    for (u32 i = 0; i < src.ndim; i++) {
-        if (i != dim && dst.shape[i] != src.shape[i]) {
-            printf("tensor_index_select: shape mismatch at dim %u "
-                   "(dst=%u, src=%u)\n",
-                   i, dst.shape[i], src.shape[i]);
             return false;
         }
     }
@@ -365,7 +349,8 @@ b32 tensor_gelu_backward(Tensor<f32> &out, const Tensor<f32> &grad,
     }
 }
 
-Tensor<f32> tensor_gelu_backward(const Tensor<f32> &grad, const Tensor<f32> &input,
+Tensor<f32> tensor_gelu_backward(const Tensor<f32> &grad,
+                                 const Tensor<f32> &input,
                                  CudaMemArena *arena) {
     Tensor<f32> out = tensor_create_like(grad, arena);
     if (!tensor_gelu_backward(out, grad, input))
@@ -790,12 +775,19 @@ b32 tensor_mat_mul(Tensor<f32> &out, const Tensor<f32> &a, const Tensor<f32> &b,
     bool batched = (nd > 2);
     switch ((out->on_gpu() << 2) | (a->on_gpu() << 1) | b->on_gpu()) {
     case 0b000:
-        if (batched) tensor_cpu_mat_mul_batched(out.impl(), a.impl(), b.impl(), clear_out);
-        else         tensor_cpu_mat_mul(out.impl(), a.impl(), b.impl(), clear_out);
+        if (batched)
+            tensor_cpu_mat_mul_batched(out.impl(), a.impl(), b.impl(),
+                                       clear_out);
+        else
+            tensor_cpu_mat_mul(out.impl(), a.impl(), b.impl(), clear_out);
         return true;
     case 0b111:
-        if (batched) tensor_cuda_mat_mul_batched(out.impl(), a.impl(), b.impl(), clear_out);
-        else         tensor_cuda_mat_mul_cublas(out.impl(), a.impl(), b.impl(), clear_out);
+        if (batched)
+            tensor_cuda_mat_mul_batched(out.impl(), a.impl(), b.impl(),
+                                        clear_out);
+        else
+            tensor_cuda_mat_mul_cublas(out.impl(), a.impl(), b.impl(),
+                                       clear_out);
         return true;
     default:
         printf("tensor_mat_mul: all tensors must be on the same device\n");
@@ -1055,8 +1047,8 @@ void tensor_bn_bwd(Tensor<f32> &dx, Tensor<f32> &d_gamma, Tensor<f32> &d_beta,
 
 // ---- softmax — f32 only -------------------------------------------------
 
-b32 tensor_softmax(Tensor<f32> &out, const Tensor<f32> &in,
-                   i32 dim, CudaMemArena *arena) {
+b32 tensor_softmax(Tensor<f32> &out, const Tensor<f32> &in, i32 dim,
+                   CudaMemArena *arena) {
     if (!tensor_shape_eq(out.impl(), in.impl())) {
         printf("tensor_softmax: shape mismatch\n");
         return false;
@@ -1085,7 +1077,8 @@ b32 tensor_softmax(Tensor<f32> &out, const Tensor<f32> &in,
     return true;
 }
 
-Tensor<f32> tensor_softmax(const Tensor<f32> &in, i32 dim, CudaMemArena *arena) {
+Tensor<f32> tensor_softmax(const Tensor<f32> &in, i32 dim,
+                           CudaMemArena *arena) {
     Tensor<f32> out = tensor_create_like(in, arena);
     if (!tensor_softmax(out, in, dim, arena))
         return Tensor<f32>{};
@@ -1094,8 +1087,8 @@ Tensor<f32> tensor_softmax(const Tensor<f32> &in, i32 dim, CudaMemArena *arena) 
 
 // ---- log_softmax — f32 only ---------------------------------------------
 
-b32 tensor_log_softmax(Tensor<f32> &out, const Tensor<f32> &in,
-                       i32 dim, CudaMemArena *arena) {
+b32 tensor_log_softmax(Tensor<f32> &out, const Tensor<f32> &in, i32 dim,
+                       CudaMemArena *arena) {
     if (!tensor_shape_eq(out.impl(), in.impl())) {
         printf("tensor_log_softmax: shape mismatch\n");
         return false;
@@ -1126,7 +1119,8 @@ b32 tensor_log_softmax(Tensor<f32> &out, const Tensor<f32> &in,
     return true;
 }
 
-Tensor<f32> tensor_log_softmax(const Tensor<f32> &in, i32 dim, CudaMemArena *arena) {
+Tensor<f32> tensor_log_softmax(const Tensor<f32> &in, i32 dim,
+                               CudaMemArena *arena) {
     Tensor<f32> out = tensor_create_like(in, arena);
     if (!tensor_log_softmax(out, in, dim, arena))
         return Tensor<f32>{};
@@ -1138,10 +1132,8 @@ Tensor<f32> tensor_log_softmax(const Tensor<f32> &in, i32 dim, CudaMemArena *are
 template <typename T>
 b32 tensor_scatter_add(Tensor<T> &out, const Tensor<T> &src,
                        const TensorU32 &indices, u32 dim) {
-    if (!check_scatter_shape(out.impl(), src.impl(), indices.impl(), dim,
-                             "tensor_scatter_add"))
-        return false;
-    switch ((out->on_gpu() << 2) | (src->on_gpu() << 1) | indices->on_gpu()) {
+
+    switch (out->on_gpu() << 2 | src->on_gpu() << 1 | indices->on_gpu()) {
     case 0b000:
         tensor_cpu_scatter_add(out.impl(), src.impl(), indices.impl(), dim);
         return true;
@@ -1149,21 +1141,66 @@ b32 tensor_scatter_add(Tensor<T> &out, const Tensor<T> &src,
         tensor_cuda_scatter_add(out.impl(), src.impl(), indices.impl(), dim);
         return true;
     default:
-        printf("tensor_scatter_add: all tensors must be on the same device\n");
+        printf("tensor_scatter_add: tensors must be on the same device\n");
+        return false;
+    }
+}
+
+// ---- indexing ------------------------------------------------------------
+
+template <typename T>
+b32 gather(Tensor<T> &dst, const Tensor<T> &src, const TensorU32 &indices,
+           u32 dim) {
+    if (dim >= src->ndim) {
+        printf("gather: dim out of range\n");
+        return false;
+    }
+
+    if (src->ndim != indices->ndim || src->ndim != dst->ndim) {
+        printf("gather: ndim mismatch\n");
+        return false;
+    }
+
+    for (u32 i = 0; i < src->ndim; i++) {
+
+        // dst and indices MUST always match
+        if (dst->shape[i] != indices->shape[i]) {
+            printf("gather: dst and indices shape mismatch\n");
+            return false;
+        }
+
+        // src must match dst except at gather dim
+        if (i != dim) {
+            if (src->shape[i] != dst->shape[i]) {
+                printf("gather: src/dst shape mismatch\n");
+                return false;
+            }
+        }
+    }
+
+    switch (dst->on_gpu() << 2 | src->on_gpu() << 1 | indices->on_gpu()) {
+    case 0b000:
+        tensor_cpu_gather(dst.impl(), src.impl(), indices.impl(), dim);
+        return true;
+    case 0b111:
+        tensor_cuda_gather(dst.impl(), src.impl(), indices.impl(), dim);
+        return true;
+    default:
+        printf("gather: tensors must be on the same device\n");
         return false;
     }
 }
 
 template <typename T>
-Tensor<T> tensor_scatter_add(const Tensor<T> &src, const TensorU32 &indices,
-                             u32 dim, u32 dim_size, CudaMemArena *arena) {
-    u32 out_shape[MAX_NDIM];
-    memcpy(out_shape, src->shape, src->ndim * sizeof(u32));
-    out_shape[dim] = dim_size;
-    Tensor<T> out = tensor_zeros<T>(src->ndim, out_shape, src->on_gpu(), arena);
-    if (!tensor_scatter_add(out, src, indices, dim))
+Tensor<T> gather(const Tensor<T> &src, const TensorU32 &indices, u32 dim,
+                 CudaMemArena *arena) {
+
+    Tensor<T> dst =
+        Tensor<T>::make(indices->ndim, indices->shape, src->on_gpu(), arena);
+
+    if (!gather(dst, src, indices, dim))
         return Tensor<T>{};
-    return out;
+    return dst;
 }
 
 // ---- initializing — f32 only --------------------------------------------
@@ -1174,66 +1211,6 @@ void tensor_he_init(Tensor<f32> &t) {
     } else {
         tensor_cpu_he_init(t.impl());
     }
-}
-
-// ---- indexing ------------------------------------------------------------
-
-template <typename T>
-b32 tensor_index_select(Tensor<T> &dst, const Tensor<T> &src,
-                        const u32 *indices, u32 n_indices, u32 dim) {
-    if (!check_index_select(dst.impl(), src.impl(), n_indices, dim))
-        return false;
-    switch ((dst->on_gpu() << 1) | src->on_gpu()) {
-    case 0b00:
-        tensor_cpu_index_select(dst.impl(), src.impl(), indices, n_indices,
-                                dim);
-        return true;
-    case 0b11:
-        tensor_cuda_index_select(dst.impl(), src.impl(), indices, n_indices,
-                                 dim);
-        return true;
-    default:
-        printf("tensor_index_select: tensors must be on the same device\n");
-        return false;
-    }
-}
-
-template <typename T>
-Tensor<T> tensor_index_select(const Tensor<T> &src, const u32 *indices,
-                              u32 n_indices, u32 dim, CudaMemArena *arena) {
-    if (dim >= src->ndim) {
-        printf("tensor_index_select: dim %u out of range (ndim=%u)\n", dim,
-               src->ndim);
-        return Tensor<T>{};
-    }
-    u32 shape[MAX_NDIM];
-    for (u32 i = 0; i < src->ndim; i++)
-        shape[i] = (i == dim) ? n_indices : src->shape[i];
-    Tensor<T> dst = Tensor<T>::make(src->ndim, shape, src->on_gpu(), arena);
-    if (!tensor_index_select(dst, src, indices, n_indices, dim))
-        return Tensor<T>{};
-    return dst;
-}
-
-template <typename T>
-Tensor<T> tensor_index_select(const Tensor<T> &src, const TensorU32 &indices,
-                              u32 dim, CudaMemArena *arena) {
-    u32 out_ndim = src->ndim - 1 + indices->ndim;
-    u32 out_shape[MAX_NDIM];
-    u32 o = 0;
-    for (u32 i = 0; i < dim; i++)
-        out_shape[o++] = src->shape[i];
-    for (u32 i = 0; i < indices->ndim; i++)
-        out_shape[o++] = indices->shape[i];
-    for (u32 i = dim + 1; i < src->ndim; i++)
-        out_shape[o++] = src->shape[i];
-
-    Tensor<T> dst = Tensor<T>::make(out_ndim, out_shape, src->on_gpu(), arena);
-    if (src->on_gpu())
-        tensor_cuda_index_select(dst.impl(), src.impl(), indices.impl(), dim);
-    else
-        tensor_cpu_index_select(dst.impl(), src.impl(), indices.impl(), dim);
-    return dst;
 }
 
 // ---- Conv2dParams constructor -------------------------------------------
@@ -1359,8 +1336,11 @@ b32 tensor_equals(const Tensor<f32> &a, const Tensor<f32> &b, f32 tol) {
                                 CudaMemArena *);                               \
     template b32 tensor_reshape(Tensor<T> &, const u32 *, u32,                 \
                                 CudaMemArena *);                               \
+    template b32 tensor_flatten(Tensor<T> &t, u32 start_dim, u32 end_dim,      \
+                                CudaMemArena *);                               \
     template void tensor_print(const TensorImpl<T> &);                         \
     template void tensor_fill(Tensor<T> &, T);                                 \
+    template void tensor_arange(Tensor<T> &);                                  \
     template b32 tensor_add(Tensor<T> &, const Tensor<T> &,                    \
                             const Tensor<T> &);                                \
     template Tensor<T> tensor_add(const Tensor<T> &, const Tensor<T> &,        \
@@ -1402,14 +1382,10 @@ b32 tensor_equals(const Tensor<f32> &a, const Tensor<f32> &b, f32 tol) {
                                      CudaMemArena *);                          \
     template b32 tensor_scatter_add(Tensor<T> &, const Tensor<T> &,            \
                                     const TensorU32 &, u32);                   \
-    template Tensor<T> tensor_scatter_add(                                     \
-        const Tensor<T> &, const TensorU32 &, u32, u32, CudaMemArena *);       \
-    template b32 tensor_index_select(Tensor<T> &, const Tensor<T> &,           \
-                                     const u32 *, u32, u32);                   \
-    template Tensor<T> tensor_index_select(const Tensor<T> &, const u32 *,     \
-                                           u32, u32, CudaMemArena *);          \
-    template Tensor<T> tensor_index_select(                                    \
-        const Tensor<T> &, const TensorU32 &, u32, CudaMemArena *);            \
+    template b32 gather(Tensor<T> &, const Tensor<T> &, const TensorU32 &,     \
+                        u32);                                                  \
+    template Tensor<T> gather(const Tensor<T> &, const TensorU32 &, u32,       \
+                              CudaMemArena *);                                 \
     template b32 tensor_unfold2d(Tensor<T> &, const Tensor<T> &,               \
                                  Unfold2dParams);                              \
     template Tensor<T> tensor_unfold2d(const Tensor<T> &, Unfold2dParams,      \

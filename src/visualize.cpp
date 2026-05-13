@@ -75,12 +75,35 @@ static std::vector<u32> collect_indices(const Tensor<f32> &images,
     return indices;
 }
 
+// Build a [1, d1, d2, ...] index tensor that selects row `idx` along dim 0,
+// broadcasting the single value across all remaining dimensions.
+static TensorU32 row_index(u32 idx, const Tensor<f32> &ref) {
+    u32 shape[MAX_NDIM];
+    u64 stride[MAX_NDIM];
+    shape[0] = 1;
+    stride[0] = 1;
+    for (u32 i = 1; i < ref->ndim; i++) {
+        shape[i] = ref->shape[i];
+        stride[i] = 0;
+    }
+    u32 one = 1;
+    TensorU32 t = TensorU32::make(1, &one, ref->on_gpu());
+    t->data()[0] = idx;
+    t->ndim = ref->ndim;
+    memcpy(t->shape, shape, ref->ndim * sizeof(u32));
+    memcpy(t->stride, stride, ref->ndim * sizeof(u64));
+    return t;
+}
+
 void visualize_correct(const Tensor<f32> &images, const Tensor<f32> &logits,
                        const Tensor<f32> &targets, u32 n_examples) {
-    for (u32 idx : collect_indices(images, logits, targets, n_examples, true)) {
-        Tensor<f32> img = tensor_index_select(images,  &idx, 1, 0);
-        Tensor<f32> log = tensor_index_select(logits,  &idx, 1, 0);
-        Tensor<f32> tgt = tensor_index_select(targets, &idx, 1, 0);
+    Tensor<f32> imgs = tensor_to_cpu(images);
+    Tensor<f32> logs = tensor_to_cpu(logits);
+    Tensor<f32> tgts = tensor_to_cpu(targets);
+    for (u32 idx : collect_indices(imgs, logs, tgts, n_examples, true)) {
+        Tensor<f32> img = gather(imgs, row_index(idx, imgs), 0);
+        Tensor<f32> log = gather(logs, row_index(idx, logs), 0);
+        Tensor<f32> tgt = gather(tgts, row_index(idx, tgts), 0);
         printf("===== Sample %u =====\n", idx);
         visualize_example(img, log, tgt);
     }
@@ -88,10 +111,13 @@ void visualize_correct(const Tensor<f32> &images, const Tensor<f32> &logits,
 
 void visualize_wrong(const Tensor<f32> &images, const Tensor<f32> &logits,
                      const Tensor<f32> &targets, u32 n_examples) {
-    for (u32 idx : collect_indices(images, logits, targets, n_examples, false)) {
-        Tensor<f32> img = tensor_index_select(images,  &idx, 1, 0);
-        Tensor<f32> log = tensor_index_select(logits,  &idx, 1, 0);
-        Tensor<f32> tgt = tensor_index_select(targets, &idx, 1, 0);
+    Tensor<f32> imgs = tensor_to_cpu(images);
+    Tensor<f32> logs = tensor_to_cpu(logits);
+    Tensor<f32> tgts = tensor_to_cpu(targets);
+    for (u32 idx : collect_indices(imgs, logs, tgts, n_examples, false)) {
+        Tensor<f32> img = gather(imgs, row_index(idx, imgs), 0);
+        Tensor<f32> log = gather(logs, row_index(idx, logs), 0);
+        Tensor<f32> tgt = gather(tgts, row_index(idx, tgts), 0);
         printf("===== Sample %u =====\n", idx);
         visualize_example(img, log, tgt);
     }

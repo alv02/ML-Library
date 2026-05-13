@@ -23,13 +23,44 @@ void DataLoader::shuffle() {
     }
 }
 
+// Build a broadcast index tensor that selects `n` rows from a tensor with the
+// given ndim/shape. shape[0] = n, remaining dims broadcast via stride=0.
+// The storage holds only n u32 elements; it is placed on the same device as the
+// source so gather's same-device check passes.
+static TensorU32 gather_row_idx(const u32 *row_ids, u32 n, u32 ndim,
+                                const u32 *ref_shape, bool on_gpu) {
+    // Always stage the indices on CPU first.
+    TensorU32 cpu_idx = TensorU32::make(1, &n, false);
+    memcpy(cpu_idx->data(), row_ids, n * sizeof(u32));
+
+    TensorU32 idx;
+    if (on_gpu) {
+        idx = TensorU32::make(1, &n, true);
+        cudaMemcpy(idx->data(), cpu_idx->data(), n * sizeof(u32),
+                   cudaMemcpyHostToDevice);
+    } else {
+        idx = cpu_idx;
+    }
+    idx->ndim = ndim;
+    idx->shape[0] = n;
+    idx->stride[0] = 1;
+    for (u32 i = 1; i < ndim; i++) {
+        idx->shape[i] = ref_shape[i];
+        idx->stride[i] = 0;
+    }
+    return idx;
+}
+
 bool DataLoader::next(Tensor<f32> &X_batch, Tensor<f32> &y_batch, CudaMemArena *arena) {
     if (cursor >= n_samples)
         return false;
     u32 end = std::min(cursor + batch_size, n_samples);
     u32 n = end - cursor;
-    X_batch = tensor_index_select(X, indices.data() + cursor, n, 0, arena);
-    y_batch = tensor_index_select(y, indices.data() + cursor, n, 0, arena);
+    const u32 *row_ids = indices.data() + cursor;
+    TensorU32 X_idx = gather_row_idx(row_ids, n, X->ndim, X->shape, X->on_gpu());
+    TensorU32 y_idx = gather_row_idx(row_ids, n, y->ndim, y->shape, y->on_gpu());
+    X_batch = gather(X, X_idx, 0, arena);
+    y_batch = gather(y, y_idx, 0, arena);
     cursor = end;
     return true;
 }

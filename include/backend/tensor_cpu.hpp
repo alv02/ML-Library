@@ -7,10 +7,11 @@ template <typename T>
 void tensor_cpu_copy(TensorImpl<T> &dst, const TensorImpl<T> &src);
 template <typename T> void tensor_cpu_contigous(TensorImpl<T> &t);
 
-// ---- fill / clear --------------------------------------------------------
+// ---- fill / clear / arange -----------------------------------------------
 
 template <typename T> void tensor_cpu_fill(TensorImpl<T> &tensor, T value);
 template <typename T> void tensor_cpu_clear(TensorImpl<T> &tensor);
+template <typename T> void tensor_cpu_arange(TensorImpl<T> &out);
 
 // ---- activations (relu, exp) — f32 only ---------------------------------
 
@@ -111,11 +112,8 @@ void tensor_cpu_he_init(TensorImpl<f32> &tensor);
 // ---- indexing ------------------------------------------------------------
 
 template <typename T>
-void tensor_cpu_index_select(TensorImpl<T> &dst, const TensorImpl<T> &src,
-                             const u32 *indices, u32 n_indices, u32 dim);
-template <typename T>
-void tensor_cpu_index_select(TensorImpl<T> &dst, const TensorImpl<T> &src,
-                             const TensorImpl<u32> &indices, u32 dim);
+void tensor_cpu_gather(TensorImpl<T> &dst, const TensorImpl<T> &src,
+                       const TensorImpl<u32> &indices, u32 dim);
 
 // ---- spatial / patch operations ------------------------------------------
 

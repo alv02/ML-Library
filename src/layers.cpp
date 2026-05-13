@@ -36,7 +36,8 @@ Conv2d::Conv2d(u32 C_in, u32 C_out, Unfold2dParams params, bool on_gpu,
 }
 
 Var Conv2d::forward(Var input, CudaMemArena *arena) {
-    return add(conv2d(input, transpose(W, 0, 1, arena), params, arena), b, arena);
+    return add(conv2d(input, transpose(W, 0, 1, arena), params, arena), b,
+               arena);
 }
 
 // ── BatchNorm2d
@@ -63,6 +64,63 @@ BatchNorm2d::BatchNorm2d(u32 C, bool on_gpu, CudaMemArena *perm_arena,
 Var BatchNorm2d::forward(Var input, CudaMemArena *arena) {
     return batch_norm(input, gamma, beta, running_mean, running_var, training,
                       momentum, eps, arena);
+}
+
+// ── EmbeddingLayer ────────────────────────────────────────────────────────────
+
+EmbeddingLayer::EmbeddingLayer(u32 vocab_size, u32 d_model, bool on_gpu,
+                               CudaMemArena *perm_arena) {
+    u32 w_shape[2] = {vocab_size, d_model};
+    weight = Var(Tensor<f32>::make(2, w_shape, on_gpu, perm_arena),
+                 FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
+    tensor_he_init(weight->data);
+}
+
+Var EmbeddingLayer::forward(VarU32 indices, CudaMemArena *arena) {
+    return embedding(weight, indices, arena);
+}
+
+// ── PositionalEmbeddingLayer ──────────────────────────────────────────────────
+
+PositionalEmbeddingLayer::PositionalEmbeddingLayer(u32 max_seq_len, u32 d_model,
+                                                   bool on_gpu,
+                                                   CudaMemArena *perm_arena) {
+    u32 w_shape[2] = {max_seq_len, d_model};
+    weight = Var(Tensor<f32>::make(2, w_shape, on_gpu, perm_arena),
+                 FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
+    tensor_he_init(weight->data);
+
+    u32 p_shape[1] = {max_seq_len};
+    positions = TensorU32::make(1, p_shape, on_gpu);
+    tensor_arange(positions);
+}
+
+Var PositionalEmbeddingLayer::forward(u32 T, CudaMemArena *arena) {
+    TensorU32 pos = tensor_view<u32>(positions);
+    pos->shape[0] = T;
+    return embedding(weight, VarU32(pos), arena);
+}
+
+// ── InputEmbedding ────────────────────────────────────────────────────────────
+
+InputEmbedding::InputEmbedding(u32 vocab_size, u32 max_seq_len, u32 d_model,
+                               f32 dropout_p, bool on_gpu,
+                               CudaMemArena *perm_arena)
+    : tok_emb(vocab_size, d_model, on_gpu, perm_arena),
+      pos_emb(max_seq_len, d_model, on_gpu, perm_arena),
+      dropout_p(dropout_p) {}
+
+Var InputEmbedding::forward(VarU32 tokens, CudaMemArena *arena) {
+    u32 T = tokens->data->shape[1];
+    Var x = add(tok_emb.forward(tokens, arena), pos_emb.forward(T, arena), arena);
+    return dropout(x, dropout_p, training, arena);
+}
+
+std::vector<Var> InputEmbedding::parameters() {
+    auto p = tok_emb.parameters();
+    auto q = pos_emb.parameters();
+    p.insert(p.end(), q.begin(), q.end());
+    return p;
 }
 
 // ── ResBlock

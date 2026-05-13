@@ -15,10 +15,12 @@ int main() {
     CudaMemArena perm_arena(GiB(1));
     CudaMemArena batch_arena(GiB(8));
 
-    Tensor<f32> train_X = tensor_load("data/X_train.npy", false); // CPU — augmented per batch
+    Tensor<f32> train_X =
+        tensor_load("data/X_train.npy", false); // CPU — augmented per batch
     Tensor<f32> train_y = tensor_load("data/y_train.npy", false);
-    Tensor<f32> test_X  = tensor_load("data/X_test.npy",  true);  // GPU — no augmentation
-    Tensor<f32> test_y  = tensor_load("data/y_test.npy",  true);
+    Tensor<f32> test_X =
+        tensor_load("data/X_test.npy", true); // GPU — no augmentation
+    Tensor<f32> test_y = tensor_load("data/y_test.npy", true);
 
     tensor_print(train_X.impl());
 
@@ -29,7 +31,7 @@ int main() {
     MultiStepLR scheduler(optim, {50, 75}, 0.1f);
     EarlyStopping early_stop(15);
 
-    const int epochs = 100;
+    const int epochs = 1;
     const int batch_size = 128;
     DataLoader loader(train_X, train_y, batch_size);
     Augmenter aug(loader);
@@ -37,7 +39,8 @@ int main() {
     aug.add<RandomHorizontalFlip>(0.5f);
 
     u32 scalar_shape[1] = {1};
-    Tensor<f32> loss_accum = Tensor<f32>::make(1, scalar_shape, true, &perm_arena);
+    Tensor<f32> loss_accum =
+        Tensor<f32>::make(1, scalar_shape, true, &perm_arena);
 
     for (int epoch = 0; epoch < epochs; epoch++) {
         tensor_fill(loss_accum, 0.0f);

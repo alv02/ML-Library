@@ -9,31 +9,51 @@ enum var_flags {
     FV_FLAG_NONE = 0,
     FV_FLAG_REQUIERES_GRAD = (1 << 0),
     FV_FLAG_PARAMETER = (1 << 1),
-
 };
 
 struct Function;
 
-struct VarImpl {
+// ── VarImpl_<T> ───────────────────────────────────────────────────────────────
+// Internal template. Use the aliases below (Var, VarU32, …) in user code.
+
+template <typename T>
+struct VarImpl_ {
     u32 flags;
-    Tensor<f32> data;
-    Tensor<f32> grad;
+    Tensor<T> data;
+    Tensor<T> grad;       // same type as data; left undefined for non-differentiable T
     std::shared_ptr<Function> grad_fn;
 
-    VarImpl(Tensor<f32> data, u32 flags) : data(data), flags(flags) {};
-    ~VarImpl();
+    VarImpl_(Tensor<T> data, u32 flags)
+        : data(data), flags(flags), grad_fn(nullptr) {}
+    ~VarImpl_() = default;
 };
 
-struct Var {
-    std::shared_ptr<VarImpl> impl_;
+// Backward-compat alias so existing code that names VarImpl still compiles.
+using VarImpl = VarImpl_<f32>;
 
-    Var() = default;
+// ── Var_<T> ───────────────────────────────────────────────────────────────────
 
-    Var(Tensor<f32> data, u32 flags = FV_FLAG_NONE);
+template <typename T>
+struct Var_ {
+    std::shared_ptr<VarImpl_<T>> impl_;
+
+    Var_() = default;
+
+    Var_(Tensor<T> data, u32 flags = FV_FLAG_NONE)
+        : impl_(std::make_shared<VarImpl_<T>>(data, flags)) {}
+
     bool defined() const { return impl_ != nullptr; }
     explicit operator bool() { return defined(); }
-    VarImpl *operator->() const { return impl_.get(); }
+    VarImpl_<T> *operator->() const { return impl_.get(); }
 };
+
+// ── Public aliases ────────────────────────────────────────────────────────────
+
+using Var   = Var_<f32>;   // differentiable — existing code unchanged
+using VarU32 = Var_<u32>;  // non-differentiable integer indices
+using VarI32 = Var_<i32>;
+
+// ── Function ──────────────────────────────────────────────────────────────────
 
 struct Function {
     std::vector<Var> inputs;

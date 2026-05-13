@@ -6,7 +6,8 @@
 #include <memory>
 #include <vector>
 
-// ── Layer base ────────────────────────────────────────────────────────────────
+// ── Layer base
+// ────────────────────────────────────────────────────────────────
 
 struct Layer {
     bool training = true;
@@ -21,7 +22,8 @@ struct Layer {
     virtual ~Layer() = default;
 };
 
-// ── Linear ────────────────────────────────────────────────────────────────────
+// ── Linear
+// ────────────────────────────────────────────────────────────────────
 
 struct Linear : Layer {
     Var W, b;
@@ -32,7 +34,8 @@ struct Linear : Layer {
     std::vector<Var> parameters() override { return {W, b}; }
 };
 
-// ── ReLU ──────────────────────────────────────────────────────────────────────
+// ── ReLU
+// ──────────────────────────────────────────────────────────────────────
 
 struct ReLU : Layer {
     Var forward(Var input, CudaMemArena *arena = nullptr) override {
@@ -40,8 +43,9 @@ struct ReLU : Layer {
     }
 };
 
-// ── Reshape ───────────────────────────────────────────────────────────────────
-// shape[i] == 0 means "copy dim i from input at runtime"
+// ── Reshape
+// ─────────────────────────────────────────────────────────────────── shape[i]
+// == 0 means "copy dim i from input at runtime"
 
 struct Reshape : Layer {
     u32 ndim;
@@ -59,9 +63,9 @@ struct Reshape : Layer {
     }
 };
 
-// ── Conv2d ────────────────────────────────────────────────────────────────────
-// W shape: [C_out, C_in * kH * kW]
-// b shape: [1, C_out, 1, 1]
+// ── Conv2d
+// ──────────────────────────────────────────────────────────────────── W shape:
+// [C_out, C_in * kH * kW] b shape: [1, C_out, 1, 1]
 
 struct Conv2d : Layer {
     Var W, b;
@@ -73,7 +77,8 @@ struct Conv2d : Layer {
     std::vector<Var> parameters() override { return {W, b}; }
 };
 
-// ── MaxPool2d ─────────────────────────────────────────────────────────────────
+// ── MaxPool2d
+// ─────────────────────────────────────────────────────────────────
 
 struct MaxPool2d : Layer {
     Unfold2dParams params;
@@ -84,9 +89,10 @@ struct MaxPool2d : Layer {
     }
 };
 
-// ── BatchNorm2d ───────────────────────────────────────────────────────────────
-// gamma/beta [C], running_mean/var [1, C, 1, 1]
-// Uses this->training to switch between batch stats and running stats.
+// ── BatchNorm2d
+// ─────────────────────────────────────────────────────────────── gamma/beta
+// [C], running_mean/var [1, C, 1, 1] Uses this->training to switch between
+// batch stats and running stats.
 
 struct BatchNorm2d : Layer {
     Var gamma, beta;
@@ -99,7 +105,51 @@ struct BatchNorm2d : Layer {
     std::vector<Var> parameters() override { return {gamma, beta}; }
 };
 
-// ── Sequential ────────────────────────────────────────────────────────────────
+// ── EmbeddingLayer ────────────────────────────────────────────────────────────
+// weight [vocab_size, d_model], indices [B, T] → out [B, T, d_model]
+
+struct EmbeddingLayer {
+    Var weight;
+
+    EmbeddingLayer(u32 vocab_size, u32 d_model, bool on_gpu,
+                   CudaMemArena *perm_arena = nullptr);
+    Var forward(VarU32 indices, CudaMemArena *arena = nullptr);
+    std::vector<Var> parameters() { return {weight}; }
+};
+
+// ── PositionalEmbeddingLayer ──────────────────────────────────────────────────
+// weight [max_seq_len, d_model]; forward(T) returns [T, d_model].
+// Broadcasts with [B, T, d_model] via add().
+
+struct PositionalEmbeddingLayer {
+    Var weight;
+    TensorU32 positions;  // [max_seq_len] precomputed, same device as weight
+
+    PositionalEmbeddingLayer(u32 max_seq_len, u32 d_model, bool on_gpu,
+                             CudaMemArena *perm_arena = nullptr);
+    Var forward(u32 T, CudaMemArena *arena = nullptr);
+    std::vector<Var> parameters() { return {weight}; }
+};
+
+// ── InputEmbedding ────────────────────────────────────────────────────────────
+// tok_emb(tokens) + pos_emb(T) + dropout → [B, T, d_model]
+
+struct InputEmbedding {
+    EmbeddingLayer tok_emb;
+    PositionalEmbeddingLayer pos_emb;
+    f32 dropout_p;
+    bool training = true;
+
+    InputEmbedding(u32 vocab_size, u32 max_seq_len, u32 d_model, f32 dropout_p,
+                   bool on_gpu, CudaMemArena *perm_arena = nullptr);
+    Var forward(VarU32 tokens, CudaMemArena *arena = nullptr);
+    std::vector<Var> parameters();
+    void train(bool mode = true) { training = mode; }
+    void eval() { train(false); }
+};
+
+// ── Sequential
+// ────────────────────────────────────────────────────────────────
 
 struct Sequential : Layer {
     std::vector<std::unique_ptr<Layer>> layers;
@@ -109,8 +159,7 @@ struct Sequential : Layer {
     Sequential &operator=(Sequential &&) = default;
 
     // add<T>(constructor args...) — builds a T in place
-    template <typename T, typename... Args>
-    Sequential &add(Args &&...args) {
+    template <typename T, typename... Args> Sequential &add(Args &&...args) {
         layers.push_back(std::make_unique<T>(std::forward<Args>(args)...));
         return *this;
     }
@@ -145,14 +194,15 @@ struct Sequential : Layer {
     }
 };
 
-// ── ResBlock ──────────────────────────────────────────────────────────────────
-// Standard residual block: Conv→BN→ReLU→Conv→BN, then add skip, then ReLU.
-// When C_in != C_out or stride != 1 a 1×1 projection shortcut is used.
-// Sequential is complete before ResBlock so it can be used as a member type.
+// ── ResBlock
+// ────────────────────────────────────────────────────────────────── Standard
+// residual block: Conv→BN→ReLU→Conv→BN, then add skip, then ReLU. When C_in !=
+// C_out or stride != 1 a 1×1 projection shortcut is used. Sequential is
+// complete before ResBlock so it can be used as a member type.
 
 struct ResBlock : Layer {
-    Sequential residual;  // Conv→BN→ReLU→Conv→BN (no trailing ReLU — after add)
-    Sequential proj;      // empty = identity shortcut, or 1×1 Conv→BN projection
+    Sequential residual; // Conv→BN→ReLU→Conv→BN (no trailing ReLU — after add)
+    Sequential proj;     // empty = identity shortcut, or 1×1 Conv→BN projection
     bool has_proj;
 
     ResBlock(u32 C_in, u32 C_out, u32 stride, bool on_gpu,

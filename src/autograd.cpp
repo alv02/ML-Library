@@ -3,16 +3,6 @@
 #include <functional>
 #include <unordered_set>
 
-VarImpl::~VarImpl() = default;
-
-Var::Var(Tensor<f32> data, u32 flags) {
-
-    impl_ = std::make_shared<VarImpl>(data, flags);
-
-    impl_->grad = Tensor<f32>();
-    impl_->grad_fn = nullptr;
-}
-
 void backward(Var loss, CudaMemArena *arena) {
     std::vector<Var> order;
     std::unordered_set<VarImpl *> visited;

@@ -67,7 +67,7 @@ struct GeluBackwardOp {
     __device__ f32 operator()(f32 g, f32 x) const {
         constexpr f32 c = 0.7978845608f;
         constexpr f32 k = 0.044715f;
-        f32 t    = tanhf(c * (x + k * x * x * x));
+        f32 t = tanhf(c * (x + k * x * x * x));
         f32 dtdx = (1.0f - t * t) * c * (1.0f + 3.0f * k * x * x);
         return g * 0.5f * (1.0f + t + x * dtdx);
     }
@@ -89,6 +89,13 @@ __global__ void fill_kernel(u64 tensor_size, T *tensor_data, T value) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx < tensor_size)
         tensor_data[workIdx] = value;
+}
+
+template <typename T>
+__global__ void arange_kernel(u64 tensor_size, T *tensor_data) {
+    u64 i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < tensor_size)
+        tensor_data[i] = (T)i;
 }
 
 template <typename T, typename Op>
@@ -379,62 +386,6 @@ __global__ void tensor_argmax_kernel(TensorMeta out_meta,
 
 template <typename T>
 __global__ void
-tensor_scatter_add_kernel(TensorMeta out_meta, TensorMeta out_base_meta,
-                          TensorMeta indices_meta, TensorMeta src_meta,
-                          TensorMeta src_contig, T *out, u32 *indices, T *src,
-                          u32 dim) {
-    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (workIdx >= src_contig.size)
-        return;
-
-    u64 src_offset = src_contig.offset_from(workIdx, src_meta);
-    u64 out_base_offset = src_contig.offset_from(workIdx, out_base_meta);
-    u64 indices_offset = src_contig.offset_from(workIdx, indices_meta);
-    out_base_offset += indices[indices_offset] * out_meta.stride[dim];
-
-    atomicAdd(&out[out_base_offset], src[src_offset]);
-}
-
-template <typename T>
-__global__ void tensor_index_select_kernel(TensorMeta dst_meta,
-                                           TensorMeta src_meta, T *dst,
-                                           const T *src, const u32 *indices,
-                                           u32 n_indices, u32 dim) {
-    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (workIdx >= dst_meta.size)
-        return;
-    u64 remaining = workIdx;
-    u64 offset = 0;
-    for (u32 i = 0; i < src_meta.ndim; i++) {
-        u64 idx_i = remaining / dst_meta.stride[i];
-        remaining -= idx_i * dst_meta.stride[i];
-        offset += (i == dim) ? indices[idx_i] * src_meta.stride[i]
-                             : idx_i * src_meta.stride[i];
-    }
-    dst[workIdx] = src[offset];
-}
-
-template <typename T>
-__global__ void tensor_index_select_tensor_kernel(TensorMeta dst_meta,
-                                                  TensorMeta src_meta, T *dst,
-                                                  const T *src,
-                                                  const u32 *indices, u32 dim) {
-    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (workIdx >= dst_meta.size)
-        return;
-    u64 remaining = workIdx;
-    u64 offset = 0;
-    for (u32 i = 0; i < src_meta.ndim; i++) {
-        u64 idx_i = remaining / dst_meta.stride[i];
-        remaining -= idx_i * dst_meta.stride[i];
-        offset += (i == dim) ? indices[idx_i] * src_meta.stride[i]
-                             : idx_i * src_meta.stride[i];
-    }
-    dst[workIdx] = src[offset];
-}
-
-template <typename T>
-__global__ void
 tensor_unfold2d_kernel(TensorMeta dst_meta, TensorMeta dst_meta_contig,
                        TensorMeta src_meta, Unfold2dParams params, T *dst,
                        const T *src) {
@@ -509,6 +460,24 @@ __global__ void tensor_check_close(u64 size, u32 *ok, const f32 *a,
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx < size && fabsf(a[workIdx] - b[workIdx]) > tol)
         *ok = 0;
+}
+
+template <typename T>
+__global__ void scatter_add_kernel(TensorMeta out_meta, TensorMeta src_meta,
+                                   TensorMeta indices_meta,
+                                   TensorMeta out_base_meta, TensorMeta src_contig,
+                                   T *out, const T *src, const u32 *indices,
+                                   u32 dim) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (workIdx >= src_contig.size)
+        return;
+
+    u64 src_offset = src_contig.offset_from(workIdx, src_meta);
+    u64 out_base_offset = src_contig.offset_from(workIdx, out_base_meta);
+    u64 indices_offset = src_contig.offset_from(workIdx, indices_meta);
+    out_base_offset += (u64)indices[indices_offset] * out_meta.stride[dim];
+
+    atomicAdd(&out[out_base_offset], src[src_offset]);
 }
 
 // ── Template dispatch helpers
@@ -625,6 +594,12 @@ template <typename T> void tensor_cuda_fill(TensorImpl<T> &tensor, T value) {
 
 template <typename T> void tensor_cuda_clear(TensorImpl<T> &tensor) {
     cudaMemsetAsync(tensor.data(), 0, sizeof(T) * tensor.numel(), 0);
+}
+
+template <typename T> void tensor_cuda_arange(TensorImpl<T> &out) {
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(out.numel(), (u64)threads);
+    arange_kernel<<<blocks, threads>>>(out.numel(), out.data());
 }
 
 // ---- activations — f32 only ----------------------------------------------
@@ -768,27 +743,32 @@ void tensor_cuda_mat_mul_cublas(TensorImpl<f32> &out, const TensorImpl<f32> &a,
 void tensor_cuda_mat_mul_batched(TensorImpl<f32> &out, const TensorImpl<f32> &a,
                                  const TensorImpl<f32> &b, b32 clear_out) {
     u32 nd = a.ndim;
-    int M = (int)a.shape[nd - 2], K = (int)a.shape[nd - 1], N = (int)b.shape[nd - 1];
+    int M = (int)a.shape[nd - 2], K = (int)a.shape[nd - 1],
+        N = (int)b.shape[nd - 1];
     int batch = (int)(a.numel() / ((u64)M * K));
     float alpha = 1.0f, beta = clear_out ? 0.0f : 1.0f;
 
     // Same transpose detection as the 2D path, but using the last two strides.
-    cublasOperation_t op_b = (b.stride[nd - 1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
-    int ld_b = (int)((b.stride[nd - 1] == 1) ? b.stride[nd - 2] : b.stride[nd - 1]);
-    cublasOperation_t op_a = (a.stride[nd - 1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
-    int ld_a = (int)((a.stride[nd - 1] == 1) ? a.stride[nd - 2] : a.stride[nd - 1]);
+    cublasOperation_t op_b =
+        (b.stride[nd - 1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
+    int ld_b =
+        (int)((b.stride[nd - 1] == 1) ? b.stride[nd - 2] : b.stride[nd - 1]);
+    cublasOperation_t op_a =
+        (a.stride[nd - 1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
+    int ld_a =
+        (int)((a.stride[nd - 1] == 1) ? a.stride[nd - 2] : a.stride[nd - 1]);
     int ld_c = (int)out.stride[nd - 2];
 
     // Stride between successive batch slices (in elements).
     long long sb = (batch > 1) ? (long long)b.stride[nd - 3] : (long long)K * N;
     long long sa = (batch > 1) ? (long long)a.stride[nd - 3] : (long long)M * K;
-    long long sc = (batch > 1) ? (long long)out.stride[nd - 3] : (long long)M * N;
+    long long sc =
+        (batch > 1) ? (long long)out.stride[nd - 3] : (long long)M * N;
 
     // cuBLAS is column-major, so pass (B, A) to compute C = A @ B in row-major.
-    cublasSgemmStridedBatched(cublas_handle(), op_b, op_a, N, M, K,
-                              &alpha, b.data(), ld_b, sb,
-                              a.data(), ld_a, sa,
-                              &beta, out.data(), ld_c, sc, batch);
+    cublasSgemmStridedBatched(cublas_handle(), op_b, op_a, N, M, K, &alpha,
+                              b.data(), ld_b, sb, a.data(), ld_a, sa, &beta,
+                              out.data(), ld_c, sc, batch);
 }
 
 // ---- fused batch norm — f32 only ----------------------------------------
@@ -1034,24 +1014,63 @@ void tensor_cuda_scatter_add(TensorImpl<T> &out, const TensorImpl<T> &src,
     u32 blocks = cuda::ceil_div(src.numel(), u64(threads));
 
     TensorMeta out_meta(out);
+    TensorMeta src_meta(src);
+    TensorMeta src_contig = make_contig_meta(src);
     TensorMeta out_base_meta(out);
     out_base_meta.stride[dim] = 0;
     TensorMeta indices_meta(indices);
-    TensorMeta src_meta(src);
-    TensorMeta src_contig = make_contig_meta(src);
 
-    tensor_scatter_add_kernel<<<blocks, threads>>>(
-        out_meta, out_base_meta, indices_meta, src_meta, src_contig, out.data(),
-        indices.data(), src.data(), dim);
+    scatter_add_kernel<<<blocks, threads>>>(out_meta, src_meta, indices_meta,
+                                            out_base_meta, src_contig, out.data(),
+                                            src.data(), indices.data(), dim);
 }
 
-// ---- initializing — f32 only --------------------------------------------
+// ---- indexing ------------------------------------------------------------
+
+template <typename T>
+__global__ void gather_kernel(TensorMeta dst_meta, TensorMeta src_meta,
+                              TensorMeta indices_meta, TensorMeta src_base_meta,
+                              TensorMeta dst_contig, T *dst, const T *src,
+                              const u32 *indices, u32 dim) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (workIdx >= dst_contig.size)
+        return;
+
+    u64 dst_offset = dst_contig.offset_from(workIdx, dst_meta);
+    u64 src_base_offset = dst_contig.offset_from(workIdx, src_base_meta);
+    u64 indices_offset = dst_contig.offset_from(workIdx, indices_meta);
+    src_base_offset += (u64)indices[indices_offset] * src_meta.stride[dim];
+
+    dst[dst_offset] = src[src_base_offset];
+}
+
+template <typename T>
+void tensor_cuda_gather(TensorImpl<T> &dst, const TensorImpl<T> &src,
+                        const TensorImpl<u32> &indices, u32 dim) {
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(dst.numel(), u64(threads));
+
+    TensorMeta dst_meta(dst);
+    TensorMeta dst_contig = make_contig_meta(dst);
+    TensorMeta src_meta(src);
+    TensorMeta src_base_meta(src);
+    src_base_meta.stride[dim] = 0;
+    TensorMeta indices_meta(indices);
+
+    gather_kernel<<<blocks, threads>>>(dst_meta, src_meta, indices_meta,
+                                       src_base_meta, dst_contig, dst.data(),
+                                       src.data(), indices.data(), dim);
+}
+
+// ---- initializing — f32 only
+// --------------------------------------------
 
 void tensor_cuda_he_init(TensorImpl<f32> &tensor) {
     curandGenerator_t gen;
     curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
     static u64 seed_counter = 0;
-    curandSetPseudoRandomGeneratorSeed(gen, (u64)time(nullptr) ^ (seed_counter++ * 6364136223846793005ULL));
+    curandSetPseudoRandomGeneratorSeed(
+        gen, (u64)time(nullptr) ^ (seed_counter++ * 6364136223846793005ULL));
     u32 in_features = tensor.shape[COL_DIM(tensor)];
     float stddev = sqrtf(2.0f / in_features);
     curandGenerateNormal(gen, tensor.data(), tensor.numel(), 0.0f, stddev);
@@ -1060,7 +1079,8 @@ void tensor_cuda_he_init(TensorImpl<f32> &tensor) {
 
 __global__ void dropout_mask_kernel(f32 *mask, u64 n, f32 p, f32 scale) {
     u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
+    if (i >= n)
+        return;
     mask[i] = (mask[i] >= p) ? scale : 0.0f;
 }
 
@@ -1068,47 +1088,20 @@ void tensor_cuda_dropout_mask(TensorImpl<f32> &mask, f32 p) {
     static std::atomic<u64> seed_counter{0};
     curandGenerator_t gen;
     curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
-    curandSetPseudoRandomGeneratorSeed(gen, seed_counter.fetch_add(1) ^ 0xdeadbeefULL);
+    curandSetPseudoRandomGeneratorSeed(gen, seed_counter.fetch_add(1) ^
+                                                0xdeadbeefULL);
     curandGenerateUniform(gen, mask.data(), mask.numel());
     curandDestroyGenerator(gen);
 
     f32 scale = 1.0f / (1.0f - p);
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(mask.numel(), (u64)threads);
-    dropout_mask_kernel<<<blocks, threads>>>(mask.data(), mask.numel(), p, scale);
+    dropout_mask_kernel<<<blocks, threads>>>(mask.data(), mask.numel(), p,
+                                             scale);
 }
 
-// ---- indexing ------------------------------------------------------------
-
-template <typename T>
-void tensor_cuda_index_select(TensorImpl<T> &dst, const TensorImpl<T> &src,
-                              const u32 *indices, u32 n_indices, u32 dim) {
-    u32 threads = N_THREADS;
-    u32 blocks = cuda::ceil_div(dst.numel(), u64(threads));
-    TensorMeta dst_meta(dst);
-    TensorMeta src_meta(src);
-    u32 *indices_gpu;
-    cudaMallocAsync(&indices_gpu, n_indices * sizeof(u32), 0);
-    cudaMemcpyAsync(indices_gpu, indices, n_indices * sizeof(u32),
-                    cudaMemcpyHostToDevice, 0);
-    tensor_index_select_kernel<<<blocks, threads>>>(
-        dst_meta, src_meta, dst.data(), src.data(), indices_gpu, n_indices,
-        dim);
-    cudaFreeAsync(indices_gpu, 0);
-}
-
-template <typename T>
-void tensor_cuda_index_select(TensorImpl<T> &dst, const TensorImpl<T> &src,
-                              const TensorImpl<u32> &indices, u32 dim) {
-    u32 threads = N_THREADS;
-    u32 blocks = cuda::ceil_div(dst.numel(), u64(threads));
-    TensorMeta dst_meta(dst);
-    TensorMeta src_meta(src);
-    tensor_index_select_tensor_kernel<<<blocks, threads>>>(
-        dst_meta, src_meta, dst.data(), src.data(), indices.data(), dim);
-}
-
-// ---- spatial / patch operations ------------------------------------------
+// ---- spatial / patch operations
+// ------------------------------------------
 
 template <typename T>
 void tensor_cuda_unfold2d(TensorImpl<T> &dst, const TensorImpl<T> &src,
@@ -1168,7 +1161,8 @@ void tensor_cuda_fold2d(TensorImpl<T> &dst, const TensorImpl<T> &col,
         col_meta, col_meta_contig, dst_meta, params, col.data(), dst.data());
 }
 
-// ---- comparison — f32 only ----------------------------------------------
+// ---- comparison — f32 only
+// ----------------------------------------------
 
 b32 tensor_cuda_equals(const TensorImpl<f32> &a, const TensorImpl<f32> &b,
                        f32 tol) {
@@ -1193,6 +1187,7 @@ b32 tensor_cuda_equals(const TensorImpl<f32> &a, const TensorImpl<f32> &b,
     template void tensor_cuda_contiguous(TensorImpl<T> &, CudaMemArena *);     \
     template void tensor_cuda_fill(TensorImpl<T> &, T);                        \
     template void tensor_cuda_clear(TensorImpl<T> &);                          \
+    template void tensor_cuda_arange(TensorImpl<T> &);                         \
     template void tensor_cuda_add(TensorImpl<T> &, const TensorImpl<T> &,      \
                                   const TensorImpl<T> &);                      \
     template void tensor_cuda_sub(TensorImpl<T> &, const TensorImpl<T> &,      \
@@ -1217,10 +1212,8 @@ b32 tensor_cuda_equals(const TensorImpl<f32> &a, const TensorImpl<f32> &b,
                                      u32);                                     \
     template void tensor_cuda_scatter_add(                                     \
         TensorImpl<T> &, const TensorImpl<T> &, const TensorImpl<u32> &, u32); \
-    template void tensor_cuda_index_select(                                    \
-        TensorImpl<T> &, const TensorImpl<T> &, const u32 *, u32, u32);        \
-    template void tensor_cuda_index_select(                                    \
-        TensorImpl<T> &, const TensorImpl<T> &, const TensorImpl<u32> &, u32); \
+    template void tensor_cuda_gather(TensorImpl<T> &, const TensorImpl<T> &,   \
+                                     const TensorImpl<u32> &, u32);            \
     template void tensor_cuda_unfold2d(TensorImpl<T> &, const TensorImpl<T> &, \
                                        Unfold2dParams);                        \
     template void tensor_cuda_fold2d(TensorImpl<T> &, const TensorImpl<T> &,   \

@@ -70,3 +70,8 @@ add_executable(test_tensor test/test_tensor.cpp)
 target_link_libraries(test_tensor PRIVATE mllib)
 add_test(NAME tensor_cpu  COMMAND test_tensor --cpu WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test)
 add_test(NAME tensor_cuda COMMAND test_tensor --gpu WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test)
+
+add_executable(test_layer test/test_layer.cpp)
+target_link_libraries(test_layer PRIVATE mllib)
+add_test(NAME layer_cpu  COMMAND test_layer --cpu WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test)
+add_test(NAME layer_cuda COMMAND test_layer --gpu WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test)
