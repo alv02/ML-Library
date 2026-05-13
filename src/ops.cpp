@@ -1,6 +1,5 @@
 #include "../include/ops.hpp"
 #include <cstring>
-#include <type_traits>
 
 // Sums grad over every dimension where target was broadcast (size == 1).
 static Tensor<f32> reduce_grad(const Tensor<f32> &grad,
@@ -75,175 +74,163 @@ Var mat_mul(Var a, Var b, CudaMemArena *arena) {
 
 // ── reshape ──────────────────────────────────────────────────────────────────
 
-template <typename T>
-Var_<T> reshape(Var_<T> a, const u32 *shape, u32 ndim, CudaMemArena *arena) {
-    // Copies only when non-contiguous; safe to share storage otherwise.
-    Tensor<T> out_data;
+Var reshape(Var a, const u32 *shape, u32 ndim, CudaMemArena *arena) {
+    Tensor<f32> out_data;
     if (tensor_is_contiguous(a->data)) {
         out_data = tensor_view(a->data);
     } else {
-        out_data = Tensor<T>::make(a->data->ndim, a->data->shape,
-                                   a->data->on_gpu(), arena);
+        out_data = Tensor<f32>::make(a->data->ndim, a->data->shape,
+                                    a->data->on_gpu(), arena);
         tensor_copy(out_data, a->data);
     }
     tensor_reshape(out_data, shape, ndim, arena);
 
-    Var_<T> out(out_data);
-    if constexpr (std::is_same_v<T, f32>) {
-        if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
-            return out;
-        out->flags |= FV_FLAG_REQUIERES_GRAD;
-        struct Fn : Function {
-            CudaMemArena *arena;
-            u32 orig_shape[MAX_NDIM];
-            u32 orig_ndim;
-            void backward(Tensor<f32> grad) override {
-                if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
-                    return;
-                Tensor<f32> dA;
-                if (tensor_is_contiguous(grad)) {
-                    dA = tensor_view(grad);
-                } else {
-                    dA = Tensor<f32>::make(grad->ndim, grad->shape,
-                                           grad->on_gpu(), arena);
-                    tensor_copy(dA, grad);
-                }
-                tensor_reshape(dA, orig_shape, orig_ndim, arena);
-                if (!inputs[0]->grad.defined())
-                    inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
-                tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+    Var out(out_data);
+    if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
+        return out;
+    out->flags |= FV_FLAG_REQUIERES_GRAD;
+    struct Fn : Function {
+        CudaMemArena *arena;
+        u32 orig_shape[MAX_NDIM];
+        u32 orig_ndim;
+        void backward(Tensor<f32> grad) override {
+            if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
+                return;
+            Tensor<f32> dA;
+            if (tensor_is_contiguous(grad)) {
+                dA = tensor_view(grad);
+            } else {
+                dA = Tensor<f32>::make(grad->ndim, grad->shape,
+                                      grad->on_gpu(), arena);
+                tensor_copy(dA, grad);
             }
-        };
-        auto fn = std::make_shared<Fn>();
-        fn->arena = arena;
-        fn->orig_ndim = a->data->ndim;
-        memcpy(fn->orig_shape, a->data->shape, a->data->ndim * sizeof(u32));
-        fn->inputs = {a};
-        out->grad_fn = fn;
-    }
+            tensor_reshape(dA, orig_shape, orig_ndim, arena);
+            if (!inputs[0]->grad.defined())
+                inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
+            tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+        }
+    };
+    auto fn = std::make_shared<Fn>();
+    fn->arena = arena;
+    fn->orig_ndim = a->data->ndim;
+    memcpy(fn->orig_shape, a->data->shape, a->data->ndim * sizeof(u32));
+    fn->inputs = {a};
+    out->grad_fn = fn;
     return out;
 }
 
 // ── transpose ────────────────────────────────────────────────────────────────
 
-template <typename T>
-Var_<T> transpose(Var_<T> a, u32 d0, u32 d1, CudaMemArena *arena) {
-    Tensor<T> out_data = tensor_view(a->data);
+Var transpose(Var a, u32 d0, u32 d1, CudaMemArena *arena) {
+    Tensor<f32> out_data = tensor_view(a->data);
     tensor_transpose(out_data, d0, d1);
 
-    Var_<T> out(out_data);
-    if constexpr (std::is_same_v<T, f32>) {
-        if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
-            return out;
-        out->flags |= FV_FLAG_REQUIERES_GRAD;
-        struct Fn : Function {
-            CudaMemArena *arena;
-            u32 d0, d1;
-            void backward(Tensor<f32> grad) override {
-                if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
-                    return;
-                Tensor<f32> dA = tensor_view(grad);
-                tensor_transpose(dA, d0, d1);
-                if (!inputs[0]->grad.defined())
-                    inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
-                tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
-            }
-        };
-        auto fn = std::make_shared<Fn>();
-        fn->arena = arena;
-        fn->d0 = d0;
-        fn->d1 = d1;
-        fn->inputs = {a};
-        out->grad_fn = fn;
-    }
+    Var out(out_data);
+    if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
+        return out;
+    out->flags |= FV_FLAG_REQUIERES_GRAD;
+    struct Fn : Function {
+        CudaMemArena *arena;
+        u32 d0, d1;
+        void backward(Tensor<f32> grad) override {
+            if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
+                return;
+            Tensor<f32> dA = tensor_view(grad);
+            tensor_transpose(dA, d0, d1);
+            if (!inputs[0]->grad.defined())
+                inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
+            tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+        }
+    };
+    auto fn = std::make_shared<Fn>();
+    fn->arena = arena;
+    fn->d0 = d0;
+    fn->d1 = d1;
+    fn->inputs = {a};
+    out->grad_fn = fn;
     return out;
 }
 
 // ── unsqueeze ────────────────────────────────────────────────────────────────
 
-template <typename T> Var_<T> unsqueeze(Var_<T> a, u32 dim, CudaMemArena *arena) {
-    Tensor<T> out_data = tensor_view(a->data);
+Var unsqueeze(Var a, u32 dim, CudaMemArena *arena) {
+    Tensor<f32> out_data = tensor_view(a->data);
     tensor_unsqueeze(out_data.impl(), dim);
 
-    Var_<T> out(out_data);
-    if constexpr (std::is_same_v<T, f32>) {
-        if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
-            return out;
-        out->flags |= FV_FLAG_REQUIERES_GRAD;
-        struct Fn : Function {
-            u32 dim;
-            CudaMemArena *arena;
-            void backward(Tensor<f32> grad) override {
-                if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
-                    return;
-                Tensor<f32> dA = tensor_view(grad);
-                for (u32 i = dim; i < dA->ndim - 1; i++) {
-                    dA->shape[i] = dA->shape[i + 1];
-                    dA->stride[i] = dA->stride[i + 1];
-                }
-                dA->ndim--;
-                if (!inputs[0]->grad.defined())
-                    inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
-                tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+    Var out(out_data);
+    if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
+        return out;
+    out->flags |= FV_FLAG_REQUIERES_GRAD;
+    struct Fn : Function {
+        u32 dim;
+        CudaMemArena *arena;
+        void backward(Tensor<f32> grad) override {
+            if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
+                return;
+            Tensor<f32> dA = tensor_view(grad);
+            for (u32 i = dim; i < dA->ndim - 1; i++) {
+                dA->shape[i] = dA->shape[i + 1];
+                dA->stride[i] = dA->stride[i + 1];
             }
-        };
-        auto fn = std::make_shared<Fn>();
-        fn->dim = dim;
-        fn->arena = arena;
-        fn->inputs = {a};
-        out->grad_fn = fn;
-    }
+            dA->ndim--;
+            if (!inputs[0]->grad.defined())
+                inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
+            tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+        }
+    };
+    auto fn = std::make_shared<Fn>();
+    fn->dim = dim;
+    fn->arena = arena;
+    fn->inputs = {a};
+    out->grad_fn = fn;
     return out;
 }
 
 // ── broadcast_to ─────────────────────────────────────────────────────────────
 
-template <typename T>
-Var_<T> broadcast_to(Var_<T> a, const u32 *target_shape, u32 target_ndim,
-                    CudaMemArena *arena) {
+Var broadcast_to(Var a, const u32 *target_shape, u32 target_ndim,
+                 CudaMemArena *arena) {
     if (a->data->ndim > target_ndim) {
         printf("broadcast_to: target_ndim < input ndim\n");
-        return Var_<T>{};
+        return Var{};
     }
-    Tensor<T> out_data = tensor_view(a->data);
+    Tensor<f32> out_data = tensor_view(a->data);
     if (!tensor_broadcast_to(out_data.impl(), target_shape, target_ndim)) {
         printf("broadcast_to: incompatible shapes\n");
-        return Var_<T>{};
+        return Var{};
     }
 
-    Var_<T> out(out_data);
-    if constexpr (std::is_same_v<T, f32>) {
-        if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
-            return out;
-        out->flags |= FV_FLAG_REQUIERES_GRAD;
-        struct Fn : Function {
-            CudaMemArena *arena;
-            u32 orig_ndim;
-            u32 orig_shape[MAX_NDIM];
-            void backward(Tensor<f32> grad) override {
-                if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
-                    return;
-                u32 ndim_diff = grad->ndim - orig_ndim;
-                Tensor<f32> dA = tensor_view(grad);
-                for (u32 i = 0; i < grad->ndim; i++) {
-                    bool is_new = i < ndim_diff;
-                    bool is_bcast = !is_new && orig_shape[i - ndim_diff] == 1;
-                    if (is_new || is_bcast)
-                        dA = tensor_sum(dA, i, true, arena);
-                }
-                tensor_reshape(dA, orig_shape, orig_ndim, arena);
-                if (!inputs[0]->grad.defined())
-                    inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
-                tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+    Var out(out_data);
+    if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
+        return out;
+    out->flags |= FV_FLAG_REQUIERES_GRAD;
+    struct Fn : Function {
+        CudaMemArena *arena;
+        u32 orig_ndim;
+        u32 orig_shape[MAX_NDIM];
+        void backward(Tensor<f32> grad) override {
+            if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
+                return;
+            u32 ndim_diff = grad->ndim - orig_ndim;
+            Tensor<f32> dA = tensor_view(grad);
+            for (u32 i = 0; i < grad->ndim; i++) {
+                bool is_new = i < ndim_diff;
+                bool is_bcast = !is_new && orig_shape[i - ndim_diff] == 1;
+                if (is_new || is_bcast)
+                    dA = tensor_sum(dA, i, true, arena);
             }
-        };
-        auto fn = std::make_shared<Fn>();
-        fn->arena = arena;
-        fn->orig_ndim = a->data->ndim;
-        memcpy(fn->orig_shape, a->data->shape, a->data->ndim * sizeof(u32));
-        fn->inputs = {a};
-        out->grad_fn = fn;
-    }
+            tensor_reshape(dA, orig_shape, orig_ndim, arena);
+            if (!inputs[0]->grad.defined())
+                inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
+            tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+        }
+    };
+    auto fn = std::make_shared<Fn>();
+    fn->arena = arena;
+    fn->orig_ndim = a->data->ndim;
+    memcpy(fn->orig_shape, a->data->shape, a->data->ndim * sizeof(u32));
+    fn->inputs = {a};
+    out->grad_fn = fn;
     return out;
 }
 
@@ -987,15 +974,3 @@ Var cross_entropy_with_logits(Var logits, Var targets, CudaMemArena *arena) {
     return out;
 }
 
-// ── explicit instantiations ──────────────────────────────────────────────────
-
-template Var_<f32> reshape<f32>(Var_<f32>, const u32 *, u32, CudaMemArena *);
-template Var_<u32> reshape<u32>(Var_<u32>, const u32 *, u32, CudaMemArena *);
-template Var_<f32> transpose<f32>(Var_<f32>, u32, u32, CudaMemArena *);
-template Var_<u32> transpose<u32>(Var_<u32>, u32, u32, CudaMemArena *);
-template Var_<f32> unsqueeze<f32>(Var_<f32>, u32, CudaMemArena *);
-template Var_<u32> unsqueeze<u32>(Var_<u32>, u32, CudaMemArena *);
-template Var_<f32> broadcast_to<f32>(Var_<f32>, const u32 *, u32,
-                                     CudaMemArena *);
-template Var_<u32> broadcast_to<u32>(Var_<u32>, const u32 *, u32,
-                                     CudaMemArena *);

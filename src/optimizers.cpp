@@ -36,8 +36,8 @@ static TensorU32 gather_row_idx(const u32 *row_ids, u32 n, u32 ndim,
     TensorU32 idx;
     if (on_gpu) {
         idx = TensorU32::make(1, &n, true);
-        cudaMemcpy(idx->data(), cpu_idx->data(), n * sizeof(u32),
-                   cudaMemcpyHostToDevice);
+        cudaMemcpyAsync(idx->data(), cpu_idx->data(), n * sizeof(u32),
+                        cudaMemcpyHostToDevice);
     } else {
         idx = cpu_idx;
     }

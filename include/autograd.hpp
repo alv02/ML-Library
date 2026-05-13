@@ -13,38 +13,29 @@ enum var_flags {
 
 struct Function;
 
-template <typename T = f32> struct VarImpl_ {
+struct VarImpl {
     u32 flags;
-    Tensor<T> data;
-    Tensor<T> grad;
+    Tensor<f32> data;
+    Tensor<f32> grad;
     std::shared_ptr<Function> grad_fn;
 
-    VarImpl_(Tensor<T> data, u32 flags)
+    VarImpl(Tensor<f32> data, u32 flags)
         : data(data), flags(flags), grad_fn(nullptr) {}
-    ~VarImpl_() = default;
+    ~VarImpl() = default;
 };
 
-template <typename T = f32> struct Var_ {
-    std::shared_ptr<VarImpl_<T>> impl_;
+struct Var {
+    std::shared_ptr<VarImpl> impl_;
 
-    Var_() = default;
+    Var() = default;
 
-    Var_(Tensor<T> data, u32 flags = FV_FLAG_NONE)
-        : impl_(std::make_shared<VarImpl_<T>>(data, flags)) {}
+    Var(Tensor<f32> data, u32 flags = FV_FLAG_NONE)
+        : impl_(std::make_shared<VarImpl>(data, flags)) {}
 
     bool defined() const { return impl_ != nullptr; }
     explicit operator bool() { return defined(); }
-    VarImpl_<T> *operator->() const { return impl_.get(); }
+    VarImpl *operator->() const { return impl_.get(); }
 };
-
-// ── Public aliases ────────────────────────────────────────────────────────────
-
-using Var     = Var_<f32>;
-using VarImpl = VarImpl_<f32>;
-using VarU32  = Var_<u32>;
-using VarI32  = Var_<i32>;
-
-// ── Function ──────────────────────────────────────────────────────────────────
 
 struct Function {
     std::vector<Var> inputs;

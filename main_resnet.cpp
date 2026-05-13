@@ -31,7 +31,7 @@ int main() {
     MultiStepLR scheduler(optim, {50, 75}, 0.1f);
     EarlyStopping early_stop(15);
 
-    const int epochs = 100;
+    const int epochs = 1;
     const int batch_size = 128;
     DataLoader loader(train_X, train_y, batch_size);
     Augmenter aug(loader);

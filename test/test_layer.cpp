@@ -81,7 +81,7 @@ static void test_embedding_layer() {
     EmbeddingLayer emb(10, 8, g_on_gpu);
     tensor_copy(emb.weight->data, weight);
 
-    Var out = emb.forward(VarU32(tokens_t));
+    Var out = emb.forward(tokens_t);
     sync();
     check_tensors("forward", tensor_to_cpu(out->data), exp_out);
 
@@ -143,7 +143,7 @@ static void test_input_embedding() {
     tensor_copy(emb.tok_emb.weight->data, tok_w);
     tensor_copy(emb.pos_emb.weight->data, pos_w);
 
-    Var out = emb.forward(VarU32(tokens_t));
+    Var out = emb.forward(tokens_t);
     sync();
     check_tensors("forward", tensor_to_cpu(out->data), exp_out);
 
