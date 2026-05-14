@@ -6,7 +6,8 @@
 #include <memory>
 #include <vector>
 
-// ── Layer base ────────────────────────────────────────────────────────────────
+// ── Layer base
+// ────────────────────────────────────────────────────────────────
 
 struct Layer {
     bool training = true;
@@ -21,18 +22,20 @@ struct Layer {
     virtual ~Layer() = default;
 };
 
-// ── Linear ────────────────────────────────────────────────────────────────────
+// ── Linear
+// ────────────────────────────────────────────────────────────────────
 
 struct Linear : Layer {
     Var W, b;
 
     Linear(u32 in_features, u32 out_features, bool on_gpu,
-           CudaMemArena *perm_arena = nullptr);
+           CudaMemArena *perm_arena = nullptr, float init_std = 0.0f);
     Var forward(Var input, CudaMemArena *arena = nullptr) override;
     std::vector<Var> parameters() override { return {W, b}; }
 };
 
-// ── ReLU ──────────────────────────────────────────────────────────────────────
+// ── ReLU
+// ──────────────────────────────────────────────────────────────────────
 
 struct ReLU : Layer {
     Var forward(Var input, CudaMemArena *arena = nullptr) override {
@@ -40,8 +43,9 @@ struct ReLU : Layer {
     }
 };
 
-// ── Reshape ───────────────────────────────────────────────────────────────────
-// shape[i] == 0 means "copy dim i from input at runtime"
+// ── Reshape
+// ─────────────────────────────────────────────────────────────────── shape[i]
+// == 0 means "copy dim i from input at runtime"
 
 struct Reshape : Layer {
     u32 ndim;
@@ -59,7 +63,8 @@ struct Reshape : Layer {
     }
 };
 
-// ── Conv2d ────────────────────────────────────────────────────────────────────
+// ── Conv2d
+// ────────────────────────────────────────────────────────────────────
 
 struct Conv2d : Layer {
     Var W, b;
@@ -71,7 +76,8 @@ struct Conv2d : Layer {
     std::vector<Var> parameters() override { return {W, b}; }
 };
 
-// ── MaxPool2d ─────────────────────────────────────────────────────────────────
+// ── MaxPool2d
+// ─────────────────────────────────────────────────────────────────
 
 struct MaxPool2d : Layer {
     Unfold2dParams params;
@@ -82,7 +88,8 @@ struct MaxPool2d : Layer {
     }
 };
 
-// ── BatchNorm2d ───────────────────────────────────────────────────────────────
+// ── BatchNorm2d
+// ───────────────────────────────────────────────────────────────
 
 struct BatchNorm2d : Layer {
     Var gamma, beta;
@@ -95,8 +102,9 @@ struct BatchNorm2d : Layer {
     std::vector<Var> parameters() override { return {gamma, beta}; }
 };
 
-// ── LayerNorm ─────────────────────────────────────────────────────────────────
-// Normalizes over the last dimension. gamma [d_model] init 1, beta [d_model] init 0.
+// ── LayerNorm
+// ───────────────────────────────────────────────────────────────── Normalizes
+// over the last dimension. gamma [d_model] init 1, beta [d_model] init 0.
 
 struct LayerNorm : Layer {
     Var gamma, beta;
@@ -106,33 +114,37 @@ struct LayerNorm : Layer {
     std::vector<Var> parameters() override { return {gamma, beta}; }
 };
 
-// ── EmbeddingLayer ────────────────────────────────────────────────────────────
-// weight [vocab_size, d_model], indices [*] → out [*, d_model]
+// ── EmbeddingLayer
+// ──────────────────────────────────────────────────────────── weight
+// [vocab_size, d_model], indices [*] → out [*, d_model]
 
 struct EmbeddingLayer {
     Var weight;
 
     EmbeddingLayer(u32 vocab_size, u32 d_model, bool on_gpu,
-                   CudaMemArena *perm_arena = nullptr);
+                   CudaMemArena *perm_arena = nullptr, float init_std = 0.0f);
     Var forward(TensorU32 indices, CudaMemArena *arena = nullptr);
     std::vector<Var> parameters() { return {weight}; }
 };
 
-// ── PositionalEmbeddingLayer ──────────────────────────────────────────────────
-// weight [max_seq_len, d_model]; forward(T) returns [T, d_model].
+// ── PositionalEmbeddingLayer
+// ────────────────────────────────────────────────── weight [max_seq_len,
+// d_model]; forward(T) returns [T, d_model].
 
 struct PositionalEmbeddingLayer {
     Var weight;
     TensorU32 positions;
 
     PositionalEmbeddingLayer(u32 max_seq_len, u32 d_model, bool on_gpu,
-                             CudaMemArena *perm_arena = nullptr);
+                             CudaMemArena *perm_arena = nullptr,
+                             float init_std = 0.0f);
     Var forward(u32 T, CudaMemArena *arena = nullptr);
     std::vector<Var> parameters() { return {weight}; }
 };
 
-// ── InputEmbedding ────────────────────────────────────────────────────────────
-// tok_emb(tokens) + pos_emb(T) + dropout → [B, T, d_model]
+// ── InputEmbedding
+// ──────────────────────────────────────────────────────────── tok_emb(tokens)
+// + pos_emb(T) + dropout → [B, T, d_model]
 
 struct InputEmbedding {
     EmbeddingLayer tok_emb;
@@ -141,14 +153,16 @@ struct InputEmbedding {
     bool training = true;
 
     InputEmbedding(u32 vocab_size, u32 max_seq_len, u32 d_model, f32 dropout_p,
-                   bool on_gpu, CudaMemArena *perm_arena = nullptr);
+                   bool on_gpu, CudaMemArena *perm_arena = nullptr,
+                   float init_std = 0.0f);
     Var forward(TensorU32 tokens, CudaMemArena *arena = nullptr);
     std::vector<Var> parameters();
     void train(bool mode = true) { training = mode; }
     void eval() { train(false); }
 };
 
-// ── Sequential ────────────────────────────────────────────────────────────────
+// ── Sequential
+// ────────────────────────────────────────────────────────────────
 
 struct Sequential : Layer {
     std::vector<std::unique_ptr<Layer>> layers;
@@ -190,27 +204,31 @@ struct Sequential : Layer {
     }
 };
 
-// ── MultiHeadAttention ────────────────────────────────────────────────────────
-// GPT-style causal self-attention. dropout_p=0 disables attn dropout.
+// ── MultiHeadAttention
+// ──────────────────────────────────────────────────────── GPT-style causal
+// self-attention. dropout_p=0 disables attn dropout.
 
 struct MultiHeadAttention {
     u32 n_heads, d_head;
-    Linear q_proj, k_proj, v_proj, out_proj;
-    Tensor<f32> causal_mask;  // [max_seq_len, max_seq_len], 0 on/below diag, -1e9 above
+    Var W_q, W_k, W_v, W_o;
+    Tensor<f32>
+        causal_mask; // [max_seq_len, max_seq_len], 0 on/below diag, -1e9 above
     f32 dropout_p;
     bool training = true;
 
     MultiHeadAttention(u32 d_model, u32 n_heads, u32 max_seq_len, f32 dropout_p,
-                       bool on_gpu, CudaMemArena *perm_arena = nullptr);
+                       bool on_gpu, CudaMemArena *perm_arena = nullptr,
+                       float init_std = 0.0f);
     Var forward(Var x, CudaMemArena *arena = nullptr);
     std::vector<Var> parameters();
     void train(bool mode = true) { training = mode; }
     void eval() { train(false); }
 };
 
-// ── TransformerBlock ──────────────────────────────────────────────────────────
-// Pre-norm GPT-style block: x + MHA(LN(x)), then x + MLP(LN(x)).
-// MLP = Linear(d_model→4*d_model) → GELU → Linear(4*d_model→d_model).
+// ── TransformerBlock
+// ────────────────────────────────────────────────────────── Pre-norm GPT-style
+// block: x + MHA(LN(x)), then x + MLP(LN(x)). MLP = Linear(d_model→4*d_model) →
+// GELU → Linear(4*d_model→d_model).
 
 struct TransformerBlock : Layer {
     LayerNorm ln1, ln2;
@@ -219,13 +237,15 @@ struct TransformerBlock : Layer {
     f32 dropout_p;
 
     TransformerBlock(u32 d_model, u32 n_heads, u32 max_seq_len, f32 dropout_p,
-                     bool on_gpu, CudaMemArena *perm_arena = nullptr);
+                     bool on_gpu, CudaMemArena *perm_arena = nullptr,
+                     float init_std = 0.0f);
     Var forward(Var x, CudaMemArena *arena = nullptr) override;
     std::vector<Var> parameters() override;
     void train(bool mode = true) override;
 };
 
-// ── ResBlock ──────────────────────────────────────────────────────────────────
+// ── ResBlock
+// ──────────────────────────────────────────────────────────────────
 
 struct ResBlock : Layer {
     Sequential residual;

@@ -12,8 +12,11 @@
 // Each ResBlock: Conv→BN→ReLU→Conv→BN + skip (identity or 1×1 projection)
 
 int main() {
-    CudaMemArena perm_arena(GiB(1));
-    CudaMemArena batch_arena(GiB(8));
+    CudaMemArena perm_arena(
+        GiB(1), "PermArena"); // For model parameters and persistent tensors
+    CudaMemArena batch_arena(
+        GiB(10),
+        "BatchArena"); // For per-batch tensors (inputs, activations, grads)
 
     Tensor<f32> train_X =
         tensor_load("data/X_train.npy", false); // CPU — augmented per batch

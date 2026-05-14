@@ -47,19 +47,14 @@ B, T, D, H = 2, 4, 8, 2
 d_head = D // H
 
 x_mha = torch.randn(B, T, D, requires_grad=True)
-# Linear stores W as [out, in] and computes x @ W^T + b  (b shape [1, D])
-Wq = torch.randn(D, D); bq = torch.randn(1, D)
-Wk = torch.randn(D, D); bk = torch.randn(1, D)
-Wv = torch.randn(D, D); bv = torch.randn(1, D)
-Wo = torch.randn(D, D); bo = torch.randn(1, D)
+Wq = torch.randn(D, D)
+Wk = torch.randn(D, D)
+Wv = torch.randn(D, D)
+Wo = torch.randn(D, D)
 
-Q = x_mha @ Wq.T + bq                            # [B, T, D]
-K = x_mha @ Wk.T + bk
-V = x_mha @ Wv.T + bv
-
-Q = Q.reshape(B, T, H, d_head).transpose(1, 2)   # [B, H, T, d_head]
-K = K.reshape(B, T, H, d_head).transpose(1, 2)
-V = V.reshape(B, T, H, d_head).transpose(1, 2)
+Q = (x_mha @ Wq.T).reshape(B, T, H, d_head).transpose(1, 2)   # [B, H, T, d_head]
+K = (x_mha @ Wk.T).reshape(B, T, H, d_head).transpose(1, 2)
+V = (x_mha @ Wv.T).reshape(B, T, H, d_head).transpose(1, 2)
 
 scores = Q @ K.transpose(-2, -1) / math.sqrt(d_head)  # [B, H, T, T]
 
@@ -70,7 +65,7 @@ scores = scores + mask
 attn = torch.softmax(scores, dim=-1)
 out_mha = attn @ V                                     # [B, H, T, d_head]
 out_mha = out_mha.transpose(1, 2).reshape(B, T, D)    # [B, T, D]
-out_mha = out_mha @ Wo.T + bo
+out_mha = out_mha @ Wo.T
 
 out_mha.backward(torch.ones_like(out_mha))
 
@@ -80,10 +75,6 @@ save_f32(Wq,             f"{d}/Wq.npy")
 save_f32(Wk,             f"{d}/Wk.npy")
 save_f32(Wv,             f"{d}/Wv.npy")
 save_f32(Wo,             f"{d}/Wo.npy")
-save_f32(bq,             f"{d}/bq.npy")
-save_f32(bk,             f"{d}/bk.npy")
-save_f32(bv,             f"{d}/bv.npy")
-save_f32(bo,             f"{d}/bo.npy")
 save_f32(out_mha,        f"{d}/out.npy")
 save_f32(x_mha.grad,     f"{d}/d_x.npy")
 print(f"mha: x{list(x_mha.shape)} out{list(out_mha.shape)}")
@@ -153,23 +144,23 @@ mlp_hidden = 4 * D
 x_tb = torch.randn(B, T, D, requires_grad=True)
 ln1_g = torch.randn(D); ln1_b = torch.randn(D)
 ln2_g = torch.randn(D); ln2_b = torch.randn(D)
-Wq_tb = torch.randn(D, D); bq_tb = torch.randn(1, D)
-Wk_tb = torch.randn(D, D); bk_tb = torch.randn(1, D)
-Wv_tb = torch.randn(D, D); bv_tb = torch.randn(1, D)
-Wo_tb = torch.randn(D, D); bo_tb = torch.randn(1, D)
-W_fc   = torch.randn(mlp_hidden, D); b_fc   = torch.randn(1, mlp_hidden)
-W_proj = torch.randn(D, mlp_hidden); b_proj = torch.randn(1, D)
+Wq_tb = torch.randn(D, D)
+Wk_tb = torch.randn(D, D)
+Wv_tb = torch.randn(D, D)
+Wo_tb = torch.randn(D, D)
+W_fc   = torch.randn(mlp_hidden, D); b_fc   = torch.randn(mlp_hidden)
+W_proj = torch.randn(D, mlp_hidden); b_proj = torch.randn(D)
 
 # MHA sublayer (pre-norm, no dropout)
 h = F.layer_norm(x_tb, (D,), ln1_g, ln1_b)
-Q = (h @ Wq_tb.T + bq_tb).reshape(B, T, H, d_head).transpose(1, 2)
-K = (h @ Wk_tb.T + bk_tb).reshape(B, T, H, d_head).transpose(1, 2)
-V = (h @ Wv_tb.T + bv_tb).reshape(B, T, H, d_head).transpose(1, 2)
+Q = (h @ Wq_tb.T).reshape(B, T, H, d_head).transpose(1, 2)
+K = (h @ Wk_tb.T).reshape(B, T, H, d_head).transpose(1, 2)
+V = (h @ Wv_tb.T).reshape(B, T, H, d_head).transpose(1, 2)
 scores = Q @ K.transpose(-2, -1) / math.sqrt(d_head)
 mask_tb = torch.zeros(T, T)
 mask_tb[torch.triu(torch.ones(T, T), diagonal=1).bool()] = -1e9
 attn_tb = torch.softmax(scores + mask_tb, dim=-1)
-mha_out = (attn_tb @ V).transpose(1, 2).reshape(B, T, D) @ Wo_tb.T + bo_tb
+mha_out = (attn_tb @ V).transpose(1, 2).reshape(B, T, D) @ Wo_tb.T
 h1 = x_tb + mha_out
 
 # MLP sublayer (pre-norm, no dropout)
@@ -186,13 +177,9 @@ save_f32(ln1_b,          f"{d}/ln1_b.npy")
 save_f32(ln2_g,          f"{d}/ln2_g.npy")
 save_f32(ln2_b,          f"{d}/ln2_b.npy")
 save_f32(Wq_tb,          f"{d}/Wq.npy")
-save_f32(bq_tb,          f"{d}/bq.npy")
 save_f32(Wk_tb,          f"{d}/Wk.npy")
-save_f32(bk_tb,          f"{d}/bk.npy")
 save_f32(Wv_tb,          f"{d}/Wv.npy")
-save_f32(bv_tb,          f"{d}/bv.npy")
 save_f32(Wo_tb,          f"{d}/Wo.npy")
-save_f32(bo_tb,          f"{d}/bo.npy")
 save_f32(W_fc,           f"{d}/W_fc.npy")
 save_f32(b_fc,           f"{d}/b_fc.npy")
 save_f32(W_proj,         f"{d}/W_proj.npy")
@@ -216,17 +203,15 @@ for _ in range(n_layers):
     p = {
         'ln1_g': torch.randn(D), 'ln1_b': torch.randn(D),
         'ln2_g': torch.randn(D), 'ln2_b': torch.randn(D),
-        'Wq': torch.randn(D, D), 'bq': torch.randn(1, D),
-        'Wk': torch.randn(D, D), 'bk': torch.randn(1, D),
-        'Wv': torch.randn(D, D), 'bv': torch.randn(1, D),
-        'Wo': torch.randn(D, D), 'bo': torch.randn(1, D),
-        'W_fc':   torch.randn(mlp_hidden, D), 'b_fc':   torch.randn(1, mlp_hidden),
-        'W_proj': torch.randn(D, mlp_hidden), 'b_proj': torch.randn(1, D),
+        'Wq': torch.randn(D, D), 'Wk': torch.randn(D, D),
+        'Wv': torch.randn(D, D), 'Wo': torch.randn(D, D),
+        'W_fc':   torch.randn(mlp_hidden, D), 'b_fc':   torch.randn(mlp_hidden),
+        'W_proj': torch.randn(D, mlp_hidden), 'b_proj': torch.randn(D),
     }
     blk.append(p)
 
 lnf_g = torch.randn(D); lnf_b = torch.randn(D)
-W_lmh = torch.randn(vocab, D); b_lmh = torch.randn(1, vocab)
+W_lmh = torch.randn(vocab, D); b_lmh = torch.randn(vocab)
 
 # Forward
 tok_emb = nn.Embedding(vocab, D)
@@ -240,11 +225,11 @@ for p in blk:
     mask_gpt = torch.zeros(T, T)
     mask_gpt[torch.triu(torch.ones(T, T), diagonal=1).bool()] = -1e9
     h = F.layer_norm(x_gpt, (D,), p['ln1_g'], p['ln1_b'])
-    Q = (h @ p['Wq'].T + p['bq']).reshape(B, T, H, d_head).transpose(1, 2)
-    K = (h @ p['Wk'].T + p['bk']).reshape(B, T, H, d_head).transpose(1, 2)
-    V = (h @ p['Wv'].T + p['bv']).reshape(B, T, H, d_head).transpose(1, 2)
+    Q = (h @ p['Wq'].T).reshape(B, T, H, d_head).transpose(1, 2)
+    K = (h @ p['Wk'].T).reshape(B, T, H, d_head).transpose(1, 2)
+    V = (h @ p['Wv'].T).reshape(B, T, H, d_head).transpose(1, 2)
     attn = torch.softmax(Q @ K.transpose(-2,-1) / math.sqrt(d_head) + mask_gpt, dim=-1)
-    mha_out = (attn @ V).transpose(1,2).reshape(B, T, D) @ p['Wo'].T + p['bo']
+    mha_out = (attn @ V).transpose(1,2).reshape(B, T, D) @ p['Wo'].T
     h1 = x_gpt + mha_out
     h2 = F.layer_norm(h1, (D,), p['ln2_g'], p['ln2_b'])
     x_gpt = h1 + F.gelu(h2 @ p['W_fc'].T + p['b_fc'], approximate='tanh') @ p['W_proj'].T + p['b_proj']

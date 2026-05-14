@@ -345,7 +345,7 @@ Tensor<T> scatter_add(const Tensor<T> &src, const TensorU32 &indices, u32 dim,
 
 // ---- f32 init ---------------------------------------------------------------
 
-void tensor_he_init(Tensor<f32> &t);
+void tensor_he_init(Tensor<f32> &t, float std = 0.0f);
 // Fills t with 0 on/below last-two-dim diagonal, -1e9 above. t must be [..., n,
 // n].
 void tensor_causal_mask(Tensor<f32> &t);
@@ -372,6 +372,17 @@ b32 tensor_fold2d(Tensor<T> &dst, const Tensor<T> &col, Unfold2dParams params);
 // ---- f32 comparison ---------------------------------------------------------
 
 b32 tensor_equals(const Tensor<f32> &a, const Tensor<f32> &b, f32 tol = 1e-5f);
+
+// ---- explicit fused kernels -------------------------------------------------
+void tensor_bn_fwd_normalize(Tensor<f32> &out, Tensor<f32> &xhat,
+                             const Tensor<f32> &inp, const Tensor<f32> &mean,
+                             const Tensor<f32> &m2, const Tensor<f32> &gamma,
+                             const Tensor<f32> &beta, u64 count, f32 eps);
+
+void tensor_bn_bwd(Tensor<f32> &dx, Tensor<f32> &d_gamma, Tensor<f32> &d_beta,
+                   const Tensor<f32> &grad, const Tensor<f32> &xhat,
+                   const Tensor<f32> &gamma, const Tensor<f32> &var, f32 m,
+                   f32 eps);
 
 // ============================================================================
 // Generic template utilities — work for any element type T.
@@ -404,6 +415,25 @@ inline b32 tensor_shape_eq(const Tensor<T> &a, const Tensor<U> &b) {
     return tensor_shape_eq(a.impl(), b.impl());
 }
 
+// Checks that a and b have compatible shapes for batched matmul:
+// both at least 2D, same ndim, a.shape[-1] == b.shape[-2], batch dims equal.
+template <typename T, typename U = T>
+inline b32 tensor_matmul_compat(const TensorImpl<T> &a, const TensorImpl<U> &b) {
+    if (a.ndim < 2 || b.ndim < 2 || a.ndim != b.ndim)
+        return false;
+    if (a.shape[a.ndim - 1] != b.shape[b.ndim - 2])
+        return false;
+    for (u32 i = 0; i < a.ndim - 2; i++)
+        if (a.shape[i] != b.shape[i])
+            return false;
+    return true;
+}
+
+template <typename T, typename U = T>
+inline b32 tensor_matmul_compat(const Tensor<T> &a, const Tensor<U> &b) {
+    return tensor_matmul_compat(a.impl(), b.impl());
+}
+
 template <typename T> inline void tensor_unsqueeze(TensorImpl<T> &t, u32 dim) {
     for (u32 i = t.ndim; i > dim; i--) {
         t.shape[i] = t.shape[i - 1];
@@ -414,6 +444,15 @@ template <typename T> inline void tensor_unsqueeze(TensorImpl<T> &t, u32 dim) {
     t.ndim++;
 }
 
+template <typename T> inline void tensor_squeeze(TensorImpl<T> &t, u32 dim) {
+    if (t.shape[dim] != 1)
+        return;
+    for (u32 i = dim; i < t.ndim - 1; i++) {
+        t.shape[i] = t.shape[i + 1];
+        t.stride[i] = t.stride[i + 1];
+    }
+    t.ndim--;
+}
 template <typename T>
 inline b32 tensor_transpose(TensorImpl<T> &t, u32 dim0, u32 dim1) {
     if (dim0 == dim1 || dim0 >= t.ndim || dim1 >= t.ndim)
@@ -489,6 +528,7 @@ inline b32 tensor_broadcast_to(TensorImpl<T> &t, const u32 *target_shape,
         return false;
     for (u32 i = 0; i < target_ndim; i++) {
         if (t.stride[i] == 0) {
+            t.stride[i] = 0;
             t.shape[i] = target_shape[i];
         } else if (t.shape[i] != target_shape[i]) {
             return false;

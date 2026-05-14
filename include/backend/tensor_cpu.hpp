@@ -78,8 +78,8 @@ void tensor_cpu_argmax(TensorImpl<u32> &out, const TensorImpl<T> &tensor,
 // ---- welford mean+m2 — f32 only ----------------------------------------
 
 void tensor_cpu_welford_mean_var(TensorImpl<f32> &mean, TensorImpl<f32> &var,
-                                 const TensorImpl<f32> &src,
-                                 const u32 *axes, u32 n_axes);
+                                 const TensorImpl<f32> &src, const u32 *axes,
+                                 u32 n_axes);
 
 // ---- fused batch norm — f32 only ----------------------------------------
 
@@ -88,7 +88,8 @@ void tensor_cpu_bn_fwd_normalize(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
                                  const TensorImpl<f32> &mean,
                                  const TensorImpl<f32> &var,
                                  const TensorImpl<f32> &gamma,
-                                 const TensorImpl<f32> &beta, f32 eps);
+                                 const TensorImpl<f32> &beta, u64 count,
+                                 f32 eps);
 
 void tensor_cpu_bn_bwd(TensorImpl<f32> &dx, TensorImpl<f32> &d_gamma,
                        TensorImpl<f32> &d_beta, const TensorImpl<f32> &grad,
@@ -104,8 +105,9 @@ void tensor_cpu_scatter_add(TensorImpl<T> &out, const TensorImpl<T> &src,
 
 // ---- initializing — f32 only --------------------------------------------
 
-void tensor_cpu_he_init(TensorImpl<f32> &tensor);
-void tensor_cpu_causal_mask(TensorImpl<f32> &t);  // fills [..., n, n] with causal mask
+void tensor_cpu_he_init(TensorImpl<f32> &tensor, float std = 0.0f);
+void tensor_cpu_causal_mask(
+    TensorImpl<f32> &t); // fills [..., n, n] with causal mask
 
 // ---- indexing ------------------------------------------------------------
 

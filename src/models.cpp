@@ -5,12 +5,12 @@
 GPTModel::GPTModel(u32 vocab_size, u32 d_model, u32 n_heads, u32 n_layers,
                    u32 max_seq_len, f32 dropout_p, bool on_gpu,
                    CudaMemArena *perm_arena)
-    : embedding(vocab_size, max_seq_len, d_model, dropout_p, on_gpu, perm_arena),
+    : embedding(vocab_size, max_seq_len, d_model, dropout_p, on_gpu, perm_arena, 0.02f),
       ln_f(d_model, on_gpu, perm_arena),
-      lm_head(d_model, vocab_size, on_gpu, perm_arena) {
+      lm_head(d_model, vocab_size, on_gpu, perm_arena, 0.02f) {
     blocks.reserve(n_layers);
     for (u32 i = 0; i < n_layers; i++)
-        blocks.emplace_back(d_model, n_heads, max_seq_len, dropout_p, on_gpu, perm_arena);
+        blocks.emplace_back(d_model, n_heads, max_seq_len, dropout_p, on_gpu, perm_arena, 0.02f);
 }
 
 Var GPTModel::forward(TensorU32 tokens, CudaMemArena *arena) {

@@ -63,7 +63,8 @@ template <typename T> void tensor_cuda_arange(TensorImpl<T> &out);
 
 void tensor_cuda_relu(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
 void tensor_cuda_gelu(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
-void tensor_cuda_gelu_backward(TensorImpl<f32> &out, const TensorImpl<f32> &grad,
+void tensor_cuda_gelu_backward(TensorImpl<f32> &out,
+                               const TensorImpl<f32> &grad,
                                const TensorImpl<f32> &input);
 void tensor_cuda_exp(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
 void tensor_cuda_log(TensorImpl<f32> &dst, const TensorImpl<f32> &src);
@@ -111,28 +112,14 @@ void tensor_cuda_mat_mul_cublas(TensorImpl<f32> &out, const TensorImpl<f32> &a,
 void tensor_cuda_mat_mul_batched(TensorImpl<f32> &out, const TensorImpl<f32> &a,
                                  const TensorImpl<f32> &b, b32 clear_out);
 
-// ---- fused batch norm — f32 only ----------------------------------------
-
-void tensor_cuda_bn_fwd_normalize(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
-                                  const TensorImpl<f32> &inp,
-                                  const TensorImpl<f32> &mean,
-                                  const TensorImpl<f32> &var,
-                                  const TensorImpl<f32> &gamma,
-                                  const TensorImpl<f32> &beta, f32 eps);
-void tensor_cuda_bn_bwd(TensorImpl<f32> &dx, TensorImpl<f32> &d_gamma,
-                        TensorImpl<f32> &d_beta, const TensorImpl<f32> &grad,
-                        const TensorImpl<f32> &xhat,
-                        const TensorImpl<f32> &gamma,
-                        const TensorImpl<f32> &var, f32 m, f32 eps);
-
 // ---- reduction -----------------------------------------------------------
 
 template <typename T>
 void tensor_cuda_sum(TensorImpl<T> &out, const TensorImpl<T> &tensor,
                      const u32 *axes, u32 n_axes);
 void tensor_cuda_welford_mean_var(TensorImpl<f32> &mean, TensorImpl<f32> &var,
-                                  const TensorImpl<f32> &src,
-                                  const u32 *axes, u32 n_axes);
+                                  const TensorImpl<f32> &src, const u32 *axes,
+                                  u32 n_axes);
 template <typename T>
 void tensor_cuda_max(TensorImpl<T> &out, const TensorImpl<T> &tensor);
 template <typename T>
@@ -149,7 +136,7 @@ void tensor_cuda_scatter_add(TensorImpl<T> &out, const TensorImpl<T> &src,
 
 // ---- initializing — f32 only --------------------------------------------
 
-void tensor_cuda_he_init(TensorImpl<f32> &tensor);
+void tensor_cuda_he_init(TensorImpl<f32> &tensor, float std = 0.0f);
 void tensor_cuda_causal_mask(TensorImpl<f32> &t);
 
 // ---- indexing ------------------------------------------------------------
@@ -171,5 +158,20 @@ void tensor_cuda_fold2d(TensorImpl<T> &dst, const TensorImpl<T> &col,
 
 b32 tensor_cuda_equals(const TensorImpl<f32> &a, const TensorImpl<f32> &b,
                        f32 tol);
+
+// ---- fused batch norm — f32 only ----------------------------------------
+
+void tensor_cuda_bn_fwd_normalize(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
+                                  const TensorImpl<f32> &inp,
+                                  const TensorImpl<f32> &mean,
+                                  const TensorImpl<f32> &var,
+                                  const TensorImpl<f32> &gamma,
+                                  const TensorImpl<f32> &beta, u64 count,
+                                  f32 eps);
+void tensor_cuda_bn_bwd(TensorImpl<f32> &dx, TensorImpl<f32> &d_gamma,
+                        TensorImpl<f32> &d_beta, const TensorImpl<f32> &grad,
+                        const TensorImpl<f32> &xhat,
+                        const TensorImpl<f32> &gamma,
+                        const TensorImpl<f32> &var, f32 m, f32 eps);
 
 #endif // TENSOR_CUDA_HPP

@@ -272,6 +272,9 @@ static b32 check_broadcast(const TensorImpl<T> &out, const TensorImpl<T> &a,
     }
     for (u32 i = 0; i < bndim; i++) {
         if (bcast[i] != out.shape[i]) {
+            tensor_print(out);
+            tensor_print(a);
+            tensor_print(b);
             printf("%s: out shape mismatch at dim %u\n", op, i);
             return false;
         }
@@ -762,13 +765,26 @@ Tensor<T> tensor_div(const Tensor<T> &a, T scalar, CudaMemArena *arena) {
 b32 tensor_mat_mul(Tensor<f32> &out, const Tensor<f32> &a, const Tensor<f32> &b,
                    b32 clear_out) {
     u32 nd = a->ndim;
-    if (nd < 2 || nd != b->ndim || nd != out->ndim) {
+    if (nd < 2 || b->ndim < 2) {
+        printf("tensor_mat_mul: ndim must be >= 2\n");
+        return false;
+    }
+    // If b has fewer dims than a, expand it with stride-0 batch dims (broadcast).
+    Tensor<f32> b_exp = b;
+    if (b->ndim < nd) {
+        b_exp = tensor_view(b);
+        if (!tensor_expand_shape(b_exp.impl(), nd)) {
+            printf("tensor_mat_mul: cannot expand b to match a's ndim\n");
+            return false;
+        }
+    }
+    if (nd != b_exp->ndim || nd != out->ndim) {
         printf("tensor_mat_mul: ndim mismatch\n");
         return false;
     }
-    if (a->shape[nd - 1] != b->shape[nd - 2] ||
+    if (a->shape[nd - 1] != b_exp->shape[nd - 2] ||
         a->shape[nd - 2] != out->shape[nd - 2] ||
-        b->shape[nd - 1] != out->shape[nd - 1]) {
+        b_exp->shape[nd - 1] != out->shape[nd - 1]) {
         printf("tensor_mat_mul: shape mismatch\n");
         return false;
     }
@@ -776,17 +792,17 @@ b32 tensor_mat_mul(Tensor<f32> &out, const Tensor<f32> &a, const Tensor<f32> &b,
     switch ((out->on_gpu() << 2) | (a->on_gpu() << 1) | b->on_gpu()) {
     case 0b000:
         if (batched)
-            tensor_cpu_mat_mul_batched(out.impl(), a.impl(), b.impl(),
+            tensor_cpu_mat_mul_batched(out.impl(), a.impl(), b_exp.impl(),
                                        clear_out);
         else
-            tensor_cpu_mat_mul(out.impl(), a.impl(), b.impl(), clear_out);
+            tensor_cpu_mat_mul(out.impl(), a.impl(), b_exp.impl(), clear_out);
         return true;
     case 0b111:
         if (batched)
-            tensor_cuda_mat_mul_batched(out.impl(), a.impl(), b.impl(),
+            tensor_cuda_mat_mul_batched(out.impl(), a.impl(), b_exp.impl(),
                                         clear_out);
         else
-            tensor_cuda_mat_mul_cublas(out.impl(), a.impl(), b.impl(),
+            tensor_cuda_mat_mul_cublas(out.impl(), a.impl(), b_exp.impl(),
                                        clear_out);
         return true;
     default:
@@ -797,46 +813,13 @@ b32 tensor_mat_mul(Tensor<f32> &out, const Tensor<f32> &a, const Tensor<f32> &b,
 
 Tensor<f32> tensor_mat_mul(const Tensor<f32> &a, const Tensor<f32> &b,
                            CudaMemArena *arena) {
-    u32 nd = std::max(a->ndim, b->ndim);
-
-    // Compute expanded shapes (prepend 1s to lower-ndim operand)
-    u32 a_shape[MAX_NDIM], b_shape[MAX_NDIM];
-    expanded_shape(a.impl(), nd, a_shape);
-    expanded_shape(b.impl(), nd, b_shape);
-
-    // Output: broadcast batch dims, M from a, N from b
+    u32 nd = a->ndim;
     u32 out_shape[MAX_NDIM];
-    for (u32 i = 0; i < nd - 2; i++)
-        out_shape[i] = std::max(a_shape[i], b_shape[i]);
-    out_shape[nd - 2] = a_shape[nd - 2];
-    out_shape[nd - 1] = b_shape[nd - 1];
-
-    // broadcast_to expands lower-ndim operands (stride-0 for new batch dims).
-    // tensor_copy materialises any non-contiguous or broadcast layout into
-    // fresh storage so the b32 overload receives same-ndim contiguous tensors.
-    auto prepare = [&](const Tensor<f32> &t, const u32 *target) -> Tensor<f32> {
-        Tensor<f32> v = tensor_view(t);
-        tensor_broadcast_to(v.impl(), target, nd);
-        if (tensor_is_contiguous(v))
-            return v;
-        Tensor<f32> c = Tensor<f32>::make(nd, target, t->on_gpu(), arena);
-        tensor_copy(c, v);
-        return c;
-    };
-
-    u32 a_target[MAX_NDIM], b_target[MAX_NDIM];
-    for (u32 i = 0; i < nd - 2; i++)
-        a_target[i] = b_target[i] = out_shape[i];
-    a_target[nd - 2] = a_shape[nd - 2];
-    a_target[nd - 1] = a_shape[nd - 1];
-    b_target[nd - 2] = b_shape[nd - 2];
-    b_target[nd - 1] = b_shape[nd - 1];
-
-    Tensor<f32> ac = prepare(a, a_target);
-    Tensor<f32> bc = prepare(b, b_target);
-
+    // Copy leading (batch) dims + M from A, then N from B (b may have fewer dims).
+    memcpy(out_shape, a->shape, (nd - 1) * sizeof(u32));
+    out_shape[nd - 1] = b->shape[b->ndim - 1];
     Tensor<f32> out = tensor_zeros<f32>(nd, out_shape, a->on_gpu(), arena);
-    if (!tensor_mat_mul(out, ac, bc, false))
+    if (!tensor_mat_mul(out, a, b, false))
         return Tensor<f32>{};
     return out;
 }
@@ -848,7 +831,8 @@ b32 tensor_sum(Tensor<T> &out, const Tensor<T> &t, const u32 *axes, u32 n_axes,
                b32 keep_dim, b32 clear_out) {
     for (u32 i = 0; i < n_axes; i++) {
         if (axes[i] >= t->ndim) {
-            printf("tensor_sum: axis %u out of range (ndim=%u)\n", axes[i], t->ndim);
+            printf("tensor_sum: axis %u out of range (ndim=%u)\n", axes[i],
+                   t->ndim);
             return false;
         }
     }
@@ -907,14 +891,16 @@ Tensor<T> tensor_sum(const Tensor<T> &t, u32 dim, b32 keep_dim,
 template <typename T>
 b32 tensor_sum(Tensor<T> &out, const Tensor<T> &t, b32 clear_out) {
     u32 axes[MAX_NDIM];
-    for (u32 i = 0; i < t->ndim; i++) axes[i] = i;
+    for (u32 i = 0; i < t->ndim; i++)
+        axes[i] = i;
     return tensor_sum(out, t, axes, t->ndim, false, clear_out);
 }
 
 template <typename T>
 Tensor<T> tensor_sum(const Tensor<T> &t, CudaMemArena *arena) {
     u32 axes[MAX_NDIM];
-    for (u32 i = 0; i < t->ndim; i++) axes[i] = i;
+    for (u32 i = 0; i < t->ndim; i++)
+        axes[i] = i;
     return tensor_sum(t, axes, t->ndim, false, arena);
 }
 
@@ -1030,9 +1016,11 @@ TensorU32 tensor_argmax(const Tensor<T> &t, u32 dim, b32 keep_dim,
 
 b32 tensor_welford_mean_var(Tensor<f32> &mean, Tensor<f32> &var,
                             const Tensor<f32> &src, u32 skip_dim) {
-    u32 axes[MAX_NDIM]; u32 n = 0;
+    u32 axes[MAX_NDIM];
+    u32 n = 0;
     for (u32 i = 0; i < src->ndim; i++)
-        if (i != skip_dim) axes[n++] = i;
+        if (i != skip_dim)
+            axes[n++] = i;
     return tensor_welford_mean_var(mean, var, src, axes, n);
 }
 
@@ -1222,11 +1210,11 @@ Tensor<T> tensor_gather(const Tensor<T> &src, const TensorU32 &indices, u32 dim,
 
 // ---- initializing — f32 only --------------------------------------------
 
-void tensor_he_init(Tensor<f32> &t) {
+void tensor_he_init(Tensor<f32> &t, float std) {
     if (t->on_gpu()) {
-        tensor_cuda_he_init(t.impl());
+        tensor_cuda_he_init(t.impl(), std);
     } else {
-        tensor_cpu_he_init(t.impl());
+        tensor_cpu_he_init(t.impl(), std);
     }
 }
 
@@ -1351,6 +1339,33 @@ b32 tensor_equals(const Tensor<f32> &a, const Tensor<f32> &b, f32 tol) {
     }
 }
 
+// ---- explicit fused kernels ---------------------------------------------
+void tensor_bn_fwd_normalize(Tensor<f32> &out, Tensor<f32> &xhat,
+                             const Tensor<f32> &inp, const Tensor<f32> &mean,
+                             const Tensor<f32> &m2, const Tensor<f32> &gamma,
+                             const Tensor<f32> &beta, u64 count, f32 eps) {
+    if (inp->on_gpu())
+        tensor_cuda_bn_fwd_normalize(out.impl(), xhat.impl(), inp.impl(),
+                                     mean.impl(), m2.impl(), gamma.impl(),
+                                     beta.impl(), count, eps);
+    else
+        tensor_cpu_bn_fwd_normalize(out.impl(), xhat.impl(), inp.impl(),
+                                    mean.impl(), m2.impl(), gamma.impl(),
+                                    beta.impl(), count, eps);
+}
+
+void tensor_bn_bwd(Tensor<f32> &dx, Tensor<f32> &d_gamma, Tensor<f32> &d_beta,
+                   const Tensor<f32> &grad, const Tensor<f32> &xhat,
+                   const Tensor<f32> &gamma, const Tensor<f32> &var, f32 m,
+                   f32 eps) {
+    if (grad->on_gpu())
+        tensor_cuda_bn_bwd(dx.impl(), d_gamma.impl(), d_beta.impl(),
+                           grad.impl(), xhat.impl(), gamma.impl(), var.impl(),
+                           m, eps);
+    else
+        tensor_cpu_bn_bwd(dx.impl(), d_gamma.impl(), d_beta.impl(), grad.impl(),
+                          xhat.impl(), gamma.impl(), var.impl(), m, eps);
+}
 // ---- Explicit instantiations --------------------------------------------
 
 #define INST(T)                                                                \
@@ -1398,7 +1413,8 @@ b32 tensor_equals(const Tensor<f32> &a, const Tensor<f32> &b, f32 tol) {
     template Tensor<T> tensor_sum(const Tensor<T> &, const u32 *, u32, b32,    \
                                   CudaMemArena *);                             \
     template b32 tensor_sum(Tensor<T> &, const Tensor<T> &, u32, b32, b32);    \
-    template Tensor<T> tensor_sum(const Tensor<T> &, u32, b32, CudaMemArena *);\
+    template Tensor<T> tensor_sum(const Tensor<T> &, u32, b32,                 \
+                                  CudaMemArena *);                             \
     template b32 tensor_sum(Tensor<T> &, const Tensor<T> &, b32);              \
     template Tensor<T> tensor_sum(const Tensor<T> &, CudaMemArena *);          \
     template b32 tensor_max(Tensor<T> &, const Tensor<T> &, u32, b32);         \

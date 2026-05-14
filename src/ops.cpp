@@ -1,52 +1,14 @@
 #include "../include/ops.hpp"
 #include <cstring>
 
-// Sums grad over every dimension where target was broadcast (size == 1).
-static Tensor<f32> reduce_grad(const Tensor<f32> &grad,
-                               const Tensor<f32> &target, CudaMemArena *arena) {
-    Tensor<f32> cur = tensor_view(grad);
-    u32 target_expanded[MAX_NDIM];
-    expanded_shape(target.impl(), grad->ndim, target_expanded);
-    for (u32 i = 0; i < grad->ndim; i++) {
-        if (target_expanded[i] == 1 && cur->shape[i] > 1)
-            cur = tensor_sum(cur, i, true, arena);
-    }
-    tensor_reshape(cur, target->shape, target->ndim, arena);
-    return cur;
-}
-
-// Reduces [N,C,H,W] → [1,C,1,1] by summing over all dims except dim 1.
-static Tensor<f32> reduce_all_except_c(const Tensor<f32> &t,
-                                       CudaMemArena *arena) {
-    Tensor<f32> r = tensor_view(t);
-    for (i32 d = (i32)r->ndim - 1; d >= 0; d--) {
-        if ((u32)d != 1)
-            r = tensor_sum(r, (u32)d, true, arena);
-    }
-    return r;
-}
-
 // ── mat_mul ──────────────────────────────────────────────────────────────────
 
 Var mat_mul(Var a, Var b, CudaMemArena *arena) {
-    // Align ndims with differentiable broadcast_to so its backward automatically
-    // sums the grad over any prepended batch dims (e.g. weight in Linear).
-    if (a->data->ndim != b->data->ndim) {
-        u32 nd = std::max(a->data->ndim, b->data->ndim);
-        u32 target[MAX_NDIM];
-        if (b->data->ndim < nd) {
-            for (u32 i = 0; i < nd - 2; i++) target[i] = a->data->shape[i];
-            target[nd - 2] = b->data->shape[b->data->ndim - 2];
-            target[nd - 1] = b->data->shape[b->data->ndim - 1];
-            b = broadcast_to(b, target, nd, arena);
-        } else {
-            for (u32 i = 0; i < nd - 2; i++) target[i] = b->data->shape[i];
-            target[nd - 2] = a->data->shape[a->data->ndim - 2];
-            target[nd - 1] = a->data->shape[a->data->ndim - 1];
-            a = broadcast_to(a, target, nd, arena);
-        }
+    if (!a || !b) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!tensor_matmul_compat(a->data, b->data)) {
+        printf("mat_mul: incompatible shapes\n");
+        return Var{};
     }
-
     Var out(tensor_mat_mul(a->data, b->data, arena));
 
     if (!((a->flags | b->flags) & FV_FLAG_REQUIERES_GRAD))
@@ -57,21 +19,24 @@ Var mat_mul(Var a, Var b, CudaMemArena *arena) {
         CudaMemArena *arena;
         Tensor<f32> saved_a, saved_b;
         void backward(Tensor<f32> grad) override {
-            if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
+            Var a = inputs[0], b = inputs[1];
+            // dA = grad @ B^T
+            if (a->flags & FV_FLAG_REQUIERES_GRAD) {
                 Tensor<f32> bt = tensor_view(saved_b);
                 tensor_transpose(bt, saved_b->ndim - 2, saved_b->ndim - 1);
                 Tensor<f32> dA = tensor_mat_mul(grad, bt, arena);
-                if (!inputs[0]->grad.defined())
-                    inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
-                tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+                if (!a->grad.defined())
+                    a->grad = tensor_zeros_like(a->data, arena);
+                tensor_add(a->grad, a->grad, dA);
             }
-            if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
+            // dB = A^T @ grad
+            if (b->flags & FV_FLAG_REQUIERES_GRAD) {
                 Tensor<f32> at = tensor_view(saved_a);
                 tensor_transpose(at, saved_a->ndim - 2, saved_a->ndim - 1);
                 Tensor<f32> dB = tensor_mat_mul(at, grad, arena);
-                if (!inputs[1]->grad.defined())
-                    inputs[1]->grad = tensor_zeros_like(inputs[1]->data, arena);
-                tensor_add(inputs[1]->grad, inputs[1]->grad, dB);
+                if (!b->grad.defined())
+                    b->grad = tensor_zeros_like(b->data, arena);
+                tensor_add(b->grad, b->grad, dB);
             }
         }
     };
@@ -87,6 +52,7 @@ Var mat_mul(Var a, Var b, CudaMemArena *arena) {
 // ── reshape ──────────────────────────────────────────────────────────────────
 
 Var reshape(Var a, const u32 *shape, u32 ndim, CudaMemArena *arena) {
+    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
     Tensor<f32> out_data;
     if (tensor_is_contiguous(a->data)) {
         out_data = tensor_view(a->data);
@@ -106,8 +72,10 @@ Var reshape(Var a, const u32 *shape, u32 ndim, CudaMemArena *arena) {
         u32 orig_shape[MAX_NDIM];
         u32 orig_ndim;
         void backward(Tensor<f32> grad) override {
-            if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
+            Var a = inputs[0];
+            if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
                 return;
+            // dA = reshape(grad, orig_shape)
             Tensor<f32> dA;
             if (tensor_is_contiguous(grad)) {
                 dA = tensor_view(grad);
@@ -117,9 +85,9 @@ Var reshape(Var a, const u32 *shape, u32 ndim, CudaMemArena *arena) {
                 tensor_copy(dA, grad);
             }
             tensor_reshape(dA, orig_shape, orig_ndim, arena);
-            if (!inputs[0]->grad.defined())
-                inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
-            tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+            if (!a->grad.defined())
+                a->grad = tensor_zeros_like(inputs[0]->data, arena);
+            tensor_add(a->grad, a->grad, dA);
         }
     };
     auto fn = std::make_shared<Fn>();
@@ -134,6 +102,7 @@ Var reshape(Var a, const u32 *shape, u32 ndim, CudaMemArena *arena) {
 // ── transpose ────────────────────────────────────────────────────────────────
 
 Var transpose(Var a, u32 d0, u32 d1, CudaMemArena *arena) {
+    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
     Tensor<f32> out_data = tensor_view(a->data);
     tensor_transpose(out_data, d0, d1);
 
@@ -145,13 +114,15 @@ Var transpose(Var a, u32 d0, u32 d1, CudaMemArena *arena) {
         CudaMemArena *arena;
         u32 d0, d1;
         void backward(Tensor<f32> grad) override {
-            if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
+            Var a = inputs[0];
+            if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
                 return;
+            // dA = transpose(grad, d0, d1)
             Tensor<f32> dA = tensor_view(grad);
             tensor_transpose(dA, d0, d1);
-            if (!inputs[0]->grad.defined())
-                inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
-            tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+            if (!a->grad.defined())
+                a->grad = tensor_zeros_like(a->data, arena);
+            tensor_add(a->grad, a->grad, dA);
         }
     };
     auto fn = std::make_shared<Fn>();
@@ -166,6 +137,7 @@ Var transpose(Var a, u32 d0, u32 d1, CudaMemArena *arena) {
 // ── unsqueeze ────────────────────────────────────────────────────────────────
 
 Var unsqueeze(Var a, u32 dim, CudaMemArena *arena) {
+    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
     Tensor<f32> out_data = tensor_view(a->data);
     tensor_unsqueeze(out_data.impl(), dim);
 
@@ -177,14 +149,12 @@ Var unsqueeze(Var a, u32 dim, CudaMemArena *arena) {
         u32 dim;
         CudaMemArena *arena;
         void backward(Tensor<f32> grad) override {
-            if (!(inputs[0]->flags & FV_FLAG_REQUIERES_GRAD))
+            Var a = inputs[0];
+            if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
                 return;
+            // dA = squeeze(grad, dim)
             Tensor<f32> dA = tensor_view(grad);
-            for (u32 i = dim; i < dA->ndim - 1; i++) {
-                dA->shape[i] = dA->shape[i + 1];
-                dA->stride[i] = dA->stride[i + 1];
-            }
-            dA->ndim--;
+            tensor_squeeze(dA.impl(), dim);
             if (!inputs[0]->grad.defined())
                 inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
             tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
@@ -202,12 +172,14 @@ Var unsqueeze(Var a, u32 dim, CudaMemArena *arena) {
 
 Var broadcast_to(Var a, const u32 *target_shape, u32 target_ndim,
                  CudaMemArena *arena) {
+    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
     if (a->data->ndim > target_ndim) {
         printf("broadcast_to: target_ndim < input ndim\n");
         return Var{};
     }
     Tensor<f32> out_data = tensor_view(a->data);
     if (!tensor_broadcast_to(out_data.impl(), target_shape, target_ndim)) {
+        tensor_print(a->data.impl());
         printf("broadcast_to: incompatible shapes\n");
         return Var{};
     }
@@ -249,6 +221,7 @@ Var broadcast_to(Var a, const u32 *target_shape, u32 target_ndim,
 // ── gather (differentiable) ──────────────────────────────────────────────────
 
 Var gather(Var src, TensorU32 indices, u32 dim, CudaMemArena *arena) {
+    if (!src) { printf("%s: null input\n", __func__); return Var{}; }
     Var out(::tensor_gather(src->data, indices, dim, arena));
 
     if (!(src->flags & FV_FLAG_REQUIERES_GRAD))
@@ -279,6 +252,11 @@ Var gather(Var src, TensorU32 indices, u32 dim, CudaMemArena *arena) {
 // ── add ──────────────────────────────────────────────────────────────────────
 
 Var add(Var a, Var b, CudaMemArena *arena) {
+    if (!a || !b) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!tensor_shape_eq(a->data, b->data)) {
+        printf("add: shape mismatch\n");
+        return Var{};
+    }
     Var out(tensor_add(a->data, b->data, arena));
 
     if (!((a->flags | b->flags) & FV_FLAG_REQUIERES_GRAD))
@@ -289,16 +267,14 @@ Var add(Var a, Var b, CudaMemArena *arena) {
         CudaMemArena *arena;
         void backward(Tensor<f32> grad) override {
             if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
-                Tensor<f32> dA = reduce_grad(grad, inputs[0]->data, arena);
                 if (!inputs[0]->grad.defined())
                     inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
-                tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+                tensor_add(inputs[0]->grad, inputs[0]->grad, grad);
             }
             if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
-                Tensor<f32> dB = reduce_grad(grad, inputs[1]->data, arena);
                 if (!inputs[1]->grad.defined())
                     inputs[1]->grad = tensor_zeros_like(inputs[1]->data, arena);
-                tensor_add(inputs[1]->grad, inputs[1]->grad, dB);
+                tensor_add(inputs[1]->grad, inputs[1]->grad, grad);
             }
         }
     };
@@ -312,6 +288,7 @@ Var add(Var a, Var b, CudaMemArena *arena) {
 // ── relu ─────────────────────────────────────────────────────────────────────
 
 Var relu(Var a, CudaMemArena *arena) {
+    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
     Var out(tensor_relu(a->data, arena));
 
     if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
@@ -339,6 +316,7 @@ Var relu(Var a, CudaMemArena *arena) {
 // ── gelu ─────────────────────────────────────────────────────────────────────
 
 Var gelu(Var a, CudaMemArena *arena) {
+    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
     Var out(tensor_gelu(a->data, arena));
 
     if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
@@ -366,6 +344,7 @@ Var gelu(Var a, CudaMemArena *arena) {
 // ── mul (scalar) ─────────────────────────────────────────────────────────────
 
 Var mul(Var a, f32 scalar, CudaMemArena *arena) {
+    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
     Var out(tensor_mul(a->data, scalar, arena));
 
     if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
@@ -395,6 +374,11 @@ Var mul(Var a, f32 scalar, CudaMemArena *arena) {
 // ── mul (elementwise Var×Var) ────────────────────────────────────────────────
 
 Var mul(Var a, Var b, CudaMemArena *arena) {
+    if (!a || !b) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!tensor_shape_eq(a->data, b->data)) {
+        printf("mul: shape mismatch\n");
+        return Var{};
+    }
     Var out(tensor_mul(a->data, b->data, arena));
 
     if (!((a->flags | b->flags) & FV_FLAG_REQUIERES_GRAD))
@@ -406,18 +390,14 @@ Var mul(Var a, Var b, CudaMemArena *arena) {
         Tensor<f32> saved_a, saved_b;
         void backward(Tensor<f32> grad) override {
             if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
-                Tensor<f32> dA = reduce_grad(tensor_mul(grad, saved_b, arena),
-                                             inputs[0]->data, arena);
                 if (!inputs[0]->grad.defined())
                     inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
-                tensor_add(inputs[0]->grad, inputs[0]->grad, dA);
+                tensor_add(inputs[0]->grad, inputs[0]->grad, grad);
             }
             if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
-                Tensor<f32> dB = reduce_grad(tensor_mul(grad, saved_a, arena),
-                                             inputs[1]->data, arena);
                 if (!inputs[1]->grad.defined())
                     inputs[1]->grad = tensor_zeros_like(inputs[1]->data, arena);
-                tensor_add(inputs[1]->grad, inputs[1]->grad, dB);
+                tensor_add(inputs[1]->grad, inputs[1]->grad, grad);
             }
         }
     };
@@ -434,6 +414,7 @@ Var mul(Var a, Var b, CudaMemArena *arena) {
 // ───────────────────────────────────────────────────────────────────
 
 Var softmax(Var a, i32 dim, CudaMemArena *arena) {
+    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
     Tensor<f32> s = tensor_softmax(a->data, dim, arena);
     Var out(s);
 
@@ -470,6 +451,7 @@ Var softmax(Var a, i32 dim, CudaMemArena *arena) {
 // ── dropout ──────────────────────────────────────────────────────────────────
 
 Var dropout(Var a, f32 p, bool training, CudaMemArena *arena) {
+    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
     if (!training || p == 0.0f)
         return a;
 
@@ -504,6 +486,7 @@ Var dropout(Var a, f32 p, bool training, CudaMemArena *arena) {
 // ── conv2d ───────────────────────────────────────────────────────────────────
 
 Var conv2d(Var input, Var weight, Unfold2dParams params, CudaMemArena *arena) {
+    if (!input || !weight) { printf("%s: null input\n", __func__); return Var{}; }
     const Tensor<f32> &inp = input->data;
     params.compute_output_size(inp->shape[2], inp->shape[3]);
     u32 N = inp->shape[0];
@@ -583,6 +566,7 @@ Var conv2d(Var input, Var weight, Unfold2dParams params, CudaMemArena *arena) {
 // ────────────────────────────────────────────────────────────────
 
 Var max_pool2d(Var input, Unfold2dParams params, CudaMemArena *arena) {
+    if (!input) { printf("%s: null input\n", __func__); return Var{}; }
     const Tensor<f32> &inp = input->data;
     params.compute_output_size(inp->shape[2], inp->shape[3]);
     u32 N = inp->shape[0];
@@ -666,53 +650,51 @@ Var max_pool2d(Var input, Unfold2dParams params, CudaMemArena *arena) {
 Var batch_norm(Var input, Var gamma, Var beta, Tensor<f32> running_mean,
                Tensor<f32> running_var, bool training, f32 momentum, f32 eps,
                CudaMemArena *arena) {
+    if (!input || !gamma || !beta) { printf("%s: null input\n", __func__); return Var{}; }
     const Tensor<f32> &inp = input->data;
     bool on_gpu = inp->on_gpu();
     u32 ndim = inp->ndim;
     u32 C = inp->shape[1];
 
-    // [1, C, 1, ..., 1] — channel broadcast shape
+    // Broadcast shape: [1, C, 1, ..., 1] matching inp->ndim
     u32 bcast_shape[MAX_NDIM];
     for (u32 d = 0; d < ndim; d++)
         bcast_shape[d] = (d == 1) ? C : 1;
 
     Tensor<f32> mean, var, xhat, out_data;
-    f32 count = (f32)inp->numel() / (f32)C;
 
     if (training) {
+        // Compute per-channel mean and raw M2 (sum of squared deviations)
         mean = Tensor<f32>::make(ndim, bcast_shape, on_gpu, arena);
         Tensor<f32> m2 = Tensor<f32>::make(ndim, bcast_shape, on_gpu, arena);
-        tensor_welford_mean_var(mean, m2, inp, 1u);  // m2 = raw M2
+        tensor_welford_mean_var(mean, m2, inp, 1);
 
-        var = tensor_div(m2, count, arena);                       // biased var
+        u64 count = inp->numel() / (u64)C;
+
+        // Biased var saved for backward; unbiased var for running stats EMA
+        var = tensor_div(m2, (f32)count, arena);
         Tensor<f32> unbiased_var = tensor_div(m2, count - 1.0f, arena);
 
+        // Update running stats: running = (1-momentum)*running + momentum*batch
         tensor_mul(running_mean, running_mean, 1.0f - momentum);
-        tensor_add(running_mean, running_mean, tensor_mul(mean, momentum, arena));
+        tensor_add(running_mean, running_mean,
+                   tensor_mul(mean, momentum, arena));
         tensor_mul(running_var, running_var, 1.0f - momentum);
-        tensor_add(running_var, running_var, tensor_mul(unbiased_var, momentum, arena));
+        tensor_add(running_var, running_var,
+                   tensor_mul(unbiased_var, momentum, arena));
 
-        // std = sqrt(var + eps), xhat = (inp - mean) / std
-        Tensor<f32> std_t = tensor_add(var, eps, arena);
-        tensor_sqrt(std_t, std_t);
-        xhat = tensor_sub(inp, mean, arena);
-        tensor_div(xhat, xhat, std_t);
-
-        // out = gamma * xhat + beta  [gamma/beta reshaped to bcast_shape]
-        Tensor<f32> gv = tensor_view(gamma->data);
-        tensor_reshape(gv, bcast_shape, ndim, arena);
-        Tensor<f32> bv = tensor_view(beta->data);
-        tensor_reshape(bv, bcast_shape, ndim, arena);
-        out_data = tensor_mul(xhat, gv, arena);
-        tensor_add(out_data, out_data, bv);
+        xhat = Tensor<f32>::make(ndim, inp->shape, on_gpu, arena);
+        out_data = Tensor<f32>::make(ndim, inp->shape, on_gpu, arena);
+        tensor_bn_fwd_normalize(out_data, xhat, inp, mean, m2, gamma->data,
+                                beta->data, count, eps);
     } else {
+        // Eval: normalize with running stats, no grad
+        xhat = tensor_sub(inp, running_mean, arena);
         mean = running_mean;
         var = running_var;
-        Tensor<f32> std_t = tensor_add(var, eps, arena);
-        tensor_sqrt(std_t, std_t);
-        xhat = tensor_sub(inp, mean, arena);
-        tensor_div(xhat, xhat, std_t);
-
+        Tensor<f32> denom = tensor_add(var, eps, arena);
+        tensor_sqrt(denom, denom);
+        tensor_div(xhat, xhat, denom);
         Tensor<f32> gv = tensor_view(gamma->data);
         tensor_reshape(gv, bcast_shape, ndim, arena);
         Tensor<f32> bv = tensor_view(beta->data);
@@ -730,82 +712,51 @@ Var batch_norm(Var input, Var gamma, Var beta, Tensor<f32> running_mean,
 
     struct Fn : Function {
         CudaMemArena *arena;
-        f32 eps, count;
-        Tensor<f32> saved_var, saved_xhat;
+        f32 eps;
+        Tensor<f32> saved_mean, saved_var, saved_xhat;
         u32 C;
-
         void backward(Tensor<f32> grad) override {
             const Tensor<f32> &inp = inputs[0]->data;
-            u32 ndim = inp->ndim;
-            u32 bcast_shape[MAX_NDIM];
-            for (u32 d = 0; d < ndim; d++) bcast_shape[d] = (d == 1) ? C : 1;
+            u64 m = inp->numel() / (u64)C;
 
-            // All dims except channel dim 1
-            u32 axes[MAX_NDIM]; u32 n = 0;
-            for (u32 i = 0; i < ndim; i++) if (i != 1) axes[n++] = i;
+            auto ensure_grad = [&](Var &v) {
+                if ((v->flags & FV_FLAG_REQUIERES_GRAD) && !v->grad.defined())
+                    v->grad = tensor_zeros_like(v->data, arena);
+            };
+            ensure_grad(inputs[0]);
+            ensure_grad(inputs[1]);
+            ensure_grad(inputs[2]);
 
-            // std = sqrt(var + eps)
-            Tensor<f32> std_t = tensor_add(saved_var, eps, arena);
-            tensor_sqrt(std_t, std_t);
+            Tensor<f32> dx_tmp, dgamma_tmp, dbeta_tmp;
+            auto grad_or_tmp = [&](Var &v, Tensor<f32> &tmp) -> Tensor<f32> & {
+                if (v->flags & FV_FLAG_REQUIERES_GRAD)
+                    return v->grad;
+                tmp = tensor_create_like(v->data, arena);
+                return tmp;
+            };
+            Tensor<f32> &dx = grad_or_tmp(inputs[0], dx_tmp);
+            Tensor<f32> &dgamma = grad_or_tmp(inputs[1], dgamma_tmp);
+            Tensor<f32> &dbeta = grad_or_tmp(inputs[2], dbeta_tmp);
 
-            // gamma reshaped for broadcasting
-            Tensor<f32> gv = tensor_view(inputs[1]->data);
-            tensor_reshape(gv, bcast_shape, ndim, arena);
-
-            // grad_norm = grad * gamma
-            Tensor<f32> gn = tensor_mul(grad, gv, arena);
-
-            // d_beta = sum(grad, all except C) → [C]
-            if (inputs[2]->flags & FV_FLAG_REQUIERES_GRAD) {
-                if (!inputs[2]->grad.defined())
-                    inputs[2]->grad = tensor_zeros_like(inputs[2]->data, arena);
-                tensor_add(inputs[2]->grad, inputs[2]->grad,
-                           tensor_sum(grad, axes, n, false, arena));
-            }
-
-            // d_gamma = sum(grad * xhat, all except C) → [C]
-            if (inputs[1]->flags & FV_FLAG_REQUIERES_GRAD) {
-                if (!inputs[1]->grad.defined())
-                    inputs[1]->grad = tensor_zeros_like(inputs[1]->data, arena);
-                tensor_add(inputs[1]->grad, inputs[1]->grad,
-                           tensor_sum(tensor_mul(grad, saved_xhat, arena),
-                                      axes, n, false, arena));
-            }
-
-            // dx = (1/(count*std)) * (count*gn - sum_C(gn) - xhat*sum_C(gn*xhat))
-            if (inputs[0]->flags & FV_FLAG_REQUIERES_GRAD) {
-                if (!inputs[0]->grad.defined())
-                    inputs[0]->grad = tensor_zeros_like(inputs[0]->data, arena);
-
-                Tensor<f32> sum_gn  = tensor_sum(gn, axes, n, true, arena);
-                Tensor<f32> sum_gnx = tensor_sum(
-                    tensor_mul(gn, saved_xhat, arena), axes, n, true, arena);
-
-                Tensor<f32> dx = tensor_mul(gn, count, arena);
-                tensor_sub(dx, dx, sum_gn);
-                tensor_sub(dx, dx, tensor_mul(saved_xhat, sum_gnx, arena));
-                tensor_div(dx, dx, std_t);
-                tensor_mul(dx, dx, 1.0f / count);
-
-                tensor_add(inputs[0]->grad, inputs[0]->grad, dx);
-            }
+            tensor_bn_bwd(dx, dgamma, dbeta, grad, saved_xhat, inputs[1]->data,
+                          saved_var, m, eps);
         }
     };
     auto fn = std::make_shared<Fn>();
     fn->arena = arena;
     fn->inputs = {input, gamma, beta};
     fn->eps = eps;
-    fn->count = count;
+    fn->saved_mean = mean;
     fn->saved_var = var;
     fn->saved_xhat = xhat;
     fn->C = C;
     out->grad_fn = fn;
     return out;
 }
-
 // ── layer_norm ───────────────────────────────────────────────────────────────
 
 Var layer_norm(Var input, Var gamma, Var beta, f32 eps, CudaMemArena *arena) {
+    if (!input || !gamma || !beta) { printf("%s: null input\n", __func__); return Var{}; }
     const Tensor<f32> &inp = input->data;
     u32 last_dim = inp->ndim - 1;
     u32 D = inp->shape[last_dim];
@@ -816,7 +767,7 @@ Var layer_norm(Var input, Var gamma, Var beta, f32 eps, CudaMemArena *arena) {
     memcpy(stat_shape, inp->shape, inp->ndim * sizeof(u32));
     stat_shape[last_dim] = 1;
     Tensor<f32> mean = Tensor<f32>::make(inp->ndim, stat_shape, on_gpu, arena);
-    Tensor<f32> var  = Tensor<f32>::make(inp->ndim, stat_shape, on_gpu, arena);
+    Tensor<f32> var = Tensor<f32>::make(inp->ndim, stat_shape, on_gpu, arena);
     u32 axes[] = {last_dim};
     Tensor<f32> m2 = Tensor<f32>::make(inp->ndim, stat_shape, on_gpu, arena);
     tensor_welford_mean_var(mean, m2, inp, axes, 1);
@@ -916,6 +867,7 @@ Var layer_norm(Var input, Var gamma, Var beta, f32 eps, CudaMemArena *arena) {
 // ── mse_loss ─────────────────────────────────────────────────────────────────
 
 Var mse_loss(Var pred, Var target, CudaMemArena *arena) {
+    if (!pred || !target) { printf("%s: null input\n", __func__); return Var{}; }
     const Tensor<f32> &p = pred->data;
     const Tensor<f32> &t = target->data;
     u64 N = p->numel();
@@ -970,6 +922,7 @@ Var mse_loss(Var pred, Var target, CudaMemArena *arena) {
 // ─────────────────────────────────────────────────
 
 Var cross_entropy_with_logits(Var logits, Var targets, CudaMemArena *arena) {
+    if (!logits || !targets) { printf("%s: null input\n", __func__); return Var{}; }
     const Tensor<f32> &log_t = logits->data;
     const Tensor<f32> &tar = targets->data;
     u64 N_batch = log_t->ndim >= 2 ? log_t->shape[0] : 1;

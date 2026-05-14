@@ -6,11 +6,12 @@
 #define ALIGN_UP_POW2(n, p) (((u64)(n) + ((u64)(p) - 1)) & (~((u64)(p) - 1)))
 #define ALIGN 256 // Align to 256 bytes
 struct CudaMemArena {
+    const char *name; // <-- added name
     u8 *base;
     u64 capacity;
     u64 pos;
 
-    CudaMemArena(u64 capacity);
+    CudaMemArena(u64 capacity, const char *name = "UnnamedArena");
     ~CudaMemArena();
 };
 

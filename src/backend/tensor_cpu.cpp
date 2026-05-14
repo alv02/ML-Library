@@ -283,20 +283,32 @@ void tensor_cpu_mat_mul_batched(TensorImpl<f32> &out, const TensorImpl<f32> &a,
                                 const TensorImpl<f32> &b, b32 clear_out) {
     u32 nd = a.ndim;
     u32 M = a.shape[nd - 2], K = a.shape[nd - 1], N = b.shape[nd - 1];
-    u64 batch = a.numel() / ((u64)M * K);
+    u32 batch_ndim = nd - 2;
+    u64 batch_total = 1;
+    for (u32 i = 0; i < batch_ndim; i++)
+        batch_total *= a.shape[i];
+
     u64 sr_a = a.stride[nd - 2], sc_a = a.stride[nd - 1];
     u64 sr_b = b.stride[nd - 2], sc_b = b.stride[nd - 1];
     u64 sr_c = out.stride[nd - 2], sc_c = out.stride[nd - 1];
-    u64 bs_a = (batch > 1) ? a.stride[nd - 3] : (u64)M * K;
-    u64 bs_b = (batch > 1) ? b.stride[nd - 3] : (u64)K * N;
-    u64 bs_c = (batch > 1) ? out.stride[nd - 3] : (u64)M * N;
 
     if (clear_out)
         tensor_cpu_clear(out);
-    for (u64 bat = 0; bat < batch; bat++) {
-        const f32 *ap = a.data() + bat * bs_a;
-        const f32 *bp = b.data() + bat * bs_b;
-        f32 *cp = out.data() + bat * bs_c;
+    for (u64 bat = 0; bat < batch_total; bat++) {
+        // Compute per-input offsets using multi-dim batch indices so non-contiguous
+        // layouts (e.g. after transpose) and stride-0 broadcast dims both work.
+        u64 off_a = 0, off_b = 0, off_c = 0;
+        u64 idx = bat;
+        for (i32 d = (i32)batch_ndim - 1; d >= 0; d--) {
+            u64 coord = idx % a.shape[d];
+            idx /= a.shape[d];
+            off_a += coord * a.stride[d];
+            off_b += coord * b.stride[d];
+            off_c += coord * out.stride[d];
+        }
+        const f32 *ap = a.data() + off_a;
+        const f32 *bp = b.data() + off_b;
+        f32 *cp = out.data() + off_c;
         for (u32 i = 0; i < M; i++)
             for (u32 j = 0; j < N; j++) {
                 f32 s = 0.0f;
@@ -427,7 +439,7 @@ void tensor_cpu_welford_mean_var(TensorImpl<f32> &mean, TensorImpl<f32> &var,
 
     std::vector<double> mu(plan.k_size, 0.0);
     std::vector<double> M2(plan.k_size, 0.0);
-    std::vector<u64>    n(plan.k_size, 0);
+    std::vector<u64> n(plan.k_size, 0);
 
     const f32 *in = src.data();
     for (u64 k = 0; k < plan.k_size; k++) {
@@ -445,10 +457,10 @@ void tensor_cpu_welford_mean_var(TensorImpl<f32> &mean, TensorImpl<f32> &var,
     }
 
     f32 *mean_ptr = mean.data();
-    f32 *var_ptr  = var.data();
+    f32 *var_ptr = var.data();
     for (u64 k = 0; k < plan.k_size; k++) {
         mean_ptr[k] = (f32)mu[k];
-        var_ptr[k]  = (f32)M2[k];
+        var_ptr[k] = (f32)M2[k];
     }
 }
 
@@ -457,9 +469,10 @@ void tensor_cpu_welford_mean_var(TensorImpl<f32> &mean, TensorImpl<f32> &var,
 void tensor_cpu_bn_fwd_normalize(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
                                  const TensorImpl<f32> &inp,
                                  const TensorImpl<f32> &mean,
-                                 const TensorImpl<f32> &var,
+                                 const TensorImpl<f32> &m2,
                                  const TensorImpl<f32> &gamma,
-                                 const TensorImpl<f32> &beta, f32 eps) {
+                                 const TensorImpl<f32> &beta, u64 count,
+                                 f32 eps) {
     u64 ch_strides[MAX_NDIM] = {};
     ch_strides[1] = 1;
 
@@ -469,15 +482,15 @@ void tensor_cpu_bn_fwd_normalize(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
     tensorIterator ch_it(inp.ndim, inp.shape, ch_strides);
 
     while (inp_it.has_next()) {
-        u64 inp_off  = inp_it.next();
-        u64 out_off  = out_it.next();
+        u64 inp_off = inp_it.next();
+        u64 out_off = out_it.next();
         u64 xhat_off = xhat_it.next();
-        u32 c        = (u32)ch_it.next();
+        u32 c = (u32)ch_it.next();
 
-        f32 std_c = sqrtf(var.data()[c] + eps);
+        f32 std_c = sqrtf(m2.data()[c] / count + eps);
         f32 x_hat = (inp.data()[inp_off] - mean.data()[c]) / std_c;
         xhat.data()[xhat_off] = x_hat;
-        out.data()[out_off]   = gamma.data()[c] * x_hat + beta.data()[c];
+        out.data()[out_off] = gamma.data()[c] * x_hat + beta.data()[c];
     }
 }
 
@@ -544,18 +557,19 @@ void tensor_cpu_scatter_add(TensorImpl<T> &out, const TensorImpl<T> &src,
     for (u64 i = 0; i < src.numel(); i++) {
         u64 src_off = src_it.next();
         u64 idx_off = idx_it.next();
-        u64 out_off = out_it.next() + (u64)indices.data()[idx_off] * out.stride[dim];
+        u64 out_off =
+            out_it.next() + (u64)indices.data()[idx_off] * out.stride[dim];
         out.data()[out_off] += src.data()[src_off];
     }
 }
 
 // ---- initializing — f32 only --------------------------------------------
 
-void tensor_cpu_he_init(TensorImpl<f32> &tensor) {
+void tensor_cpu_he_init(TensorImpl<f32> &tensor, float std) {
     std::random_device rd;
     std::mt19937 gen(rd());
     u32 in_features = tensor.shape[COL_DIM(tensor)];
-    float stddev = std::sqrt(2.0f / in_features);
+    float stddev = (std > 0.0f) ? std : std::sqrt(2.0f / in_features);
     std::normal_distribution<float> dist(0.0f, stddev);
     for (u64 i = 0; i < tensor.numel(); i++)
         tensor.data()[i] = dist(gen);
@@ -589,7 +603,8 @@ void tensor_cpu_gather(TensorImpl<T> &dst, const TensorImpl<T> &src,
     for (u64 i = 0; i < dst.numel(); i++) {
         u64 dst_off = dst_it.next();
         u64 idx_off = idx_it.next();
-        u64 src_off = src_it.next() + (u64)indices.data()[idx_off] * src.stride[dim];
+        u64 src_off =
+            src_it.next() + (u64)indices.data()[idx_off] * src.stride[dim];
         dst.data()[dst_off] = src.data()[src_off];
     }
 }

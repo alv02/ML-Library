@@ -110,14 +110,10 @@ static void test_mha() {
     Tensor<f32> Wk    = tensor_load<f32>("../data/test/mha/Wk.npy",   g_on_gpu);
     Tensor<f32> Wv    = tensor_load<f32>("../data/test/mha/Wv.npy",   g_on_gpu);
     Tensor<f32> Wo    = tensor_load<f32>("../data/test/mha/Wo.npy",   g_on_gpu);
-    Tensor<f32> bq    = tensor_load<f32>("../data/test/mha/bq.npy",   g_on_gpu);
-    Tensor<f32> bk    = tensor_load<f32>("../data/test/mha/bk.npy",   g_on_gpu);
-    Tensor<f32> bv    = tensor_load<f32>("../data/test/mha/bv.npy",   g_on_gpu);
-    Tensor<f32> bo    = tensor_load<f32>("../data/test/mha/bo.npy",   g_on_gpu);
     Tensor<f32> exp_out = tensor_load<f32>("../data/test/mha/out.npy", false);
     Tensor<f32> exp_dx  = tensor_load<f32>("../data/test/mha/d_x.npy", false);
 
-    if (!x || !Wq || !Wk || !Wv || !Wo || !bq || !bk || !bv || !bo || !exp_out || !exp_dx) {
+    if (!x || !Wq || !Wk || !Wv || !Wo || !exp_out || !exp_dx) {
         printf("  [%sFAIL%s] could not load data files\n", RED, RESET);
         failed++;
         return;
@@ -127,14 +123,10 @@ static void test_mha() {
     u32 H = 2;  // matches gen_layers.py
 
     MultiHeadAttention mha(D, H, T, 0.0f, g_on_gpu);
-    tensor_copy(mha.q_proj.W->data, Wq);
-    tensor_copy(mha.k_proj.W->data, Wk);
-    tensor_copy(mha.v_proj.W->data, Wv);
-    tensor_copy(mha.out_proj.W->data, Wo);
-    tensor_copy(mha.q_proj.b->data, bq);
-    tensor_copy(mha.k_proj.b->data, bk);
-    tensor_copy(mha.v_proj.b->data, bv);
-    tensor_copy(mha.out_proj.b->data, bo);
+    tensor_copy(mha.W_q->data, Wq);
+    tensor_copy(mha.W_k->data, Wk);
+    tensor_copy(mha.W_v->data, Wv);
+    tensor_copy(mha.W_o->data, Wo);
 
     Var xv = Var(x, FV_FLAG_REQUIERES_GRAD);
     Var out = mha.forward(xv);
@@ -252,13 +244,9 @@ static void test_transformer_block() {
     Tensor<f32> ln2_g  = tensor_load<f32>("../data/test/transformer_block/ln2_g.npy",  g_on_gpu);
     Tensor<f32> ln2_b  = tensor_load<f32>("../data/test/transformer_block/ln2_b.npy",  g_on_gpu);
     Tensor<f32> Wq     = tensor_load<f32>("../data/test/transformer_block/Wq.npy",     g_on_gpu);
-    Tensor<f32> bq     = tensor_load<f32>("../data/test/transformer_block/bq.npy",     g_on_gpu);
     Tensor<f32> Wk     = tensor_load<f32>("../data/test/transformer_block/Wk.npy",     g_on_gpu);
-    Tensor<f32> bk     = tensor_load<f32>("../data/test/transformer_block/bk.npy",     g_on_gpu);
     Tensor<f32> Wv     = tensor_load<f32>("../data/test/transformer_block/Wv.npy",     g_on_gpu);
-    Tensor<f32> bv     = tensor_load<f32>("../data/test/transformer_block/bv.npy",     g_on_gpu);
     Tensor<f32> Wo     = tensor_load<f32>("../data/test/transformer_block/Wo.npy",     g_on_gpu);
-    Tensor<f32> bo     = tensor_load<f32>("../data/test/transformer_block/bo.npy",     g_on_gpu);
     Tensor<f32> W_fc   = tensor_load<f32>("../data/test/transformer_block/W_fc.npy",   g_on_gpu);
     Tensor<f32> b_fc   = tensor_load<f32>("../data/test/transformer_block/b_fc.npy",   g_on_gpu);
     Tensor<f32> W_proj = tensor_load<f32>("../data/test/transformer_block/W_proj.npy", g_on_gpu);
@@ -267,7 +255,7 @@ static void test_transformer_block() {
     Tensor<f32> exp_dx  = tensor_load<f32>("../data/test/transformer_block/d_x.npy",   false);
 
     if (!x || !ln1_g || !ln1_b || !ln2_g || !ln2_b ||
-        !Wq || !bq || !Wk || !bk || !Wv || !bv || !Wo || !bo ||
+        !Wq || !Wk || !Wv || !Wo ||
         !W_fc || !b_fc || !W_proj || !b_proj || !exp_out || !exp_dx) {
         printf("  [%sFAIL%s] could not load data files\n", RED, RESET);
         failed++;
@@ -282,14 +270,10 @@ static void test_transformer_block() {
     tensor_copy(tb.ln1.beta->data,  ln1_b);
     tensor_copy(tb.ln2.gamma->data, ln2_g);
     tensor_copy(tb.ln2.beta->data,  ln2_b);
-    tensor_copy(tb.mha.q_proj.W->data,   Wq);
-    tensor_copy(tb.mha.q_proj.b->data,   bq);
-    tensor_copy(tb.mha.k_proj.W->data,   Wk);
-    tensor_copy(tb.mha.k_proj.b->data,   bk);
-    tensor_copy(tb.mha.v_proj.W->data,   Wv);
-    tensor_copy(tb.mha.v_proj.b->data,   bv);
-    tensor_copy(tb.mha.out_proj.W->data, Wo);
-    tensor_copy(tb.mha.out_proj.b->data, bo);
+    tensor_copy(tb.mha.W_q->data, Wq);
+    tensor_copy(tb.mha.W_k->data, Wk);
+    tensor_copy(tb.mha.W_v->data, Wv);
+    tensor_copy(tb.mha.W_o->data, Wo);
     tensor_copy(tb.mlp_fc.W->data,   W_fc);
     tensor_copy(tb.mlp_fc.b->data,   b_fc);
     tensor_copy(tb.mlp_proj.W->data, W_proj);
@@ -328,8 +312,7 @@ static void test_gpt_model() {
     // Load per-block weights
     char path[256];
     Tensor<f32> blk_ln1_g[2], blk_ln1_b[2], blk_ln2_g[2], blk_ln2_b[2];
-    Tensor<f32> blk_Wq[2], blk_bq[2], blk_Wk[2], blk_bk[2];
-    Tensor<f32> blk_Wv[2], blk_bv[2], blk_Wo[2], blk_bo[2];
+    Tensor<f32> blk_Wq[2], blk_Wk[2], blk_Wv[2], blk_Wo[2];
     Tensor<f32> blk_W_fc[2], blk_b_fc[2], blk_W_proj[2], blk_b_proj[2];
     for (u32 i = 0; i < n_layers; i++) {
 #define LOAD_BLK(arr, name) \
@@ -337,10 +320,8 @@ static void test_gpt_model() {
     arr[i] = tensor_load<f32>(path, g_on_gpu)
         LOAD_BLK(blk_ln1_g, "ln1_g"); LOAD_BLK(blk_ln1_b, "ln1_b");
         LOAD_BLK(blk_ln2_g, "ln2_g"); LOAD_BLK(blk_ln2_b, "ln2_b");
-        LOAD_BLK(blk_Wq, "Wq"); LOAD_BLK(blk_bq, "bq");
-        LOAD_BLK(blk_Wk, "Wk"); LOAD_BLK(blk_bk, "bk");
-        LOAD_BLK(blk_Wv, "Wv"); LOAD_BLK(blk_bv, "bv");
-        LOAD_BLK(blk_Wo, "Wo"); LOAD_BLK(blk_bo, "bo");
+        LOAD_BLK(blk_Wq, "Wq"); LOAD_BLK(blk_Wk, "Wk");
+        LOAD_BLK(blk_Wv, "Wv"); LOAD_BLK(blk_Wo, "Wo");
         LOAD_BLK(blk_W_fc, "W_fc"); LOAD_BLK(blk_b_fc, "b_fc");
         LOAD_BLK(blk_W_proj, "W_proj"); LOAD_BLK(blk_b_proj, "b_proj");
 #undef LOAD_BLK
@@ -366,14 +347,10 @@ static void test_gpt_model() {
         tensor_copy(tb.ln1.beta->data,  blk_ln1_b[i]);
         tensor_copy(tb.ln2.gamma->data, blk_ln2_g[i]);
         tensor_copy(tb.ln2.beta->data,  blk_ln2_b[i]);
-        tensor_copy(tb.mha.q_proj.W->data,   blk_Wq[i]);
-        tensor_copy(tb.mha.q_proj.b->data,   blk_bq[i]);
-        tensor_copy(tb.mha.k_proj.W->data,   blk_Wk[i]);
-        tensor_copy(tb.mha.k_proj.b->data,   blk_bk[i]);
-        tensor_copy(tb.mha.v_proj.W->data,   blk_Wv[i]);
-        tensor_copy(tb.mha.v_proj.b->data,   blk_bv[i]);
-        tensor_copy(tb.mha.out_proj.W->data, blk_Wo[i]);
-        tensor_copy(tb.mha.out_proj.b->data, blk_bo[i]);
+        tensor_copy(tb.mha.W_q->data, blk_Wq[i]);
+        tensor_copy(tb.mha.W_k->data, blk_Wk[i]);
+        tensor_copy(tb.mha.W_v->data, blk_Wv[i]);
+        tensor_copy(tb.mha.W_o->data, blk_Wo[i]);
         tensor_copy(tb.mlp_fc.W->data,   blk_W_fc[i]);
         tensor_copy(tb.mlp_fc.b->data,   blk_b_fc[i]);
         tensor_copy(tb.mlp_proj.W->data, blk_W_proj[i]);

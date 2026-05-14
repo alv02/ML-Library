@@ -33,6 +33,7 @@ add_library(mllib
 )
 
 target_include_directories(mllib PUBLIC include)
+set_target_properties(mllib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # Link CUDA runtime
 find_package(CUDAToolkit REQUIRED)
@@ -65,6 +66,16 @@ target_link_libraries(main_resnet PRIVATE mllib)
 # ── GPT char-level language model ────────────────────────────────────────────
 add_executable(main_gpt main_gpt.cpp)
 target_link_libraries(main_gpt PRIVATE mllib)
+
+# ── Python bindings ──────────────────────────────────────────────────────────
+include(FetchContent)
+FetchContent_Declare(pybind11
+    GIT_REPOSITORY https://github.com/pybind/pybind11
+    GIT_TAG        v2.13.6)
+FetchContent_MakeAvailable(pybind11)
+
+pybind11_add_module(gpt_lib src/python/gpt_trainer.cpp)
+target_link_libraries(gpt_lib PRIVATE mllib)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 enable_testing()
