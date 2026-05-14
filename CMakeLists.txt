@@ -62,6 +62,10 @@ target_link_libraries(main_cnn3 PRIVATE mllib)
 add_executable(main_resnet main_resnet.cpp)
 target_link_libraries(main_resnet PRIVATE mllib)
 
+# ── GPT char-level language model ────────────────────────────────────────────
+add_executable(main_gpt main_gpt.cpp)
+target_link_libraries(main_gpt PRIVATE mllib)
+
 # ── Tests ─────────────────────────────────────────────────────────────────────
 enable_testing()
 
@@ -75,3 +79,7 @@ add_executable(test_layer test/test_layer.cpp)
 target_link_libraries(test_layer PRIVATE mllib)
 add_test(NAME layer_cpu  COMMAND test_layer --cpu WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test)
 add_test(NAME layer_cuda COMMAND test_layer --gpu WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test)
+
+add_executable(test_reduce test/test_reduce.cpp)
+target_link_libraries(test_reduce PRIVATE mllib)
+add_test(NAME reduce COMMAND test_reduce WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

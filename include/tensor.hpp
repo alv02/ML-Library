@@ -290,16 +290,27 @@ Tensor<f32> tensor_mat_mul(const Tensor<f32> &a, const Tensor<f32> &b,
 
 // ---- reductions -------------------------------------------------------------
 
+// Multi-axis: the core form, backends implement only this.
 template <typename T>
-b32 tensor_sum(Tensor<T> &out, const Tensor<T> &t, b32 clear_out = true);
+b32 tensor_sum(Tensor<T> &out, const Tensor<T> &t, const u32 *axes, u32 n_axes,
+               b32 keep_dim = true, b32 clear_out = true);
+template <typename T>
+Tensor<T> tensor_sum(const Tensor<T> &t, const u32 *axes, u32 n_axes,
+                     b32 keep_dim = true, CudaMemArena *arena = nullptr);
+
+// Single-dim: delegates to multi-axis.
 template <typename T>
 b32 tensor_sum(Tensor<T> &out, const Tensor<T> &t, u32 dim, b32 keep_dim = true,
                b32 clear_out = true);
 template <typename T>
-Tensor<T> tensor_sum(const Tensor<T> &t, CudaMemArena *arena = nullptr);
-template <typename T>
 Tensor<T> tensor_sum(const Tensor<T> &t, u32 dim, b32 keep_dim = true,
                      CudaMemArena *arena = nullptr);
+
+// Global: delegates to multi-axis with all axes.
+template <typename T>
+b32 tensor_sum(Tensor<T> &out, const Tensor<T> &t, b32 clear_out = true);
+template <typename T>
+Tensor<T> tensor_sum(const Tensor<T> &t, CudaMemArena *arena = nullptr);
 template <typename T>
 b32 tensor_max(Tensor<T> &out, const Tensor<T> &t, u32 dim,
                b32 keep_dim = true);
@@ -313,18 +324,12 @@ template <typename T>
 TensorU32 tensor_argmax(const Tensor<T> &t, u32 dim, b32 keep_dim = true,
                         CudaMemArena *arena = nullptr);
 
-b32 tensor_welford_mean_var(Tensor<f32> &mean, Tensor<f32> &m2,
-                            const Tensor<f32> &src, u32 dim);
-
-void tensor_bn_fwd_normalize(Tensor<f32> &out, Tensor<f32> &xhat,
-                             const Tensor<f32> &inp, const Tensor<f32> &mean,
-                             const Tensor<f32> &m2, const Tensor<f32> &gamma,
-                             const Tensor<f32> &beta, f32 count, f32 eps);
-
-void tensor_bn_bwd(Tensor<f32> &dx, Tensor<f32> &d_gamma, Tensor<f32> &d_beta,
-                   const Tensor<f32> &grad, const Tensor<f32> &xhat,
-                   const Tensor<f32> &gamma, const Tensor<f32> &var, f32 m,
-                   f32 eps);
+b32 tensor_welford_mean_var(Tensor<f32> &mean, Tensor<f32> &var,
+                            const Tensor<f32> &src, const u32 *axes,
+                            u32 n_axes);
+// Reduce all dims except skip_dim (e.g. skip_dim=1 for batch norm over N,H,W).
+b32 tensor_welford_mean_var(Tensor<f32> &mean, Tensor<f32> &var,
+                            const Tensor<f32> &src, u32 skip_dim);
 
 // ---- scatter ----------------------------------------------------------------
 
@@ -341,6 +346,9 @@ Tensor<T> scatter_add(const Tensor<T> &src, const TensorU32 &indices, u32 dim,
 // ---- f32 init ---------------------------------------------------------------
 
 void tensor_he_init(Tensor<f32> &t);
+// Fills t with 0 on/below last-two-dim diagonal, -1e9 above. t must be [..., n,
+// n].
+void tensor_causal_mask(Tensor<f32> &t);
 
 // ---- indexing ---------------------------------------------------------------
 

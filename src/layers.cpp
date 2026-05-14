@@ -66,6 +66,23 @@ Var BatchNorm2d::forward(Var input, CudaMemArena *arena) {
                       momentum, eps, arena);
 }
 
+// ── LayerNorm ─────────────────────────────────────────────────────────────────
+
+LayerNorm::LayerNorm(u32 d_model, bool on_gpu, CudaMemArena *perm_arena) {
+    u32 shape[1] = {d_model};
+    gamma = Var(Tensor<f32>::make(1, shape, on_gpu, perm_arena),
+                FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
+    tensor_fill(gamma->data, 1.0f);
+
+    beta = Var(Tensor<f32>::make(1, shape, on_gpu, perm_arena),
+               FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
+    tensor_fill(beta->data, 0.0f);
+}
+
+Var LayerNorm::forward(Var input, CudaMemArena *arena) {
+    return layer_norm(input, gamma, beta, 1e-5f, arena);
+}
+
 // ── EmbeddingLayer ────────────────────────────────────────────────────────────
 
 EmbeddingLayer::EmbeddingLayer(u32 vocab_size, u32 d_model, bool on_gpu,
@@ -147,6 +164,104 @@ std::vector<Var> InputEmbedding::parameters() {
     auto q = pos_emb.parameters();
     p.insert(p.end(), q.begin(), q.end());
     return p;
+}
+
+// ── MultiHeadAttention ────────────────────────────────────────────────────────
+
+MultiHeadAttention::MultiHeadAttention(u32 d_model, u32 n_heads, u32 max_seq_len,
+                                       f32 dropout_p, bool on_gpu,
+                                       CudaMemArena *perm_arena)
+    : n_heads(n_heads), d_head(d_model / n_heads), dropout_p(dropout_p),
+      q_proj(d_model, d_model, on_gpu, perm_arena),
+      k_proj(d_model, d_model, on_gpu, perm_arena),
+      v_proj(d_model, d_model, on_gpu, perm_arena),
+      out_proj(d_model, d_model, on_gpu, perm_arena) {
+    u32 mask_shape[2] = {max_seq_len, max_seq_len};
+    causal_mask = Tensor<f32>::make(2, mask_shape, on_gpu, perm_arena);
+    tensor_causal_mask(causal_mask);
+}
+
+Var MultiHeadAttention::forward(Var x, CudaMemArena *arena) {
+    const u32 B      = x->data->shape[0];
+    const u32 T      = x->data->shape[1];
+    const u32 d_model = x->data->shape[2];
+
+    Var Q = q_proj.forward(x, arena);
+    Var K = k_proj.forward(x, arena);
+    Var V = v_proj.forward(x, arena);
+
+    // [B, T, d_model] → [B, T, n_heads, d_head] → [B, n_heads, T, d_head]
+    u32 head_shape[4] = {B, T, n_heads, d_head};
+    Q = transpose(reshape(Q, head_shape, 4, arena), 1, 2, arena);
+    K = transpose(reshape(K, head_shape, 4, arena), 1, 2, arena);
+    V = transpose(reshape(V, head_shape, 4, arena), 1, 2, arena);
+
+    // scores [B, n_heads, T, T]
+    Var scores = mul(mat_mul(Q, transpose(K, 2, 3, arena), arena),
+                     1.0f / sqrtf((f32)d_head), arena);
+
+    // Causal mask: [T, T] strided view into the precomputed [max_T, max_T] mask
+    Tensor<f32> mask_view = tensor_view(causal_mask);
+    mask_view->shape[0] = T;
+    mask_view->shape[1] = T;
+    scores = add(scores, Var(mask_view, FV_FLAG_NONE), arena);
+
+    Var attn = dropout(softmax(scores, -1, arena), dropout_p, training, arena);
+
+    // [B, n_heads, T, d_head] → [B, T, n_heads, d_head] → [B, T, d_model]
+    Var out = transpose(mat_mul(attn, V, arena), 1, 2, arena);
+    u32 out_shape[3] = {B, T, d_model};
+    return out_proj.forward(reshape(out, out_shape, 3, arena), arena);
+}
+
+std::vector<Var> MultiHeadAttention::parameters() {
+    auto p = q_proj.parameters();
+    auto k = k_proj.parameters();
+    auto v = v_proj.parameters();
+    auto o = out_proj.parameters();
+    p.insert(p.end(), k.begin(), k.end());
+    p.insert(p.end(), v.begin(), v.end());
+    p.insert(p.end(), o.begin(), o.end());
+    return p;
+}
+
+// ── TransformerBlock ─────────────────────────────────────────────────────────
+
+TransformerBlock::TransformerBlock(u32 d_model, u32 n_heads, u32 max_seq_len,
+                                   f32 dropout_p, bool on_gpu,
+                                   CudaMemArena *perm_arena)
+    : ln1(d_model, on_gpu, perm_arena),
+      ln2(d_model, on_gpu, perm_arena),
+      mha(d_model, n_heads, max_seq_len, dropout_p, on_gpu, perm_arena),
+      mlp_fc(d_model, 4 * d_model, on_gpu, perm_arena),
+      mlp_proj(4 * d_model, d_model, on_gpu, perm_arena),
+      dropout_p(dropout_p) {}
+
+Var TransformerBlock::forward(Var x, CudaMemArena *arena) {
+    Var h = add(x, dropout(mha.forward(ln1.forward(x, arena), arena),
+                           dropout_p, training, arena), arena);
+    Var m = mlp_proj.forward(gelu(mlp_fc.forward(ln2.forward(h, arena), arena), arena), arena);
+    return add(h, dropout(m, dropout_p, training, arena), arena);
+}
+
+std::vector<Var> TransformerBlock::parameters() {
+    auto p = ln1.parameters();
+    auto a = ln2.parameters();
+    auto b = mha.parameters();
+    auto c = mlp_fc.parameters();
+    auto d = mlp_proj.parameters();
+    p.insert(p.end(), a.begin(), a.end());
+    p.insert(p.end(), b.begin(), b.end());
+    p.insert(p.end(), c.begin(), c.end());
+    p.insert(p.end(), d.begin(), d.end());
+    return p;
+}
+
+void TransformerBlock::train(bool mode) {
+    Layer::train(mode);
+    ln1.train(mode);
+    ln2.train(mode);
+    mha.train(mode);
 }
 
 // ── ResBlock

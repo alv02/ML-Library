@@ -71,7 +71,7 @@ np.save("matmul_transA/out.npy", (a.T @ b).astype(np.float32))
 def save_sum(dir, a):
     os.makedirs(dir, exist_ok=True)
     np.save(f"{dir}/a.npy", a.astype(np.float32))
-    np.save(f"{dir}/out.npy", np.array([a.sum()], dtype=np.float32))
+    np.save(f"{dir}/out.npy", a.sum().astype(np.float32))
 
 
 # Small: fits in a single block (< 256 elements)
@@ -341,8 +341,8 @@ save_maxpool2d("maxpool_2n4c_6x6_k3s1", a, k=3, stride=1, pad=0)
 
 # ── tensor_welford_mean_var ───────────────────────────────────────────────────
 # The implementation returns raw M2 (sum of squared deviations from the mean),
-# not variance. Compute in float64 for a high-precision reference; both CPU and
-# CUDA implementations should match within a generous float32 tolerance.
+# not variance. Callers divide by count themselves. Compute in float64 for a
+# high-precision reference.
 def save_welford(dir_name, inp, dim):
     os.makedirs(dir_name, exist_ok=True)
     a = inp.astype(np.float64)
@@ -412,6 +412,22 @@ b = np.random.randn(2, 3, 6, 5).astype(
     np.float32
 )  # stored [2,3,6,5], transposed in C++
 save_matmul_batched("matmul_batched_4d_transB", a, b, trans_b=True)
+
+# broadcast: lower-ndim b is broadcast across all batch dims of a
+# 3D × 2D: [2,3,4] @ [4,5] → [2,3,5]  (Linear applied to batched input)
+a = np.random.randn(2, 3, 4).astype(np.float32)
+b = np.random.randn(4, 5).astype(np.float32)
+save_matmul_batched("matmul_bcast_3d2d", a, b)
+
+# 4D × 2D: [2,3,4,5] @ [5,6] → [2,3,4,6]  (Linear inside MHA)
+a = np.random.randn(2, 3, 4, 5).astype(np.float32)
+b = np.random.randn(5, 6).astype(np.float32)
+save_matmul_batched("matmul_bcast_4d2d", a, b)
+
+# 4D × 2D trans_b: [2,3,4,5] @ [6,5]^T → [2,3,4,6]  (Linear with W^T broadcast)
+a = np.random.randn(2, 3, 4, 5).astype(np.float32)
+b = np.random.randn(6, 5).astype(np.float32)  # stored [6,5], transposed in C++
+save_matmul_batched("matmul_bcast_4d2d_transB", a, b, trans_b=True)
 
 
 # ── gather ────────────────────────────────────────────────────────────────────

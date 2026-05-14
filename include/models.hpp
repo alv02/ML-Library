@@ -4,6 +4,31 @@
 #include "layers.hpp"
 #include <vector>
 
+// ── GPTModel ──────────────────────────────────────────────────────────────────
+// vocab_size  : token vocabulary size
+// d_model     : embedding / residual stream dimension
+// n_heads     : attention heads (must divide d_model)
+// n_layers    : number of TransformerBlocks
+// max_seq_len : maximum sequence length (for causal mask and pos embeddings)
+// dropout_p   : applied in embeddings, attention, and residual connections
+
+struct GPTModel {
+    InputEmbedding embedding;
+    std::vector<TransformerBlock> blocks;
+    LayerNorm ln_f;
+    Linear lm_head;
+    bool training = true;
+
+    GPTModel(u32 vocab_size, u32 d_model, u32 n_heads, u32 n_layers,
+             u32 max_seq_len, f32 dropout_p, bool on_gpu,
+             CudaMemArena *perm_arena = nullptr);
+
+    Var forward(TensorU32 tokens, CudaMemArena *arena = nullptr);
+    std::vector<Var> parameters();
+    void train(bool mode = true);
+    void eval() { train(false); }
+};
+
 struct conv_layer_params {
     u32 C_out;
     Unfold2dParams params;

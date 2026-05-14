@@ -242,10 +242,16 @@ static void test_welford_mean_var(const char *name, const char *dir, u32 dim) {
         return;
     }
 
+    // All dims except `dim` are the reduction axes
+    u32 axes[MAX_NDIM];
+    u32 n_axes = 0;
+    for (u32 d = 0; d < a->ndim; d++)
+        if (d != (u32)dim) axes[n_axes++] = d;
+
     u32 mean_shape[1] = {a->shape[dim]};
     Tensor<f32> got_mean = Tensor<f32>::make(1, mean_shape, g_on_gpu);
     Tensor<f32> got_var = Tensor<f32>::make(1, mean_shape, g_on_gpu);
-    tensor_welford_mean_var(got_mean, got_var, a, dim);
+    tensor_welford_mean_var(got_mean, got_var, a, axes, n_axes);
     sync();
 
     Tensor<f32> mean_cpu = tensor_to_cpu(got_mean);
@@ -344,6 +350,15 @@ int main(int argc, char **argv) {
                          "matmul_batched_4d");
     test_mat_mul_batched("4D trans_b     [2,3,4,5]@[2,3,6,5]^T→[2,3,4,6]",
                          "matmul_batched_4d_transB", false, true);
+
+    printf("\n-- tensor_mat_mul broadcast --\n");
+    fflush(stdout);
+    test_mat_mul_batched("3D×2D          [2,3,4]@[4,5]→[2,3,5]",
+                         "matmul_bcast_3d2d");
+    test_mat_mul_batched("4D×2D          [2,3,4,5]@[5,6]→[2,3,4,6]",
+                         "matmul_bcast_4d2d");
+    test_mat_mul_batched("4D×2D trans_b  [2,3,4,5]@[6,5]^T→[2,3,4,6]",
+                         "matmul_bcast_4d2d_transB", false, true);
 
     printf("\n-- tensor_sum --\n");
     fflush(stdout);

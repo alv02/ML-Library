@@ -1,5 +1,46 @@
 #include "../include/models.hpp"
 
+// ── GPTModel ──────────────────────────────────────────────────────────────────
+
+GPTModel::GPTModel(u32 vocab_size, u32 d_model, u32 n_heads, u32 n_layers,
+                   u32 max_seq_len, f32 dropout_p, bool on_gpu,
+                   CudaMemArena *perm_arena)
+    : embedding(vocab_size, max_seq_len, d_model, dropout_p, on_gpu, perm_arena),
+      ln_f(d_model, on_gpu, perm_arena),
+      lm_head(d_model, vocab_size, on_gpu, perm_arena) {
+    blocks.reserve(n_layers);
+    for (u32 i = 0; i < n_layers; i++)
+        blocks.emplace_back(d_model, n_heads, max_seq_len, dropout_p, on_gpu, perm_arena);
+}
+
+Var GPTModel::forward(TensorU32 tokens, CudaMemArena *arena) {
+    Var x = embedding.forward(tokens, arena);
+    for (auto &block : blocks)
+        x = block.forward(x, arena);
+    return lm_head.forward(ln_f.forward(x, arena), arena);
+}
+
+std::vector<Var> GPTModel::parameters() {
+    auto p = embedding.parameters();
+    for (auto &block : blocks) {
+        auto bp = block.parameters();
+        p.insert(p.end(), bp.begin(), bp.end());
+    }
+    auto lnp = ln_f.parameters();
+    auto lhp = lm_head.parameters();
+    p.insert(p.end(), lnp.begin(), lnp.end());
+    p.insert(p.end(), lhp.begin(), lhp.end());
+    return p;
+}
+
+void GPTModel::train(bool mode) {
+    training = mode;
+    embedding.train(mode);
+    for (auto &block : blocks)
+        block.train(mode);
+    ln_f.train(mode);
+}
+
 Sequential make_mlp(u32 in_features, const std::vector<u32> &sizes, bool on_gpu,
                     CudaMemArena *perm_arena) {
     Sequential model;

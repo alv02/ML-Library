@@ -95,6 +95,17 @@ struct BatchNorm2d : Layer {
     std::vector<Var> parameters() override { return {gamma, beta}; }
 };
 
+// ── LayerNorm ─────────────────────────────────────────────────────────────────
+// Normalizes over the last dimension. gamma [d_model] init 1, beta [d_model] init 0.
+
+struct LayerNorm : Layer {
+    Var gamma, beta;
+
+    LayerNorm(u32 d_model, bool on_gpu, CudaMemArena *perm_arena = nullptr);
+    Var forward(Var input, CudaMemArena *arena = nullptr) override;
+    std::vector<Var> parameters() override { return {gamma, beta}; }
+};
+
 // ── EmbeddingLayer ────────────────────────────────────────────────────────────
 // weight [vocab_size, d_model], indices [*] → out [*, d_model]
 
@@ -177,6 +188,41 @@ struct Sequential : Layer {
         for (auto &l : layers)
             l->train(mode);
     }
+};
+
+// ── MultiHeadAttention ────────────────────────────────────────────────────────
+// GPT-style causal self-attention. dropout_p=0 disables attn dropout.
+
+struct MultiHeadAttention {
+    u32 n_heads, d_head;
+    Linear q_proj, k_proj, v_proj, out_proj;
+    Tensor<f32> causal_mask;  // [max_seq_len, max_seq_len], 0 on/below diag, -1e9 above
+    f32 dropout_p;
+    bool training = true;
+
+    MultiHeadAttention(u32 d_model, u32 n_heads, u32 max_seq_len, f32 dropout_p,
+                       bool on_gpu, CudaMemArena *perm_arena = nullptr);
+    Var forward(Var x, CudaMemArena *arena = nullptr);
+    std::vector<Var> parameters();
+    void train(bool mode = true) { training = mode; }
+    void eval() { train(false); }
+};
+
+// ── TransformerBlock ──────────────────────────────────────────────────────────
+// Pre-norm GPT-style block: x + MHA(LN(x)), then x + MLP(LN(x)).
+// MLP = Linear(d_model→4*d_model) → GELU → Linear(4*d_model→d_model).
+
+struct TransformerBlock : Layer {
+    LayerNorm ln1, ln2;
+    MultiHeadAttention mha;
+    Linear mlp_fc, mlp_proj;
+    f32 dropout_p;
+
+    TransformerBlock(u32 d_model, u32 n_heads, u32 max_seq_len, f32 dropout_p,
+                     bool on_gpu, CudaMemArena *perm_arena = nullptr);
+    Var forward(Var x, CudaMemArena *arena = nullptr) override;
+    std::vector<Var> parameters() override;
+    void train(bool mode = true) override;
 };
 
 // ── ResBlock ──────────────────────────────────────────────────────────────────

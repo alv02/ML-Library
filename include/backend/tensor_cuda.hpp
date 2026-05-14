@@ -116,10 +116,9 @@ void tensor_cuda_mat_mul_batched(TensorImpl<f32> &out, const TensorImpl<f32> &a,
 void tensor_cuda_bn_fwd_normalize(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
                                   const TensorImpl<f32> &inp,
                                   const TensorImpl<f32> &mean,
-                                  const TensorImpl<f32> &m2,
+                                  const TensorImpl<f32> &var,
                                   const TensorImpl<f32> &gamma,
-                                  const TensorImpl<f32> &beta, f32 count,
-                                  f32 eps);
+                                  const TensorImpl<f32> &beta, f32 eps);
 void tensor_cuda_bn_bwd(TensorImpl<f32> &dx, TensorImpl<f32> &d_gamma,
                         TensorImpl<f32> &d_beta, const TensorImpl<f32> &grad,
                         const TensorImpl<f32> &xhat,
@@ -129,11 +128,11 @@ void tensor_cuda_bn_bwd(TensorImpl<f32> &dx, TensorImpl<f32> &d_gamma,
 // ---- reduction -----------------------------------------------------------
 
 template <typename T>
-void tensor_cuda_sum(TensorImpl<T> &out, const TensorImpl<T> &tensor);
-template <typename T>
-void tensor_cuda_sum(TensorImpl<T> &out, const TensorImpl<T> &tensor, u32 dim);
-void tensor_cuda_welford_mean_var(TensorImpl<f32> &mean, TensorImpl<f32> &m2,
-                                  const TensorImpl<f32> &src, u32 dim);
+void tensor_cuda_sum(TensorImpl<T> &out, const TensorImpl<T> &tensor,
+                     const u32 *axes, u32 n_axes);
+void tensor_cuda_welford_mean_var(TensorImpl<f32> &mean, TensorImpl<f32> &var,
+                                  const TensorImpl<f32> &src,
+                                  const u32 *axes, u32 n_axes);
 template <typename T>
 void tensor_cuda_max(TensorImpl<T> &out, const TensorImpl<T> &tensor);
 template <typename T>
@@ -151,6 +150,7 @@ void tensor_cuda_scatter_add(TensorImpl<T> &out, const TensorImpl<T> &src,
 // ---- initializing — f32 only --------------------------------------------
 
 void tensor_cuda_he_init(TensorImpl<f32> &tensor);
+void tensor_cuda_causal_mask(TensorImpl<f32> &t);
 
 // ---- indexing ------------------------------------------------------------
 

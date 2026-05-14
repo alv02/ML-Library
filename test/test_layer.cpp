@@ -1,4 +1,4 @@
-#include "../include/layers.hpp"
+#include "../include/models.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -60,6 +60,92 @@ static void backward_with_grad(Var out, Tensor<f32> upstream) {
     for (auto &v : order)
         if (v->grad_fn && v->grad.defined())
             v->grad_fn->backward(v->grad);
+}
+
+// ── LayerNorm ─────────────────────────────────────────────────────────────────
+
+static void test_layer_norm() {
+    printf("\n-- LayerNorm --\n");
+
+    Tensor<f32> input   = tensor_load<f32>("../data/test/layer_norm/input.npy",   g_on_gpu);
+    Tensor<f32> gamma_t = tensor_load<f32>("../data/test/layer_norm/gamma.npy",   g_on_gpu);
+    Tensor<f32> beta_t  = tensor_load<f32>("../data/test/layer_norm/beta.npy",    g_on_gpu);
+    Tensor<f32> exp_out = tensor_load<f32>("../data/test/layer_norm/out.npy",     false);
+    Tensor<f32> exp_din = tensor_load<f32>("../data/test/layer_norm/d_input.npy", false);
+    Tensor<f32> exp_dg  = tensor_load<f32>("../data/test/layer_norm/d_gamma.npy", false);
+    Tensor<f32> exp_db  = tensor_load<f32>("../data/test/layer_norm/d_beta.npy",  false);
+
+    if (!input || !gamma_t || !beta_t || !exp_out || !exp_din || !exp_dg || !exp_db) {
+        printf("  [%sFAIL%s] could not load data files\n", RED, RESET);
+        failed++;
+        return;
+    }
+
+    u32 D = gamma_t->shape[0];
+    LayerNorm ln(D, g_on_gpu);
+    tensor_copy(ln.gamma->data, gamma_t);
+    tensor_copy(ln.beta->data,  beta_t);
+
+    Var x   = Var(input, FV_FLAG_REQUIERES_GRAD);
+    Var out = ln.forward(x);
+    sync();
+    check_tensors("forward", tensor_to_cpu(out->data), exp_out);
+
+    Tensor<f32> ones = Tensor<f32>::make(out->data->ndim, out->data->shape, g_on_gpu);
+    tensor_fill(ones, 1.0f);
+    backward_with_grad(out, ones);
+    sync();
+    check_tensors("backward d_input", tensor_to_cpu(x->grad),          exp_din, 1e-4f);
+    check_tensors("backward d_gamma", tensor_to_cpu(ln.gamma->grad),   exp_dg,  1e-4f);
+    check_tensors("backward d_beta",  tensor_to_cpu(ln.beta->grad),    exp_db,  1e-4f);
+}
+
+// ── MultiHeadAttention ────────────────────────────────────────────────────────
+
+static void test_mha() {
+    printf("\n-- MultiHeadAttention --\n");
+
+    Tensor<f32> x     = tensor_load<f32>("../data/test/mha/x.npy",    g_on_gpu);
+    Tensor<f32> Wq    = tensor_load<f32>("../data/test/mha/Wq.npy",   g_on_gpu);
+    Tensor<f32> Wk    = tensor_load<f32>("../data/test/mha/Wk.npy",   g_on_gpu);
+    Tensor<f32> Wv    = tensor_load<f32>("../data/test/mha/Wv.npy",   g_on_gpu);
+    Tensor<f32> Wo    = tensor_load<f32>("../data/test/mha/Wo.npy",   g_on_gpu);
+    Tensor<f32> bq    = tensor_load<f32>("../data/test/mha/bq.npy",   g_on_gpu);
+    Tensor<f32> bk    = tensor_load<f32>("../data/test/mha/bk.npy",   g_on_gpu);
+    Tensor<f32> bv    = tensor_load<f32>("../data/test/mha/bv.npy",   g_on_gpu);
+    Tensor<f32> bo    = tensor_load<f32>("../data/test/mha/bo.npy",   g_on_gpu);
+    Tensor<f32> exp_out = tensor_load<f32>("../data/test/mha/out.npy", false);
+    Tensor<f32> exp_dx  = tensor_load<f32>("../data/test/mha/d_x.npy", false);
+
+    if (!x || !Wq || !Wk || !Wv || !Wo || !bq || !bk || !bv || !bo || !exp_out || !exp_dx) {
+        printf("  [%sFAIL%s] could not load data files\n", RED, RESET);
+        failed++;
+        return;
+    }
+
+    u32 B = x->shape[0], T = x->shape[1], D = x->shape[2];
+    u32 H = 2;  // matches gen_layers.py
+
+    MultiHeadAttention mha(D, H, T, 0.0f, g_on_gpu);
+    tensor_copy(mha.q_proj.W->data, Wq);
+    tensor_copy(mha.k_proj.W->data, Wk);
+    tensor_copy(mha.v_proj.W->data, Wv);
+    tensor_copy(mha.out_proj.W->data, Wo);
+    tensor_copy(mha.q_proj.b->data, bq);
+    tensor_copy(mha.k_proj.b->data, bk);
+    tensor_copy(mha.v_proj.b->data, bv);
+    tensor_copy(mha.out_proj.b->data, bo);
+
+    Var xv = Var(x, FV_FLAG_REQUIERES_GRAD);
+    Var out = mha.forward(xv);
+    sync();
+    check_tensors("forward", tensor_to_cpu(out->data), exp_out, 1e-4f);
+
+    Tensor<f32> ones = Tensor<f32>::make(out->data->ndim, out->data->shape, g_on_gpu);
+    tensor_fill(ones, 1.0f);
+    backward_with_grad(out, ones);
+    sync();
+    check_tensors("backward d_x", tensor_to_cpu(xv->grad), exp_dx, 1e-3f);
 }
 
 // ── EmbeddingLayer ────────────────────────────────────────────────────────────
@@ -155,6 +241,157 @@ static void test_input_embedding() {
     check_tensors("backward d_pos_weight", tensor_to_cpu(emb.pos_emb.weight->grad), exp_dpos);
 }
 
+// ── TransformerBlock ─────────────────────────────────────────────────────────
+
+static void test_transformer_block() {
+    printf("\n-- TransformerBlock --\n");
+
+    Tensor<f32> x      = tensor_load<f32>("../data/test/transformer_block/x.npy",      g_on_gpu);
+    Tensor<f32> ln1_g  = tensor_load<f32>("../data/test/transformer_block/ln1_g.npy",  g_on_gpu);
+    Tensor<f32> ln1_b  = tensor_load<f32>("../data/test/transformer_block/ln1_b.npy",  g_on_gpu);
+    Tensor<f32> ln2_g  = tensor_load<f32>("../data/test/transformer_block/ln2_g.npy",  g_on_gpu);
+    Tensor<f32> ln2_b  = tensor_load<f32>("../data/test/transformer_block/ln2_b.npy",  g_on_gpu);
+    Tensor<f32> Wq     = tensor_load<f32>("../data/test/transformer_block/Wq.npy",     g_on_gpu);
+    Tensor<f32> bq     = tensor_load<f32>("../data/test/transformer_block/bq.npy",     g_on_gpu);
+    Tensor<f32> Wk     = tensor_load<f32>("../data/test/transformer_block/Wk.npy",     g_on_gpu);
+    Tensor<f32> bk     = tensor_load<f32>("../data/test/transformer_block/bk.npy",     g_on_gpu);
+    Tensor<f32> Wv     = tensor_load<f32>("../data/test/transformer_block/Wv.npy",     g_on_gpu);
+    Tensor<f32> bv     = tensor_load<f32>("../data/test/transformer_block/bv.npy",     g_on_gpu);
+    Tensor<f32> Wo     = tensor_load<f32>("../data/test/transformer_block/Wo.npy",     g_on_gpu);
+    Tensor<f32> bo     = tensor_load<f32>("../data/test/transformer_block/bo.npy",     g_on_gpu);
+    Tensor<f32> W_fc   = tensor_load<f32>("../data/test/transformer_block/W_fc.npy",   g_on_gpu);
+    Tensor<f32> b_fc   = tensor_load<f32>("../data/test/transformer_block/b_fc.npy",   g_on_gpu);
+    Tensor<f32> W_proj = tensor_load<f32>("../data/test/transformer_block/W_proj.npy", g_on_gpu);
+    Tensor<f32> b_proj = tensor_load<f32>("../data/test/transformer_block/b_proj.npy", g_on_gpu);
+    Tensor<f32> exp_out = tensor_load<f32>("../data/test/transformer_block/out.npy",   false);
+    Tensor<f32> exp_dx  = tensor_load<f32>("../data/test/transformer_block/d_x.npy",   false);
+
+    if (!x || !ln1_g || !ln1_b || !ln2_g || !ln2_b ||
+        !Wq || !bq || !Wk || !bk || !Wv || !bv || !Wo || !bo ||
+        !W_fc || !b_fc || !W_proj || !b_proj || !exp_out || !exp_dx) {
+        printf("  [%sFAIL%s] could not load data files\n", RED, RESET);
+        failed++;
+        return;
+    }
+
+    u32 B = x->shape[0], T = x->shape[1], D = x->shape[2];
+    u32 H = 2;
+
+    TransformerBlock tb(D, H, T, 0.0f, g_on_gpu);
+    tensor_copy(tb.ln1.gamma->data, ln1_g);
+    tensor_copy(tb.ln1.beta->data,  ln1_b);
+    tensor_copy(tb.ln2.gamma->data, ln2_g);
+    tensor_copy(tb.ln2.beta->data,  ln2_b);
+    tensor_copy(tb.mha.q_proj.W->data,   Wq);
+    tensor_copy(tb.mha.q_proj.b->data,   bq);
+    tensor_copy(tb.mha.k_proj.W->data,   Wk);
+    tensor_copy(tb.mha.k_proj.b->data,   bk);
+    tensor_copy(tb.mha.v_proj.W->data,   Wv);
+    tensor_copy(tb.mha.v_proj.b->data,   bv);
+    tensor_copy(tb.mha.out_proj.W->data, Wo);
+    tensor_copy(tb.mha.out_proj.b->data, bo);
+    tensor_copy(tb.mlp_fc.W->data,   W_fc);
+    tensor_copy(tb.mlp_fc.b->data,   b_fc);
+    tensor_copy(tb.mlp_proj.W->data, W_proj);
+    tensor_copy(tb.mlp_proj.b->data, b_proj);
+
+    Var xv  = Var(x, FV_FLAG_REQUIERES_GRAD);
+    Var out = tb.forward(xv);
+    sync();
+    check_tensors("forward", tensor_to_cpu(out->data), exp_out, 1e-4f);
+
+    Tensor<f32> ones = Tensor<f32>::make(out->data->ndim, out->data->shape, g_on_gpu);
+    tensor_fill(ones, 1.0f);
+    backward_with_grad(out, ones);
+    sync();
+    check_tensors("backward d_x", tensor_to_cpu(xv->grad), exp_dx, 1e-3f);
+}
+
+// ── GPTModel ─────────────────────────────────────────────────────────────────
+
+static void test_gpt_model() {
+    printf("\n-- GPTModel --\n");
+
+    const u32 vocab = 16, D = 8, H = 2, n_layers = 2, max_seq_len = 8;
+    const char *dir = "../data/test/gpt_model";
+
+    TensorU32   tokens  = tensor_load<u32>("../data/test/gpt_model/tokens.npy", g_on_gpu);
+    Tensor<f32> tok_w   = tensor_load<f32>("../data/test/gpt_model/tok_w.npy",  g_on_gpu);
+    Tensor<f32> pos_w   = tensor_load<f32>("../data/test/gpt_model/pos_w.npy",  g_on_gpu);
+    Tensor<f32> lnf_g   = tensor_load<f32>("../data/test/gpt_model/lnf_g.npy", g_on_gpu);
+    Tensor<f32> lnf_b   = tensor_load<f32>("../data/test/gpt_model/lnf_b.npy", g_on_gpu);
+    Tensor<f32> W_lmh   = tensor_load<f32>("../data/test/gpt_model/W_lmh.npy", g_on_gpu);
+    Tensor<f32> b_lmh   = tensor_load<f32>("../data/test/gpt_model/b_lmh.npy", g_on_gpu);
+    Tensor<f32> exp_out = tensor_load<f32>("../data/test/gpt_model/out.npy",    false);
+    Tensor<f32> exp_dtok = tensor_load<f32>("../data/test/gpt_model/d_tok_w.npy", false);
+
+    // Load per-block weights
+    char path[256];
+    Tensor<f32> blk_ln1_g[2], blk_ln1_b[2], blk_ln2_g[2], blk_ln2_b[2];
+    Tensor<f32> blk_Wq[2], blk_bq[2], blk_Wk[2], blk_bk[2];
+    Tensor<f32> blk_Wv[2], blk_bv[2], blk_Wo[2], blk_bo[2];
+    Tensor<f32> blk_W_fc[2], blk_b_fc[2], blk_W_proj[2], blk_b_proj[2];
+    for (u32 i = 0; i < n_layers; i++) {
+#define LOAD_BLK(arr, name) \
+    snprintf(path, sizeof(path), "%s/block%u_" name ".npy", dir, i); \
+    arr[i] = tensor_load<f32>(path, g_on_gpu)
+        LOAD_BLK(blk_ln1_g, "ln1_g"); LOAD_BLK(blk_ln1_b, "ln1_b");
+        LOAD_BLK(blk_ln2_g, "ln2_g"); LOAD_BLK(blk_ln2_b, "ln2_b");
+        LOAD_BLK(blk_Wq, "Wq"); LOAD_BLK(blk_bq, "bq");
+        LOAD_BLK(blk_Wk, "Wk"); LOAD_BLK(blk_bk, "bk");
+        LOAD_BLK(blk_Wv, "Wv"); LOAD_BLK(blk_bv, "bv");
+        LOAD_BLK(blk_Wo, "Wo"); LOAD_BLK(blk_bo, "bo");
+        LOAD_BLK(blk_W_fc, "W_fc"); LOAD_BLK(blk_b_fc, "b_fc");
+        LOAD_BLK(blk_W_proj, "W_proj"); LOAD_BLK(blk_b_proj, "b_proj");
+#undef LOAD_BLK
+    }
+
+    if (!tokens || !tok_w || !pos_w || !lnf_g || !lnf_b ||
+        !W_lmh || !b_lmh || !exp_out || !exp_dtok) {
+        printf("  [%sFAIL%s] could not load data files\n", RED, RESET);
+        failed++;
+        return;
+    }
+
+    GPTModel gpt(vocab, D, H, n_layers, max_seq_len, 0.0f, g_on_gpu);
+    tensor_copy(gpt.embedding.tok_emb.weight->data, tok_w);
+    tensor_copy(gpt.embedding.pos_emb.weight->data, pos_w);
+    tensor_copy(gpt.ln_f.gamma->data, lnf_g);
+    tensor_copy(gpt.ln_f.beta->data,  lnf_b);
+    tensor_copy(gpt.lm_head.W->data, W_lmh);
+    tensor_copy(gpt.lm_head.b->data, b_lmh);
+    for (u32 i = 0; i < n_layers; i++) {
+        auto &tb = gpt.blocks[i];
+        tensor_copy(tb.ln1.gamma->data, blk_ln1_g[i]);
+        tensor_copy(tb.ln1.beta->data,  blk_ln1_b[i]);
+        tensor_copy(tb.ln2.gamma->data, blk_ln2_g[i]);
+        tensor_copy(tb.ln2.beta->data,  blk_ln2_b[i]);
+        tensor_copy(tb.mha.q_proj.W->data,   blk_Wq[i]);
+        tensor_copy(tb.mha.q_proj.b->data,   blk_bq[i]);
+        tensor_copy(tb.mha.k_proj.W->data,   blk_Wk[i]);
+        tensor_copy(tb.mha.k_proj.b->data,   blk_bk[i]);
+        tensor_copy(tb.mha.v_proj.W->data,   blk_Wv[i]);
+        tensor_copy(tb.mha.v_proj.b->data,   blk_bv[i]);
+        tensor_copy(tb.mha.out_proj.W->data, blk_Wo[i]);
+        tensor_copy(tb.mha.out_proj.b->data, blk_bo[i]);
+        tensor_copy(tb.mlp_fc.W->data,   blk_W_fc[i]);
+        tensor_copy(tb.mlp_fc.b->data,   blk_b_fc[i]);
+        tensor_copy(tb.mlp_proj.W->data, blk_W_proj[i]);
+        tensor_copy(tb.mlp_proj.b->data, blk_b_proj[i]);
+    }
+
+    Var out = gpt.forward(tokens);
+    sync();
+    check_tensors("forward", tensor_to_cpu(out->data), exp_out, 1e-4f);
+
+    Tensor<f32> ones = Tensor<f32>::make(out->data->ndim, out->data->shape, g_on_gpu);
+    tensor_fill(ones, 1.0f);
+    backward_with_grad(out, ones);
+    sync();
+    check_tensors("backward d_tok_w", tensor_to_cpu(gpt.embedding.tok_emb.weight->grad),
+                  exp_dtok, 1e-3f);
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
@@ -165,9 +402,13 @@ int main(int argc, char **argv) {
 
     printf("\nBackend: %s\n", g_on_gpu ? "CUDA" : "CPU");
 
+    test_layer_norm();
+    test_mha();
     test_embedding_layer();
     test_pos_embedding_layer();
     test_input_embedding();
+    test_transformer_block();
+    test_gpt_model();
 
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;
