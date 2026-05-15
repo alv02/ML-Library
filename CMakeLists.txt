@@ -29,7 +29,7 @@ add_library(mllib
     src/visualize.cpp
     src/backend/tensor_cpu.cpp
     src/backend/tensor_cuda.cu
-    src/backend/cuda_mem_arena.cpp
+    src/backend/cuda_pool.cpp
 )
 
 target_include_directories(mllib PUBLIC include)

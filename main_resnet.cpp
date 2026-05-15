@@ -12,12 +12,6 @@
 // Each ResBlock: Conv→BN→ReLU→Conv→BN + skip (identity or 1×1 projection)
 
 int main() {
-    CudaMemArena perm_arena(
-        GiB(1), "PermArena"); // For model parameters and persistent tensors
-    CudaMemArena batch_arena(
-        GiB(10),
-        "BatchArena"); // For per-batch tensors (inputs, activations, grads)
-
     Tensor<f32> train_X =
         tensor_load("data/X_train.npy", false); // CPU — augmented per batch
     Tensor<f32> train_y = tensor_load("data/y_train.npy", false);
@@ -28,9 +22,9 @@ int main() {
     tensor_print(train_X.impl());
 
     // ResNet-18: 4 stages × 2 blocks each
-    Sequential model = make_resnet(10, true, {2, 2, 2, 2}, &perm_arena);
+    Sequential model = make_resnet(10, true, {2, 2, 2, 2});
 
-    sgd optim(model, 0.1f, 1e-4f, 0.9f, &perm_arena);
+    sgd optim(model, 0.1f, 1e-4f, 0.9f);
     MultiStepLR scheduler(optim, {50, 75}, 0.1f);
     EarlyStopping early_stop(15);
 
@@ -42,8 +36,7 @@ int main() {
     aug.add<RandomHorizontalFlip>(0.5f);
 
     u32 scalar_shape[1] = {1};
-    Tensor<f32> loss_accum =
-        Tensor<f32>::make(1, scalar_shape, true, &perm_arena);
+    Tensor<f32> loss_accum = Tensor<f32>::make(1, scalar_shape, true);
 
     for (int epoch = 0; epoch < epochs; epoch++) {
         tensor_fill(loss_accum, 0.0f);
@@ -51,15 +44,14 @@ int main() {
         Tensor<f32> Xb, yb;
         int batch = 0;
         while (true) {
-            cuda_arena_clear(&batch_arena);
-            if (!aug.next(Xb, yb, &batch_arena))
+            if (!aug.next(Xb, yb))
                 break;
-            Var logits = model(Var(Xb), &batch_arena);
-            Var loss = cross_entropy_with_logits(logits, Var(yb), &batch_arena);
+            Var logits = model(Var(Xb));
+            Var loss = cross_entropy_with_logits(logits, Var(yb));
             tensor_add(loss_accum, loss_accum, loss->data);
             batch++;
-            backward(loss, &batch_arena);
-            optim.step(&batch_arena);
+            backward(loss);
+            optim.step();
             optim.zero_grad();
         }
         Tensor<f32> lc = tensor_to_cpu(loss_accum);
@@ -79,12 +71,10 @@ int main() {
 
     Tensor<f32> Xb_test, yb_test;
     while (true) {
-        cuda_arena_clear(&batch_arena);
-        if (!test_loader.next(Xb_test, yb_test, &batch_arena))
+        if (!test_loader.next(Xb_test, yb_test))
             break;
-        Var logits = model(Var(Xb_test), &batch_arena);
-        Var loss =
-            cross_entropy_with_logits(logits, Var(yb_test), &batch_arena);
+        Var logits = model(Var(Xb_test));
+        Var loss = cross_entropy_with_logits(logits, Var(yb_test));
         tensor_add(loss_accum, loss_accum, loss->data);
         total_acc += accuracy(logits->data, yb_test);
         n_batches++;
@@ -94,11 +84,10 @@ int main() {
     printf("Test accuracy: %.2f%%\n", total_acc / n_batches * 100.0f);
 
     {
-        cuda_arena_clear(&batch_arena);
         DataLoader vis_loader(test_X, test_y, 128);
         Tensor<f32> vis_X, vis_y;
-        vis_loader.next(vis_X, vis_y, &batch_arena);
-        Var vis_logits = model(Var(vis_X), &batch_arena);
+        vis_loader.next(vis_X, vis_y);
+        Var vis_logits = model(Var(vis_X));
         printf("\n--- Wrong predictions ---\n");
         visualize_wrong(vis_X, vis_logits->data, vis_y, 5);
         printf("\n--- Correct predictions ---\n");

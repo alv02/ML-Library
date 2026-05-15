@@ -43,6 +43,6 @@ struct Function {
     virtual ~Function() = default;
 };
 
-void backward(Var loss, CudaMemArena *arena = nullptr);
+void backward(Var loss);
 
 #endif

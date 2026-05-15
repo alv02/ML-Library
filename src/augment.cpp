@@ -50,16 +50,14 @@ Tensor<f32> RandomCrop::apply(const Tensor<f32> &batch) {
     return out;
 }
 
-bool Augmenter::next(Tensor<f32> &X_batch, Tensor<f32> &y_batch, CudaMemArena *arena) {
-    if (!loader.next(X_batch, y_batch, nullptr))
+bool Augmenter::next(Tensor<f32> &X_batch, Tensor<f32> &y_batch) {
+    if (!loader.next(X_batch, y_batch))
         return false;
 
     for (auto &t : transforms)
         X_batch = t->apply(X_batch);
 
-    if (arena) {
-        X_batch = tensor_to_gpu(X_batch, arena);
-        y_batch = tensor_to_gpu(y_batch, arena);
-    }
+    X_batch = tensor_to_gpu(X_batch);
+    y_batch = tensor_to_gpu(y_batch);
     return true;
 }

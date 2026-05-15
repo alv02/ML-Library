@@ -14,9 +14,6 @@
 //   Flatten → [N,2048]  Dense: 2048 → 512 → 10
 
 int main() {
-    CudaMemArena perm_arena(MiB(512));
-    CudaMemArena batch_arena(GiB(6));
-
     Tensor<f32> val_X = tensor_load("data/X_train.npy", true);
     Tensor<f32> val_y = tensor_load("data/y_train.npy", true);
     Tensor<f32> test_val_X = tensor_load("data/X_test.npy", true);
@@ -40,9 +37,9 @@ int main() {
             {512, Unfold2dParams(3, 1, 1), false, {}, true},
             {512, Unfold2dParams(3, 1, 1), true, Unfold2dParams(2, 2), true},
         },
-        {512, 10}, &perm_arena);
+        {512, 10});
 
-    sgd optim(model, 0.05f, 5e-4f, 0.9f, &perm_arena);
+    sgd optim(model, 0.05f, 5e-4f, 0.9f);
     ReduceLROnPlateau scheduler(optim, 0.1f, 5);
     EarlyStopping early_stop(10);
 
@@ -51,7 +48,7 @@ int main() {
     DataLoader loader(val_X, val_y, batch_size);
 
     u32 scalar_shape[1] = {1};
-    Tensor<f32> loss_accum = Tensor<f32>::make(1, scalar_shape, true, &perm_arena);
+    Tensor<f32> loss_accum = Tensor<f32>::make(1, scalar_shape, true);
 
     for (int epoch = 0; epoch < epochs; epoch++) {
         tensor_fill(loss_accum, 0.0f);
@@ -59,15 +56,14 @@ int main() {
         Tensor<f32> Xb, yb;
         int batch = 0;
         while (true) {
-            cuda_arena_clear(&batch_arena);
-            if (!loader.next(Xb, yb, &batch_arena))
+            if (!loader.next(Xb, yb))
                 break;
-            Var logits = model(Var(Xb), &batch_arena);
-            Var loss = cross_entropy_with_logits(logits, Var(yb), &batch_arena);
+            Var logits = model(Var(Xb));
+            Var loss = cross_entropy_with_logits(logits, Var(yb));
             tensor_add(loss_accum, loss_accum, loss->data);
             batch++;
-            backward(loss, &batch_arena);
-            optim.step(&batch_arena);
+            backward(loss);
+            optim.step();
             optim.zero_grad();
         }
         Tensor<f32> lc = tensor_to_cpu(loss_accum);
@@ -87,11 +83,10 @@ int main() {
 
     Tensor<f32> Xb_test, yb_test;
     while (true) {
-        cuda_arena_clear(&batch_arena);
-        if (!test_loader.next(Xb_test, yb_test, &batch_arena))
+        if (!test_loader.next(Xb_test, yb_test))
             break;
-        Var logits = model(Var(Xb_test), &batch_arena);
-        Var loss = cross_entropy_with_logits(logits, Var(yb_test), &batch_arena);
+        Var logits = model(Var(Xb_test));
+        Var loss = cross_entropy_with_logits(logits, Var(yb_test));
         tensor_add(loss_accum, loss_accum, loss->data);
         total_acc += accuracy(logits->data, yb_test);
         n_batches++;
@@ -101,11 +96,10 @@ int main() {
     printf("Test accuracy: %.2f%%\n", total_acc / n_batches * 100.0f);
 
     {
-        cuda_arena_clear(&batch_arena);
         DataLoader vis_loader(test_val_X, test_val_y, 128);
         Tensor<f32> vis_X, vis_y;
-        vis_loader.next(vis_X, vis_y, &batch_arena);
-        Var vis_logits = model(Var(vis_X), &batch_arena);
+        vis_loader.next(vis_X, vis_y);
+        Var vis_logits = model(Var(vis_X));
         printf("\n--- Wrong predictions ---\n");
         visualize_wrong(vis_X, vis_logits->data, vis_y, 5);
         printf("\n--- Correct predictions ---\n");

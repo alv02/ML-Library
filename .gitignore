@@ -286,9 +286,13 @@ __marimo__/
 .streamlit/secrets.toml
 
 
-# Numpy data
+# Data
 *.npy
+*.bin
+*.txt
 
 # Nsight Systems profiling reports
 *.nsys-rep
 *.sqlite
+
+./checkpoints

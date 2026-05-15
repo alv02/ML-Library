@@ -19,7 +19,7 @@ struct DataLoader {
 
     DataLoader(Tensor<f32> X, Tensor<f32> y, u32 batch_size);
     void shuffle();
-    bool next(Tensor<f32> &X_batch, Tensor<f32> &y_batch, CudaMemArena *arena = nullptr);
+    bool next(Tensor<f32> &X_batch, Tensor<f32> &y_batch);
 };
 
 // ── Optimizer (base)
@@ -28,13 +28,11 @@ struct DataLoader {
 struct Optimizer {
     f32 lr;
     std::vector<Var> params;
-    CudaMemArena *perm_arena;
 
-    Optimizer(std::vector<Var> params, f32 lr,
-              CudaMemArena *perm_arena = nullptr);
+    Optimizer(std::vector<Var> params, f32 lr);
     virtual ~Optimizer() = default;
 
-    virtual void step(CudaMemArena *arena = nullptr) = 0;
+    virtual void step() = 0;
     virtual void zero_grad() = 0;
     void set_lr(f32 new_lr) { lr = new_lr; }
 };
@@ -47,11 +45,9 @@ struct sgd : Optimizer {
     f32 mu;     // momentum coefficient (0 = plain SGD)
     std::unordered_map<VarImpl *, Tensor<f32>> velocity;
 
-    sgd(std::vector<Var> params, f32 lr, f32 lambda = 0.0f, f32 mu = 0.0f,
-        CudaMemArena *perm_arena = nullptr);
-    sgd(Layer &model, f32 lr, f32 lambda = 0.0f, f32 mu = 0.0f,
-        CudaMemArena *perm_arena = nullptr);
-    void step(CudaMemArena *arena = nullptr) override;
+    sgd(std::vector<Var> params, f32 lr, f32 lambda = 0.0f, f32 mu = 0.0f);
+    sgd(Layer &model, f32 lr, f32 lambda = 0.0f, f32 mu = 0.0f);
+    void step() override;
     void zero_grad() override;
 };
 
@@ -68,12 +64,10 @@ struct AdamW : Optimizer {
     std::unordered_map<VarImpl *, Tensor<f32>> v; // second moment
 
     AdamW(std::vector<Var> params, f32 lr = 1e-3f, f32 beta1 = 0.9f,
-          f32 beta2 = 0.999f, f32 eps = 1e-8f, f32 lambda = 0.0f,
-          CudaMemArena *perm_arena = nullptr);
+          f32 beta2 = 0.999f, f32 eps = 1e-8f, f32 lambda = 0.0f);
     AdamW(Layer &model, f32 lr = 1e-3f, f32 beta1 = 0.9f, f32 beta2 = 0.999f,
-          f32 eps = 1e-8f, f32 lambda = 0.0f,
-          CudaMemArena *perm_arena = nullptr);
-    void step(CudaMemArena *arena = nullptr) override;
+          f32 eps = 1e-8f, f32 lambda = 0.0f);
+    void step() override;
     void zero_grad() override;
 };
 

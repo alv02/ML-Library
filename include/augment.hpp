@@ -44,8 +44,8 @@ struct Augmenter {
 
     void shuffle() { loader.shuffle(); }
 
-    // Gets next CPU batch, runs transforms, uploads X and y to GPU via arena.
-    bool next(Tensor<f32> &X_batch, Tensor<f32> &y_batch, CudaMemArena *arena = nullptr);
+    // Gets next CPU batch, runs transforms, uploads X and y to GPU.
+    bool next(Tensor<f32> &X_batch, Tensor<f32> &y_batch);
 };
 
 #endif

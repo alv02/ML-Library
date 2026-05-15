@@ -7,9 +7,6 @@
 #include <cstdio>
 
 int main() {
-    CudaMemArena perm_arena(MiB(64));
-    CudaMemArena batch_arena(GiB(1));
-
     Tensor<f32> val_X = tensor_load("./data/cifar_X_train.npy", true);
     Tensor<f32> val_y = tensor_load("./data/cifar_y_train.npy", true);
     Tensor<f32> test_val_X = tensor_load("./data/cifar_X_test.npy", true);
@@ -29,21 +26,20 @@ int main() {
     tensor_print(val_X.impl());
 
     // 784 → 1024 → 512 → 256 → 10
-    Sequential model = make_mlp(flat_dim, {1024, 512, 256, 10}, true, &perm_arena);
-    sgd optim(model, 0.01f, 1e-4f, 0.9f, &perm_arena);
+    Sequential model = make_mlp(flat_dim, {1024, 512, 256, 10}, true);
+    sgd optim(model, 0.01f, 1e-4f, 0.9f);
     DataLoader loader(val_X, val_y, 128);
 
     for (int epoch = 0; epoch < 50; epoch++) {
         loader.shuffle();
         Tensor<f32> Xb, yb;
         while (true) {
-            cuda_arena_clear(&batch_arena);
-            if (!loader.next(Xb, yb, &batch_arena))
+            if (!loader.next(Xb, yb))
                 break;
-            Var logits = model(Var(Xb), &batch_arena);
-            Var loss = cross_entropy_with_logits(logits, Var(yb), &batch_arena);
-            backward(loss, &batch_arena);
-            optim.step(&batch_arena);
+            Var logits = model(Var(Xb));
+            Var loss = cross_entropy_with_logits(logits, Var(yb));
+            backward(loss);
+            optim.step();
             optim.zero_grad();
         }
     }
@@ -54,11 +50,10 @@ int main() {
     u32 n_batches = 0;
     Tensor<f32> Xb_test, yb_test;
     while (true) {
-        cuda_arena_clear(&batch_arena);
-        if (!test_loader.next(Xb_test, yb_test, &batch_arena))
+        if (!test_loader.next(Xb_test, yb_test))
             break;
-        Var logits = model(Var(Xb_test), &batch_arena);
-        Var loss = cross_entropy_with_logits(logits, Var(yb_test), &batch_arena);
+        Var logits = model(Var(Xb_test));
+        Var loss = cross_entropy_with_logits(logits, Var(yb_test));
         Tensor<f32> lc = tensor_to_cpu(loss->data);
         total_loss += lc->data()[0];
         total_acc += accuracy(logits->data, yb_test);

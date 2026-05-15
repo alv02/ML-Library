@@ -242,16 +242,10 @@ static void test_welford_mean_var(const char *name, const char *dir, u32 dim) {
         return;
     }
 
-    // All dims except `dim` are the reduction axes
-    u32 axes[MAX_NDIM];
-    u32 n_axes = 0;
-    for (u32 d = 0; d < a->ndim; d++)
-        if (d != (u32)dim) axes[n_axes++] = d;
-
     u32 mean_shape[1] = {a->shape[dim]};
     Tensor<f32> got_mean = Tensor<f32>::make(1, mean_shape, g_on_gpu);
     Tensor<f32> got_var = Tensor<f32>::make(1, mean_shape, g_on_gpu);
-    tensor_welford_mean_var(got_mean, got_var, a, axes, n_axes);
+    tensor_welford_mean_M2_skip(got_mean, got_var, a, (u32)dim);
     sync();
 
     Tensor<f32> mean_cpu = tensor_to_cpu(got_mean);

@@ -1,4 +1,3 @@
-#include "../../include/backend/reduction.hpp"
 #include "../../include/backend/tensor_cuda.hpp"
 #include <atomic>
 #include <ctime>
@@ -139,6 +138,26 @@ elementwise_broadcast(const TensorMeta out_contig, const TensorMeta out_actual,
     out[out_offset] = op(a[a_offset], b[b_offset]);
 }
 
+// out flat, a flat, b broadcasts — 1× offset_from
+template <typename T, typename Op>
+__global__ void elementwise_bcast_b(u64 size, T *out, const T *a,
+                                     TensorMeta contig_meta, TensorMeta b_meta,
+                                     const T *b, Op op) {
+    u64 i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i >= size) return;
+    out[i] = op(a[i], b[contig_meta.offset_from(i, b_meta)]);
+}
+
+// out flat, a broadcasts, b flat — 1× offset_from
+template <typename T, typename Op>
+__global__ void elementwise_bcast_a(u64 size, T *out,
+                                     TensorMeta contig_meta, TensorMeta a_meta,
+                                     const T *a, const T *b, Op op) {
+    u64 i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i >= size) return;
+    out[i] = op(a[contig_meta.offset_from(i, a_meta)], b[i]);
+}
+
 template <typename T, typename Op>
 __global__ void elementwise_binary_scalar(u64 size, T *out, const T *a, T b,
                                           Op op) {
@@ -169,6 +188,27 @@ __global__ void contiguous_kernel(TensorMeta contig_meta,
     dst[workIdx] = src[src_offset];
 }
 
+// dst flat, src uses offset_from (1× call — most common: copy to new contiguous tensor)
+template <typename T>
+__global__ void copy_kernel_dst_flat(u64 size, T *dst,
+                                      TensorMeta contig_meta, TensorMeta src_meta,
+                                      const T *src) {
+    u64 i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i >= size) return;
+    dst[i] = src[contig_meta.offset_from(i, src_meta)];
+}
+
+// src flat, dst uses offset_from (1× call — writing into a non-contiguous view)
+template <typename T>
+__global__ void copy_kernel_src_flat(u64 size, T *dst,
+                                      TensorMeta contig_meta, TensorMeta dst_meta,
+                                      const T *src) {
+    u64 i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i >= size) return;
+    dst[contig_meta.offset_from(i, dst_meta)] = src[i];
+}
+
+// General: both dst and src may be non-contiguous (2× offset_from)
 template <typename T>
 __global__ void copy_kernel(TensorMeta out_contig, TensorMeta out_actual,
                             TensorMeta src_meta, T *dst, const T *src) {
@@ -257,6 +297,9 @@ __global__ void mat_mul_tiled(TensorMeta out_meta, TensorMeta a_meta,
             v11 + beta * out[out_meta.at(row1, col1)];
 }
 
+// ── Sum kernels ───────────────────────────────────────────────────────────────
+
+// Global: tree reduction per block; call repeatedly (multi-pass) until 1 block.
 template <typename T>
 __global__ void tensor_sum_step(u64 size, T *out, T *tensor) {
     __shared__ T partial[N_THREADS];
@@ -272,135 +315,152 @@ __global__ void tensor_sum_step(u64 size, T *out, T *tensor) {
         out[blockIdx.x] = partial[0];
 }
 
-// ── Welford kernels (two-phase, uses ReductionPlan) ──────────────────────────
-//
-// Phase 0: each block covers one chunk of R for one output element.
-// Accumulates online Welford state (n, mu, M2) per thread, then merges in smem.
-// Writes partial_{n,mu,M2}[k * n_chunks + chunk].
-//
-// Phase 1: one block per output element reduces all n_chunks partial states.
-// Writes mean[k] = mu, var[k] = M2/n.
-
-__global__ void welford_partial_kernel(ReductionPlan plan, const f32 *input,
-                                       f32 *partial_mu, f32 *partial_M2,
-                                       u32 *partial_n, u64 chunk_size,
-                                       u64 n_chunks) {
-    u64 k_flat = blockIdx.x;
-    u64 chunk = blockIdx.y;
-    u64 r_start = chunk * chunk_size;
-    u64 r_end = min(r_start + chunk_size, plan.r_size);
-
-    u64 k_off = flat_to_offset(k_flat, plan.k_shape, plan.k_cstride,
-                               plan.k_stride, plan.k_ndim);
-
-    u32 n = 0;
-    f32 mu = 0.0f, M2 = 0.0f;
-    for (u64 r_flat = r_start + threadIdx.x; r_flat < r_end;
-         r_flat += blockDim.x) {
-        u64 r_off = flat_to_offset(r_flat, plan.r_shape, plan.r_cstride,
-                                   plan.r_stride, plan.r_ndim);
-        f32 x = input[k_off + r_off];
-        n++;
-        f32 delta = x - mu;
-        mu += delta / (f32)n;
-        M2 += delta * (x - mu);
-    }
-
-    __shared__ u32 s_n[N_THREADS];
-    __shared__ f32 s_mu[N_THREADS];
-    __shared__ f32 s_M2[N_THREADS];
-    s_n[threadIdx.x] = n;
-    s_mu[threadIdx.x] = mu;
-    s_M2[threadIdx.x] = M2;
-    __syncthreads();
-
-    for (u32 s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) {
-            u32 na = s_n[threadIdx.x], nb = s_n[threadIdx.x + s];
-            f32 ua = s_mu[threadIdx.x], ub = s_mu[threadIdx.x + s];
-            f32 ma = s_M2[threadIdx.x], mb = s_M2[threadIdx.x + s];
-            u32 nc = na + nb;
-            if (nc > 0) {
-                f32 d = ub - ua;
-                s_mu[threadIdx.x] = ua + d * ((f32)nb / nc);
-                s_M2[threadIdx.x] = ma + mb + d * d * ((f32)na * nb / nc);
-            }
-            s_n[threadIdx.x] = nc;
-        }
-        __syncthreads();
-    }
-
-    if (threadIdx.x == 0) {
-        u64 idx = k_flat * n_chunks + chunk;
-        partial_mu[idx] = s_mu[0];
-        partial_M2[idx] = s_M2[0];
-        partial_n[idx] = s_n[0];
-    }
-}
-
-__global__ void welford_final_kernel(const f32 *partial_mu,
-                                     const f32 *partial_M2,
-                                     const u32 *partial_n, f32 *out_mean,
-                                     f32 *out_var, u64 n_chunks) {
-    u64 k = blockIdx.x;
-
-    // Each thread sequentially merges multiple chunks before smem tree-reduce.
-    u32 acc_n = 0;
-    f32 acc_mu = 0.0f, acc_M2 = 0.0f;
-    for (u64 c = threadIdx.x; c < n_chunks; c += blockDim.x) {
-        u64 idx = k * n_chunks + c;
-        u32 nb = partial_n[idx];
-        f32 ub = partial_mu[idx], mb = partial_M2[idx];
-        u32 nc = acc_n + nb;
-        if (nc > 0) {
-            f32 d = ub - acc_mu;
-            acc_mu = acc_mu + d * ((f32)nb / nc);
-            acc_M2 = acc_M2 + mb + d * d * ((f32)acc_n * nb / nc);
-        }
-        acc_n = nc;
-    }
-
-    __shared__ u32 s_n[N_THREADS];
-    __shared__ f32 s_mu[N_THREADS];
-    __shared__ f32 s_M2[N_THREADS];
-    s_n[threadIdx.x] = acc_n;
-    s_mu[threadIdx.x] = acc_mu;
-    s_M2[threadIdx.x] = acc_M2;
-    __syncthreads();
-
-    for (u32 s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) {
-            u32 na = s_n[threadIdx.x], nb = s_n[threadIdx.x + s];
-            f32 ua = s_mu[threadIdx.x], ub = s_mu[threadIdx.x + s];
-            f32 ma = s_M2[threadIdx.x], mb = s_M2[threadIdx.x + s];
-            u32 nc = na + nb;
-            if (nc > 0) {
-                f32 d = ub - ua;
-                s_mu[threadIdx.x] = ua + d * ((f32)nb / nc);
-                s_M2[threadIdx.x] = ma + mb + d * d * ((f32)na * nb / nc);
-            }
-            s_n[threadIdx.x] = nc;
-        }
-        __syncthreads();
-    }
-
-    if (threadIdx.x == 0) {
-        out_mean[k] = s_mu[0];
-        out_var[k] = s_M2[0];
-    }
-}
-
+// Dim: one thread per output element, sequential loop over the reduced dim.
 template <typename T>
-__global__ void tensor_sum_kernel(TensorMeta out_meta, TensorMeta tensor_meta,
-                                  T *out, T *tensor, u32 dim) {
+__global__ void tensor_sum_dim_kernel(TensorMeta out_meta, TensorMeta tensor_meta,
+                                      T *out, const T *tensor, u32 dim) {
     u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
     if (workIdx >= out_meta.size)
         return;
-    u64 base_offset = out_meta.offset_from(workIdx, tensor_meta);
+    u64 base = out_meta.offset_from(workIdx, tensor_meta);
     T sum = T(0);
     for (u32 i = 0; i < tensor_meta.shape[dim]; i++)
-        sum += tensor[base_offset + i * tensor_meta.stride[dim]];
+        sum += tensor[base + i * tensor_meta.stride[dim]];
     out[workIdx] = sum;
+}
+
+// Skip: one block per element of the kept dim, tree reduction over all others.
+__global__ void tensor_sum_skip_kernel(f32 *out, const f32 *src,
+                                       u64 stride_dim, TensorMeta meta_contig,
+                                       TensorMeta meta_src, u64 other_dims_size) {
+    __shared__ f32 partial[N_THREADS];
+    u32 c = blockIdx.x;
+    u64 base = (u64)c * stride_dim;
+
+    f32 sum = 0.0f;
+    for (u64 i = threadIdx.x; i < other_dims_size; i += blockDim.x)
+        sum += src[base + meta_contig.offset_from(i, meta_src)];
+
+    partial[threadIdx.x] = sum;
+    __syncthreads();
+    for (u32 s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s)
+            partial[threadIdx.x] += partial[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0)
+        out[c] = partial[0];
+}
+
+// ── Welford kernels ───────────────────────────────────────────────────────────
+
+// Global: single block iterates all elements then tree-merges Welford state.
+__global__ void welford_global_kernel(u64 size, f32 *mean, f32 *M2,
+                                      const f32 *src) {
+    __shared__ f32 s_mu[N_THREADS];
+    __shared__ f32 s_M2[N_THREADS];
+    __shared__ u32 s_n[N_THREADS];
+
+    f32 mu = 0.0f, m2 = 0.0f;
+    u32 n = 0;
+    for (u64 i = threadIdx.x; i < size; i += blockDim.x) {
+        f32 x = src[i];
+        n++;
+        f32 delta = x - mu;
+        mu += delta / (f32)n;
+        m2 += delta * (x - mu);
+    }
+    s_mu[threadIdx.x] = mu;
+    s_M2[threadIdx.x] = m2;
+    s_n[threadIdx.x] = n;
+    __syncthreads();
+
+    for (u32 s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            u32 na = s_n[threadIdx.x], nb = s_n[threadIdx.x + s];
+            u32 nc = na + nb;
+            if (nc > 0) {
+                f32 d = s_mu[threadIdx.x + s] - s_mu[threadIdx.x];
+                s_mu[threadIdx.x] += d * ((f32)nb / nc);
+                s_M2[threadIdx.x] += s_M2[threadIdx.x + s] +
+                                     d * d * ((f32)na * nb / nc);
+            }
+            s_n[threadIdx.x] = nc;
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        mean[0] = s_mu[0];
+        M2[0] = s_M2[0];
+    }
+}
+
+// Dim: one thread per output element, sequential Welford loop over the reduced dim.
+__global__ void welford_dim_kernel(TensorMeta out_meta, TensorMeta tensor_meta,
+                                   f32 *mean, f32 *M2, const f32 *src, u32 dim) {
+    u64 workIdx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (workIdx >= out_meta.size)
+        return;
+    u64 base = out_meta.offset_from(workIdx, tensor_meta);
+    u64 stride = tensor_meta.stride[dim];
+    u32 count = tensor_meta.shape[dim];
+
+    f32 mu = 0.0f, m2 = 0.0f;
+    u32 n = 0;
+    for (u32 i = 0; i < count; i++) {
+        f32 x = src[base + i * stride];
+        n++;
+        f32 delta = x - mu;
+        mu += delta / (f32)n;
+        m2 += delta * (x - mu);
+    }
+    mean[workIdx] = mu;
+    M2[workIdx] = m2;
+}
+
+// Skip: one block per element of the kept dim, Welford tree over all others.
+__global__ void welford_mean_M2(f32 *mean, f32 *M2, const f32 *src,
+                                u64 stride_dim, TensorMeta meta_contig,
+                                TensorMeta meta_src, u64 other_dims_size) {
+    __shared__ u32 s_n[N_THREADS];
+    __shared__ f32 s_mu[N_THREADS];
+    __shared__ f32 s_M2[N_THREADS];
+
+    u32 c = blockIdx.x;
+    u64 base = (u64)c * stride_dim;
+    f32 mu = 0.0f, m2 = 0.0f;
+    u32 n = 0;
+
+    for (u64 i = threadIdx.x; i < other_dims_size; i += blockDim.x) {
+        f32 x = src[base + meta_contig.offset_from(i, meta_src)];
+        n++;
+        f32 delta = x - mu;
+        mu += delta / (f32)n;
+        m2 += delta * (x - mu);
+    }
+    s_n[threadIdx.x] = n;
+    s_mu[threadIdx.x] = mu;
+    s_M2[threadIdx.x] = m2;
+    __syncthreads();
+
+    for (u32 s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            u32 na = s_n[threadIdx.x], nb = s_n[threadIdx.x + s];
+            u32 nc = na + nb;
+            if (nc > 0) {
+                f32 d = s_mu[threadIdx.x + s] - s_mu[threadIdx.x];
+                s_mu[threadIdx.x] += d * ((f32)nb / nc);
+                s_M2[threadIdx.x] += s_M2[threadIdx.x + s] +
+                                     d * d * ((f32)na * nb / nc);
+            }
+            s_n[threadIdx.x] = nc;
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        mean[c] = s_mu[0];
+        M2[c] = s_M2[0];
+    }
 }
 
 template <typename T>
@@ -585,17 +645,51 @@ static void cuda_elementwise_binary(TensorImpl<T> &out, const TensorImpl<T> &a,
                                     const TensorImpl<T> &b, Op op) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(out.numel(), (u64)threads);
+
+    // Fast path: all contiguous, same shape — no offset_from
     if (tensor_shape_eq(a, b) && tensor_is_contiguous(out) &&
         tensor_is_contiguous(a) && tensor_is_contiguous(b)) {
         elementwise_binary<<<blocks, threads>>>(out.numel(), out.data(),
                                                 a.data(), b.data(), op);
         return;
     }
-    TensorMeta out_contig = make_contig_meta(out);
+
+    TensorMeta contig_meta = make_contig_meta(out);
+
+    if (tensor_is_contiguous(out)) {
+        bool a_flat = tensor_is_contiguous(a) && tensor_shape_eq(a, out);
+        bool b_flat = tensor_is_contiguous(b) && tensor_shape_eq(b, out);
+
+        if (a_flat) {
+            TensorMeta b_meta(b, out.shape, out.ndim);
+            elementwise_bcast_b<<<blocks, threads>>>(out.numel(), out.data(),
+                                                      a.data(), contig_meta,
+                                                      b_meta, b.data(), op);
+            return;
+        }
+        if (b_flat) {
+            TensorMeta a_meta(a, out.shape, out.ndim);
+            elementwise_bcast_a<<<blocks, threads>>>(out.numel(), out.data(),
+                                                      contig_meta, a_meta,
+                                                      a.data(), b.data(), op);
+            return;
+        }
+        // Both broadcast, out flat: pass contig_meta for out_actual so
+        // the out offset_from becomes an identity (offset_from(i, contig)==i).
+        TensorMeta a_meta(a, out.shape, out.ndim);
+        TensorMeta b_meta(b, out.shape, out.ndim);
+        elementwise_broadcast<<<blocks, threads>>>(contig_meta, contig_meta,
+                                                    a_meta, b_meta,
+                                                    out.data(), a.data(),
+                                                    b.data(), op);
+        return;
+    }
+
+    // General: out non-contiguous
     TensorMeta out_actual(out);
     TensorMeta a_meta(a, out.shape, out.ndim);
     TensorMeta b_meta(b, out.shape, out.ndim);
-    elementwise_broadcast<<<blocks, threads>>>(out_contig, out_actual, a_meta,
+    elementwise_broadcast<<<blocks, threads>>>(contig_meta, out_actual, a_meta,
                                                b_meta, out.data(), a.data(),
                                                b.data(), op);
 }
@@ -631,22 +725,36 @@ void tensor_cuda_copy(TensorImpl<T> &dst, const TensorImpl<T> &src) {
     }
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(dst.numel(), (u64)threads);
-    TensorMeta out_contig = make_contig_meta(dst);
-    TensorMeta out_actual(dst);
+    TensorMeta contig_meta = make_contig_meta(dst);
+    if (tensor_is_contiguous(dst)) {
+        TensorMeta src_meta(src);
+        copy_kernel_dst_flat<<<blocks, threads>>>(dst.numel(), dst.data(),
+                                                   contig_meta, src_meta,
+                                                   src.data());
+        return;
+    }
+    if (tensor_is_contiguous(src)) {
+        TensorMeta dst_actual(dst);
+        copy_kernel_src_flat<<<blocks, threads>>>(dst.numel(), dst.data(),
+                                                   contig_meta, dst_actual,
+                                                   src.data());
+        return;
+    }
+    TensorMeta dst_actual(dst);
     TensorMeta src_meta(src);
-    copy_kernel<<<blocks, threads>>>(out_contig, out_actual, src_meta,
+    copy_kernel<<<blocks, threads>>>(contig_meta, dst_actual, src_meta,
                                      dst.data(), src.data());
 }
 
 template <typename T>
-void tensor_cuda_contiguous(TensorImpl<T> &t, CudaMemArena *arena) {
+void tensor_cuda_contiguous(TensorImpl<T> &t) {
     u32 threads = N_THREADS;
     u32 blocks = cuda::ceil_div(t.numel(), (u64)threads);
 
     TensorMeta src_meta(t);
     TensorMeta src_contig = make_contig_meta(t);
 
-    Tensor<T> temp_t = Tensor<T>::make(t.ndim, t.shape, true, arena);
+    Tensor<T> temp_t = Tensor<T>::make(t.ndim, t.shape, true);
     TensorImpl<T> &temp = temp_t.impl();
 
     contiguous_kernel<<<blocks, threads>>>(src_contig, src_meta, temp.data(),
@@ -856,43 +964,54 @@ void tensor_cuda_mat_mul_batched(TensorImpl<f32> &out, const TensorImpl<f32> &a,
                                   b.data(), ld_b, sb, a.data(), ld_a, sa, &beta,
                                   out.data(), ld_c, sc, batch);
     } else {
-        // Non-contiguous batch: build device pointer arrays using multi-dim indexing.
-        const float **h_a = new const float *[batch];
-        const float **h_b = new const float *[batch];
-        float **h_c = new float *[batch];
-        for (int bat = 0; bat < batch; bat++) {
-            u64 off_a = 0, off_b = 0, off_c = 0;
-            int idx = bat;
-            for (i32 d = (i32)batch_ndim - 1; d >= 0; d--) {
-                int coord = idx % (int)a.shape[d];
-                idx /= (int)a.shape[d];
-                off_a += (u64)coord * a.stride[d];
-                off_b += (u64)coord * b.stride[d];
-                off_c += (u64)coord * out.stride[d];
-            }
-            h_a[bat] = a.data() + off_a;
-            h_b[bat] = b.data() + off_b;
-            h_c[bat] = out.data() + off_c;
-        }
-        const float **d_a, **d_b; float **d_c;
-        cudaMalloc(&d_a, batch * sizeof(float *));
-        cudaMalloc(&d_b, batch * sizeof(float *));
-        cudaMalloc(&d_c, batch * sizeof(float *));
-        cudaMemcpy(d_a, h_a, batch * sizeof(float *), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_b, h_b, batch * sizeof(float *), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_c, h_c, batch * sizeof(float *), cudaMemcpyHostToDevice);
-        cublasSgemmBatched(cublas_handle(), op_b, op_a, N, M, K, &alpha,
-                           d_b, ld_b, d_a, ld_a, &beta, d_c, ld_c, batch);
-        cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
-        delete[] h_a; delete[] h_b; delete[] h_c;
+        // Non-contiguous batch dims: make contiguous D2D copies then use
+        // StridedBatched, avoiding 3 synchronous H2D memcpys (pointer-array path).
+        u32 a_shape[MAX_NDIM], b_shape[MAX_NDIM];
+        memcpy(a_shape, a.shape, nd * sizeof(u32));
+        memcpy(b_shape, b.shape, nd * sizeof(u32));
+        Tensor<f32> ta = Tensor<f32>::make(nd, a_shape, true);
+        Tensor<f32> tb = Tensor<f32>::make(nd, b_shape, true);
+        tensor_cuda_copy(*ta, a);
+        tensor_cuda_copy(*tb, b);
+
+        // After making contiguous, stride[nd-1] == 1 for both — always CUBLAS_OP_N.
+        int ld_a_c = (int)ta->stride[nd - 2];
+        int ld_b_c = (int)tb->stride[nd - 2];
+        int ld_c_c = (int)out.stride[nd - 2];
+        long long sa = (long long)ta->stride[nd - 3];
+        long long sb = (long long)tb->stride[nd - 3];
+        long long sc = (long long)out.stride[nd - 3];
+        cublasSgemmStridedBatched(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N, N, M, K,
+                                  &alpha, tb->data(), ld_b_c, sb,
+                                  ta->data(), ld_a_c, sa, &beta,
+                                  out.data(), ld_c_c, sc, batch);
     }
 }
 
 // ---- reduction -----------------------------------------------------------
 
+// Helper for skip-dim kernels: builds metas for "all dims except dim".
+static void build_skip_meta(u64 &stride_dim, u64 &other_dims_size,
+                             TensorMeta &meta_contig, TensorMeta &meta_src,
+                             const TensorImpl<f32> &t, u32 dim) {
+    stride_dim = t.stride[dim];
+    other_dims_size = t.numel() / t.shape[dim];
+    meta_contig.ndim = meta_src.ndim = t.ndim - 1;
+    meta_contig.size = meta_src.size = other_dims_size;
+    for (u32 d = 0, o = 0; d < t.ndim; d++) {
+        if (d == dim) continue;
+        meta_contig.shape[o] = t.shape[d];
+        meta_src.shape[o]    = t.shape[d];
+        meta_src.stride[o]   = t.stride[d];
+        o++;
+    }
+    tensor_compute_strides(meta_contig.stride, meta_contig.shape,
+                           meta_contig.ndim);
+}
+
+// Global sum: multi-pass tree reduction → scalar. Requires contiguous input.
 template <typename T>
-static void tensor_cuda_sum_global(TensorImpl<T> &out,
-                                   const TensorImpl<T> &tensor) {
+void tensor_cuda_sum_global(TensorImpl<T> &out, const TensorImpl<T> &tensor) {
     u32 threads = N_THREADS;
     const T *cur_data = tensor.data();
     u64 cur_size = tensor.numel();
@@ -915,9 +1034,10 @@ static void tensor_cuda_sum_global(TensorImpl<T> &out,
     }
 }
 
+// Dim sum: one thread per output element, sequential loop over reduced dim.
 template <typename T>
-static void tensor_cuda_sum_dim(TensorImpl<T> &out, const TensorImpl<T> &tensor,
-                                u32 dim) {
+void tensor_cuda_sum_dim(TensorImpl<T> &out, const TensorImpl<T> &tensor,
+                         u32 dim) {
     if (out.numel() == 1) {
         tensor_cuda_sum_global(out, tensor);
         return;
@@ -926,36 +1046,54 @@ static void tensor_cuda_sum_dim(TensorImpl<T> &out, const TensorImpl<T> &tensor,
     u32 blocks = cuda::ceil_div(out.numel(), u64(threads));
     TensorMeta out_meta(out);
     TensorMeta tensor_meta(tensor);
-    tensor_sum_kernel<<<blocks, threads>>>(out_meta, tensor_meta, out.data(),
-                                           tensor.data(), dim);
+    tensor_sum_dim_kernel<<<blocks, threads>>>(out_meta, tensor_meta, out.data(),
+                                               tensor.data(), dim);
 }
 
-void tensor_cuda_welford_mean_var(TensorImpl<f32> &mean, TensorImpl<f32> &var,
-                                  const TensorImpl<f32> &src, const u32 *axes,
-                                  u32 n_axes) {
-    ReductionPlan plan = make_reduction_plan(src, axes, n_axes);
+// Skip sum: reduce all dims except dim. One block per kept element.
+void tensor_cuda_sum_skip(TensorImpl<f32> &out, const TensorImpl<f32> &src,
+                          u32 dim) {
+    u64 stride_dim, other_dims_size;
+    TensorMeta meta_contig, meta_src;
+    build_skip_meta(stride_dim, other_dims_size, meta_contig, meta_src, src, dim);
+    u32 C = src.shape[dim];
+    tensor_sum_skip_kernel<<<C, N_THREADS>>>(out.data(), src.data(), stride_dim,
+                                              meta_contig, meta_src,
+                                              other_dims_size);
+}
 
-    constexpr u64 TARGET_R_PER_BLOCK = (u64)N_THREADS * 8;
-    u64 n_chunks = (plan.r_size + TARGET_R_PER_BLOCK - 1) / TARGET_R_PER_BLOCK;
-    if (n_chunks < 1)
-        n_chunks = 1;
-    if (n_chunks > 65535)
-        n_chunks = 65535;
-    u64 chunk_size = (plan.r_size + n_chunks - 1) / n_chunks;
+// Global welford: single block grid-strides all elements. Requires contiguous input.
+void tensor_cuda_welford_global(TensorImpl<f32> &mean, TensorImpl<f32> &M2,
+                                const TensorImpl<f32> &src) {
+    welford_global_kernel<<<1, N_THREADS>>>(src.numel(), mean.data(), M2.data(),
+                                             src.data());
+}
 
-    u32 partial_shape[2] = {(u32)plan.k_size, (u32)n_chunks};
-    Tensor<f32> p_mu = Tensor<f32>::make(2, partial_shape, true);
-    Tensor<f32> p_M2 = Tensor<f32>::make(2, partial_shape, true);
-    Tensor<u32> p_n = Tensor<u32>::make(2, partial_shape, true);
+// Dim welford: one thread per output element, sequential Welford over reduced dim.
+void tensor_cuda_welford_dim(TensorImpl<f32> &mean, TensorImpl<f32> &M2,
+                             const TensorImpl<f32> &src, u32 dim) {
+    if (mean.numel() == 1) {
+        tensor_cuda_welford_global(mean, M2, src);
+        return;
+    }
+    u32 threads = N_THREADS;
+    u32 blocks = cuda::ceil_div(mean.numel(), u64(threads));
+    TensorMeta out_meta(mean);
+    TensorMeta tensor_meta(src);
+    welford_dim_kernel<<<blocks, threads>>>(out_meta, tensor_meta, mean.data(),
+                                            M2.data(), src.data(), dim);
+}
 
-    dim3 grid0((u32)plan.k_size, (u32)n_chunks);
-    welford_partial_kernel<<<grid0, N_THREADS>>>(plan, src.data(), p_mu->data(),
-                                                 p_M2->data(), p_n->data(),
-                                                 chunk_size, n_chunks);
-
-    welford_final_kernel<<<(u32)plan.k_size, N_THREADS>>>(
-        p_mu->data(), p_M2->data(), p_n->data(), mean.data(), var.data(),
-        n_chunks);
+// Skip welford: reduce all dims except dim. One block per kept element.
+void tensor_cuda_welford_skip(TensorImpl<f32> &mean, TensorImpl<f32> &M2,
+                               const TensorImpl<f32> &src, u32 dim) {
+    u64 stride_dim, other_dims_size;
+    TensorMeta meta_contig, meta_src;
+    build_skip_meta(stride_dim, other_dims_size, meta_contig, meta_src, src, dim);
+    u32 C = src.shape[dim];
+    welford_mean_M2<<<C, N_THREADS>>>(mean.data(), M2.data(), src.data(),
+                                       stride_dim, meta_contig, meta_src,
+                                       other_dims_size);
 }
 
 template <typename T>
@@ -1198,120 +1336,6 @@ b32 tensor_cuda_equals(const TensorImpl<f32> &a, const TensorImpl<f32> &b,
     return (b32)ok_cpu;
 }
 
-// ── Generic multi-axis reduction ─────────────────────────────────────────────
-//
-// ReductionPlan, make_reduction_plan, and flat_to_offset live in reduction.hpp.
-// SumOp is the reduction policy for sum (extensible to Welford, max, etc.).
-
-template <typename T> struct SumOp {
-    using Acc = T;
-    __device__ static Acc identity() { return T(0); }
-    __device__ static Acc lift(T x) { return x; }
-    __device__ static Acc combine(Acc a, Acc b) { return a + b; }
-    __device__ static T lower(Acc a, u64) { return a; }
-};
-
-// Phase 0: partial reduction.
-// Each block covers one chunk of the R space for one output element (k_flat).
-// k_off is computed once per block. The R loop is the hot path.
-template <typename T, typename Op>
-__global__ void reduce_partial_kernel(ReductionPlan plan, const T *input,
-                                      typename Op::Acc *partial, u64 chunk_size,
-                                      u64 n_chunks) {
-    using Acc = typename Op::Acc;
-    u64 k_flat = blockIdx.x;
-    u64 chunk = blockIdx.y;
-    u64 r_start = chunk * chunk_size;
-    u64 r_end = min(r_start + chunk_size, plan.r_size);
-
-    // Decode k once per block — outside the hot loop.
-    u64 k_off = flat_to_offset(k_flat, plan.k_shape, plan.k_cstride,
-                               plan.k_stride, plan.k_ndim);
-
-    Acc acc = Op::identity();
-    for (u64 r_flat = r_start + threadIdx.x; r_flat < r_end;
-         r_flat += blockDim.x) {
-        u64 r_off = flat_to_offset(r_flat, plan.r_shape, plan.r_cstride,
-                                   plan.r_stride, plan.r_ndim);
-        acc = Op::combine(acc, Op::lift(input[k_off + r_off]));
-    }
-
-    __shared__ Acc smem[N_THREADS];
-    smem[threadIdx.x] = acc;
-    __syncthreads();
-    for (u32 s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s)
-            smem[threadIdx.x] =
-                Op::combine(smem[threadIdx.x], smem[threadIdx.x + s]);
-        __syncthreads();
-    }
-    if (threadIdx.x == 0)
-        partial[k_flat * n_chunks + chunk] = smem[0];
-}
-
-// Phase 1: final reduction over partial chunks.
-// Each block handles all n_chunks partials for one output element.
-// Threads loop sequentially when n_chunks > N_THREADS, then tree-reduce in
-// smem.
-template <typename T, typename Op>
-__global__ void reduce_final_kernel(const typename Op::Acc *partial, T *output,
-                                    u64 n_chunks, u64 r_size) {
-    using Acc = typename Op::Acc;
-    u64 k = blockIdx.x;
-
-    Acc acc = Op::identity();
-    for (u64 c = threadIdx.x; c < n_chunks; c += blockDim.x)
-        acc = Op::combine(acc, partial[k * n_chunks + c]);
-
-    __shared__ Acc smem[N_THREADS];
-    smem[threadIdx.x] = acc;
-    __syncthreads();
-    for (u32 s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s)
-            smem[threadIdx.x] =
-                Op::combine(smem[threadIdx.x], smem[threadIdx.x + s]);
-        __syncthreads();
-    }
-    if (threadIdx.x == 0)
-        output[k] = Op::lower(smem[0], r_size);
-}
-
-// Host driver: build plan, allocate partial buffer, launch both phases.
-// out must be a contiguous tensor of size k_size.
-template <typename T, typename Op>
-static void tensor_cuda_reduce(TensorImpl<T> &out, const TensorImpl<T> &in,
-                               const u32 *axes, u32 n_axes) {
-    ReductionPlan plan = make_reduction_plan(in, axes, n_axes);
-
-    // Each block targets ~4096 R elements (N_THREADS * 8 sequential per thread
-    // before the in-block tree reduction). Cap n_chunks at the CUDA grid-y
-    // limit.
-    constexpr u64 TARGET_R_PER_BLOCK = (u64)N_THREADS * 8;
-    u64 n_chunks = (plan.r_size + TARGET_R_PER_BLOCK - 1) / TARGET_R_PER_BLOCK;
-    if (n_chunks < 1)
-        n_chunks = 1;
-    if (n_chunks > 65535)
-        n_chunks = 65535;
-    u64 chunk_size = (plan.r_size + n_chunks - 1) / n_chunks;
-
-    using Acc = typename Op::Acc;
-    u32 partial_shape[2] = {(u32)plan.k_size, (u32)n_chunks};
-    Tensor<Acc> partial = Tensor<Acc>::make(2, partial_shape, true);
-
-    dim3 grid0((u32)plan.k_size, (u32)n_chunks);
-    reduce_partial_kernel<T, Op><<<grid0, N_THREADS>>>(
-        plan, in.data(), partial->data(), chunk_size, n_chunks);
-
-    reduce_final_kernel<T, Op><<<(u32)plan.k_size, N_THREADS>>>(
-        partial->data(), out.data(), n_chunks, plan.r_size);
-}
-
-template <typename T>
-void tensor_cuda_sum(TensorImpl<T> &out, const TensorImpl<T> &tensor,
-                     const u32 *axes, u32 n_axes) {
-    tensor_cuda_reduce<T, SumOp<T>>(out, tensor, axes, n_axes);
-}
-
 // ---- fused batch norm — f32 only ----------------------------------------
 
 __global__ void bn_fwd_normalize(f32 *out, f32 *xhat, const f32 *inp,
@@ -1435,12 +1459,192 @@ void tensor_cuda_bn_bwd(TensorImpl<f32> &dx, TensorImpl<f32> &d_gamma,
                              other_dims_size);
 }
 
+// ── Fused softmax kernels ─────────────────────────────────────────────────────
+
+__global__ void softmax_fwd_kernel(f32 *out, const f32 *inp, u64 D) {
+    u64 base = (u64)blockIdx.x * D;
+    __shared__ f32 s[N_THREADS];
+
+    f32 vmax = -__FLT_MAX__;
+    for (u64 i = threadIdx.x; i < D; i += blockDim.x)
+        vmax = fmaxf(vmax, inp[base + i]);
+    s[threadIdx.x] = vmax;
+    __syncthreads();
+    for (u32 half = blockDim.x / 2; half > 0; half >>= 1) {
+        if (threadIdx.x < half)
+            s[threadIdx.x] = fmaxf(s[threadIdx.x], s[threadIdx.x + half]);
+        __syncthreads();
+    }
+    f32 row_max = s[0];
+
+    f32 sum = 0.f;
+    for (u64 i = threadIdx.x; i < D; i += blockDim.x) {
+        f32 e = expf(inp[base + i] - row_max);
+        out[base + i] = e;
+        sum += e;
+    }
+    s[threadIdx.x] = sum;
+    __syncthreads();
+    for (u32 half = blockDim.x / 2; half > 0; half >>= 1) {
+        if (threadIdx.x < half)
+            s[threadIdx.x] += s[threadIdx.x + half];
+        __syncthreads();
+    }
+    f32 inv_sum = 1.f / s[0];
+
+    for (u64 i = threadIdx.x; i < D; i += blockDim.x)
+        out[base + i] *= inv_sum;
+}
+
+__global__ void softmax_bwd_kernel(f32 *dx, const f32 *s, const f32 *grad,
+                                    u64 D) {
+    u64 base = (u64)blockIdx.x * D;
+    __shared__ f32 sh[N_THREADS];
+
+    f32 dot = 0.f;
+    for (u64 i = threadIdx.x; i < D; i += blockDim.x)
+        dot += s[base + i] * grad[base + i];
+    sh[threadIdx.x] = dot;
+    __syncthreads();
+    for (u32 half = blockDim.x / 2; half > 0; half >>= 1) {
+        if (threadIdx.x < half)
+            sh[threadIdx.x] += sh[threadIdx.x + half];
+        __syncthreads();
+    }
+    dot = sh[0];
+
+    for (u64 i = threadIdx.x; i < D; i += blockDim.x)
+        dx[base + i] += s[base + i] * (grad[base + i] - dot);
+}
+
+void tensor_cuda_softmax_fwd(TensorImpl<f32> &out, const TensorImpl<f32> &inp) {
+    u64 D = inp.shape[inp.ndim - 1];
+    u64 n_rows = inp.numel() / D;
+    softmax_fwd_kernel<<<(u32)n_rows, N_THREADS>>>(out.data(), inp.data(), D);
+}
+
+void tensor_cuda_softmax_bwd(TensorImpl<f32> &dx, const TensorImpl<f32> &s,
+                              const TensorImpl<f32> &grad) {
+    u64 D = s.shape[s.ndim - 1];
+    u64 n_rows = s.numel() / D;
+    softmax_bwd_kernel<<<(u32)n_rows, N_THREADS>>>(dx.data(), s.data(),
+                                                    grad.data(), D);
+}
+
+// ── Fused layer norm kernels ──────────────────────────────────────────────────
+
+__global__ void ln_fwd_kernel(f32 *out, f32 *xhat, f32 *inv_std_out,
+                               const f32 *inp, const f32 *gamma,
+                               const f32 *beta, f32 eps, u64 D) {
+    u64 base = (u64)blockIdx.x * D;
+    __shared__ f32 s_mu[N_THREADS], s_M2[N_THREADS];
+    __shared__ u32 s_n[N_THREADS];
+
+    f32 mu = 0.f, m2 = 0.f;
+    u32 n = 0;
+    for (u64 i = threadIdx.x; i < D; i += blockDim.x) {
+        f32 x = inp[base + i];
+        n++;
+        f32 delta = x - mu;
+        mu += delta / (f32)n;
+        m2 += delta * (x - mu);
+    }
+    s_mu[threadIdx.x] = mu;
+    s_M2[threadIdx.x] = m2;
+    s_n[threadIdx.x] = n;
+    __syncthreads();
+
+    for (u32 half = blockDim.x / 2; half > 0; half >>= 1) {
+        if (threadIdx.x < half) {
+            u32 na = s_n[threadIdx.x], nb = s_n[threadIdx.x + half];
+            u32 nc = na + nb;
+            if (nc > 0) {
+                f32 d = s_mu[threadIdx.x + half] - s_mu[threadIdx.x];
+                s_mu[threadIdx.x] += d * ((f32)nb / nc);
+                s_M2[threadIdx.x] += s_M2[threadIdx.x + half] +
+                                     d * d * ((f32)na * (f32)nb / (f32)nc);
+            }
+            s_n[threadIdx.x] = nc;
+        }
+        __syncthreads();
+    }
+
+    f32 row_mu  = s_mu[0];
+    f32 inv_std = rsqrtf(s_M2[0] / (f32)D + eps);
+    if (threadIdx.x == 0)
+        inv_std_out[blockIdx.x] = inv_std;
+
+    for (u64 i = threadIdx.x; i < D; i += blockDim.x) {
+        f32 xh = (inp[base + i] - row_mu) * inv_std;
+        xhat[base + i] = xh;
+        out[base + i] = fmaf(gamma[i], xh, beta[i]);
+    }
+}
+
+__global__ void ln_bwd_kernel(f32 *dx, const f32 *grad, const f32 *xhat,
+                               const f32 *inv_std, const f32 *gamma, u64 D) {
+    u64 base = (u64)blockIdx.x * D;
+    f32 isd = inv_std[blockIdx.x];
+    __shared__ f32 s_gn[N_THREADS], s_gnx[N_THREADS];
+
+    f32 sum_gn = 0.f, sum_gnx = 0.f;
+    for (u64 i = threadIdx.x; i < D; i += blockDim.x) {
+        f32 gn = grad[base + i] * gamma[i];
+        f32 xh = xhat[base + i];
+        sum_gn  += gn;
+        sum_gnx += gn * xh;
+    }
+    s_gn[threadIdx.x]  = sum_gn;
+    s_gnx[threadIdx.x] = sum_gnx;
+    __syncthreads();
+
+    for (u32 half = blockDim.x / 2; half > 0; half >>= 1) {
+        if (threadIdx.x < half) {
+            s_gn[threadIdx.x]  += s_gn[threadIdx.x + half];
+            s_gnx[threadIdx.x] += s_gnx[threadIdx.x + half];
+        }
+        __syncthreads();
+    }
+
+    f32 mean_gn  = s_gn[0]  / (f32)D;
+    f32 mean_gnx = s_gnx[0] / (f32)D;
+
+    for (u64 i = threadIdx.x; i < D; i += blockDim.x) {
+        f32 gn = grad[base + i] * gamma[i];
+        f32 xh = xhat[base + i];
+        dx[base + i] += (gn - mean_gn - xh * mean_gnx) * isd;
+    }
+}
+
+void tensor_cuda_ln_fwd(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
+                         TensorImpl<f32> &inv_std, const TensorImpl<f32> &inp,
+                         const TensorImpl<f32> &gamma,
+                         const TensorImpl<f32> &beta, f32 eps) {
+    u64 D = inp.shape[inp.ndim - 1];
+    u64 n_rows = inp.numel() / D;
+    ln_fwd_kernel<<<(u32)n_rows, N_THREADS>>>(out.data(), xhat.data(),
+                                               inv_std.data(), inp.data(),
+                                               gamma.data(), beta.data(),
+                                               eps, D);
+}
+
+void tensor_cuda_ln_bwd(TensorImpl<f32> &dx, const TensorImpl<f32> &grad,
+                         const TensorImpl<f32> &xhat,
+                         const TensorImpl<f32> &inv_std,
+                         const TensorImpl<f32> &gamma) {
+    u64 D = grad.shape[grad.ndim - 1];
+    u64 n_rows = grad.numel() / D;
+    ln_bwd_kernel<<<(u32)n_rows, N_THREADS>>>(dx.data(), grad.data(),
+                                               xhat.data(), inv_std.data(),
+                                               gamma.data(), D);
+}
+
 // ── Explicit instantiations
 // ───────────────────────────────────────────────────
 
 #define INST(T)                                                                \
     template void tensor_cuda_copy(TensorImpl<T> &, const TensorImpl<T> &);    \
-    template void tensor_cuda_contiguous(TensorImpl<T> &, CudaMemArena *);     \
+    template void tensor_cuda_contiguous(TensorImpl<T> &);                      \
     template void tensor_cuda_fill(TensorImpl<T> &, T);                        \
     template void tensor_cuda_clear(TensorImpl<T> &);                          \
     template void tensor_cuda_arange(TensorImpl<T> &);                         \
@@ -1458,8 +1662,10 @@ void tensor_cuda_bn_bwd(TensorImpl<f32> &dx, TensorImpl<f32> &d_gamma,
     template void tensor_cuda_sub(TensorImpl<T> &, const TensorImpl<T> &, T);  \
     template void tensor_cuda_mul(TensorImpl<T> &, const TensorImpl<T> &, T);  \
     template void tensor_cuda_div(TensorImpl<T> &, const TensorImpl<T> &, T);  \
-    template void tensor_cuda_sum(TensorImpl<T> &, const TensorImpl<T> &,      \
-                                  const u32 *, u32);                           \
+    template void tensor_cuda_sum_global(TensorImpl<T> &,                       \
+                                         const TensorImpl<T> &);               \
+    template void tensor_cuda_sum_dim(TensorImpl<T> &, const TensorImpl<T> &,  \
+                                      u32);                                    \
     template void tensor_cuda_max(TensorImpl<T> &, const TensorImpl<T> &);     \
     template void tensor_cuda_max(TensorImpl<T> &, const TensorImpl<T> &,      \
                                   u32);                                        \

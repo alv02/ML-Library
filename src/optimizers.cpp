@@ -51,8 +51,7 @@ static TensorU32 gather_row_idx(const u32 *row_ids, u32 n, u32 ndim,
     return idx;
 }
 
-bool DataLoader::next(Tensor<f32> &X_batch, Tensor<f32> &y_batch,
-                      CudaMemArena *arena) {
+bool DataLoader::next(Tensor<f32> &X_batch, Tensor<f32> &y_batch) {
     if (cursor >= n_samples)
         return false;
     u32 end = std::min(cursor + batch_size, n_samples);
@@ -62,8 +61,8 @@ bool DataLoader::next(Tensor<f32> &X_batch, Tensor<f32> &y_batch,
         gather_row_idx(row_ids, n, X->ndim, X->shape, X->on_gpu());
     TensorU32 y_idx =
         gather_row_idx(row_ids, n, y->ndim, y->shape, y->on_gpu());
-    X_batch = tensor_gather(X, X_idx, 0, arena);
-    y_batch = tensor_gather(y, y_idx, 0, arena);
+    X_batch = tensor_gather(X, X_idx, 0);
+    y_batch = tensor_gather(y, y_idx, 0);
     cursor = end;
     return true;
 }
@@ -71,48 +70,45 @@ bool DataLoader::next(Tensor<f32> &X_batch, Tensor<f32> &y_batch,
 // ── Optimizer
 // ─────────────────────────────────────────────────────────────────
 
-Optimizer::Optimizer(std::vector<Var> params, f32 lr, CudaMemArena *perm_arena)
-    : lr(lr), params(std::move(params)), perm_arena(perm_arena) {
-    // Pre-allocate parameter gradients on perm_arena so backward never
-    // allocates them on the batch arena (which is cleared every iteration).
+Optimizer::Optimizer(std::vector<Var> params, f32 lr)
+    : lr(lr), params(std::move(params)) {
     for (auto &p : this->params)
-        p->grad = tensor_zeros_like(p->data, perm_arena);
+        p->grad = tensor_zeros_like(p->data);
 }
 
 // ── sgd
 // ───────────────────────────────────────────────────────────────────────
 
-sgd::sgd(std::vector<Var> params, f32 lr, f32 lambda, f32 mu,
-         CudaMemArena *perm_arena)
-    : Optimizer(std::move(params), lr, perm_arena), lambda(lambda), mu(mu) {}
+sgd::sgd(std::vector<Var> params, f32 lr, f32 lambda, f32 mu)
+    : Optimizer(std::move(params), lr), lambda(lambda), mu(mu) {}
 
-sgd::sgd(Layer &model, f32 lr, f32 lambda, f32 mu, CudaMemArena *perm_arena)
-    : sgd(model.parameters(), lr, lambda, mu, perm_arena) {}
+sgd::sgd(Layer &model, f32 lr, f32 lambda, f32 mu)
+    : sgd(model.parameters(), lr, lambda, mu) {}
 
-void sgd::step(CudaMemArena *arena) {
+void sgd::step() {
     for (auto &p : params) {
         if (!p->grad.defined())
             continue;
 
         if (lambda > 0.0f) {
-            Tensor<f32> reg = tensor_mul(p->data, lambda, arena);
+            Tensor<f32> reg = tensor_mul(p->data, lambda);
             tensor_add(p->grad, p->grad, reg);
         }
 
         if (mu > 0.0f) {
             Tensor<f32> &v = velocity[p.impl_.get()];
             if (!v.defined()) {
-                v = tensor_create_like(p->data, perm_arena);
+                v = tensor_create_like(p->data);
                 tensor_clear(v);
             }
             // v = mu*v + grad
             tensor_mul(v, v, mu);
             tensor_add(v, v, p->grad);
             // param -= lr * v
-            Tensor<f32> delta = tensor_mul(v, lr, arena);
+            Tensor<f32> delta = tensor_mul(v, lr);
             tensor_sub(p->data, p->data, delta);
         } else {
-            Tensor<f32> delta = tensor_mul(p->grad, lr, arena);
+            Tensor<f32> delta = tensor_mul(p->grad, lr);
             tensor_sub(p->data, p->data, delta);
         }
     }
@@ -128,25 +124,24 @@ void sgd::zero_grad() {
 // ── AdamW
 // ─────────────────────────────────────────────────────────────────────
 
-AdamW::AdamW(Layer &model, f32 lr, f32 beta1, f32 beta2, f32 eps, f32 lambda,
-             CudaMemArena *perm_arena)
-    : AdamW(model.parameters(), lr, beta1, beta2, eps, lambda, perm_arena) {}
+AdamW::AdamW(Layer &model, f32 lr, f32 beta1, f32 beta2, f32 eps, f32 lambda)
+    : AdamW(model.parameters(), lr, beta1, beta2, eps, lambda) {}
 
 AdamW::AdamW(std::vector<Var> params, f32 lr, f32 beta1, f32 beta2, f32 eps,
-             f32 lambda, CudaMemArena *perm_arena)
-    : Optimizer(std::move(params), lr, perm_arena), beta1(beta1), beta2(beta2),
+             f32 lambda)
+    : Optimizer(std::move(params), lr), beta1(beta1), beta2(beta2),
       eps(eps), lambda(lambda), t(0) {
     for (auto &p : this->params) {
-        Tensor<f32> mt = tensor_create_like(p->data, perm_arena);
+        Tensor<f32> mt = tensor_create_like(p->data);
         tensor_clear(mt);
-        Tensor<f32> vt = tensor_create_like(p->data, perm_arena);
+        Tensor<f32> vt = tensor_create_like(p->data);
         tensor_clear(vt);
         m[p.impl_.get()] = mt;
         v[p.impl_.get()] = vt;
     }
 }
 
-void AdamW::step(CudaMemArena *arena) {
+void AdamW::step() {
     t++;
     f32 bc1 = 1.0f - powf(beta1, (f32)t);
     f32 bc2 = 1.0f - powf(beta2, (f32)t);
@@ -161,25 +156,25 @@ void AdamW::step(CudaMemArena *arena) {
 
         // mt = beta1*mt + (1-beta1)*grad
         tensor_mul(mt, mt, beta1);
-        Tensor<f32> g1 = tensor_mul(p->grad, 1.0f - beta1, arena);
+        Tensor<f32> g1 = tensor_mul(p->grad, 1.0f - beta1);
         tensor_add(mt, mt, g1);
 
         // vt = beta2*vt + (1-beta2)*grad^2
         tensor_mul(vt, vt, beta2);
-        Tensor<f32> g2 = tensor_mul(p->grad, p->grad, arena);
-        Tensor<f32> g2s = tensor_mul(g2, 1.0f - beta2, arena);
+        Tensor<f32> g2 = tensor_mul(p->grad, p->grad);
+        Tensor<f32> g2s = tensor_mul(g2, 1.0f - beta2);
         tensor_add(vt, vt, g2s);
 
         // param -= step_size * mt / (sqrt(vt) + eps)
-        Tensor<f32> vt_sqrt = tensor_sqrt(vt, arena);
-        Tensor<f32> denom = tensor_add(vt_sqrt, eps, arena);
-        Tensor<f32> delta = tensor_div(mt, denom, arena);
-        Tensor<f32> scaled = tensor_mul(delta, step_size, arena);
+        Tensor<f32> vt_sqrt = tensor_sqrt(vt);
+        Tensor<f32> denom = tensor_add(vt_sqrt, eps);
+        Tensor<f32> delta = tensor_div(mt, denom);
+        Tensor<f32> scaled = tensor_mul(delta, step_size);
         tensor_sub(p->data, p->data, scaled);
 
         // decoupled weight decay: param -= lr * lambda * param
         if (lambda > 0.0f) {
-            Tensor<f32> wd = tensor_mul(p->data, lr * lambda, arena);
+            Tensor<f32> wd = tensor_mul(p->data, lr * lambda);
             tensor_sub(p->data, p->data, wd);
         }
     }

@@ -8,7 +8,6 @@
 #include <string>
 
 #include "autograd.hpp"
-#include "backend/cuda_mem_arena.hpp"
 #include "models.hpp"
 #include "ops.hpp"
 #include "optimizers.hpp"
@@ -31,8 +30,7 @@ static void param_save(const Tensor<f32> &t, const char *path) {
     fclose(f);
 }
 
-static Tensor<f32> param_load(const char *path, bool on_gpu,
-                               CudaMemArena *arena = nullptr) {
+static Tensor<f32> param_load(const char *path, bool on_gpu) {
     FILE *f = fopen(path, "rb");
     if (!f)
         throw std::runtime_error(std::string("cannot open for read: ") + path);
@@ -44,7 +42,7 @@ static Tensor<f32> param_load(const char *path, bool on_gpu,
     fread(cpu->data(), sizeof(f32), cpu->numel(), f);
     fclose(f);
     if (on_gpu)
-        return tensor_to_gpu(cpu, arena);
+        return tensor_to_gpu(cpu);
     return cpu;
 }
 
@@ -83,8 +81,6 @@ static u32 sample_token(const f32 *logits, u32 vocab, f32 temperature,
 // ── GPTTrainer ────────────────────────────────────────────────────────────────
 
 struct GPTTrainer {
-    CudaMemArena perm_arena;
-    CudaMemArena batch_arena;
     GPTModel model;
     AdamW optim;
     u32 vocab_size_;
@@ -95,18 +91,14 @@ struct GPTTrainer {
     GPTTrainer(u32 vocab_size, u32 d_model, u32 n_heads, u32 n_layers,
                u32 max_seq_len, f32 dropout_p, f32 lr, f32 weight_decay,
                bool on_gpu)
-        : perm_arena(GiB(2), "PermArena"),
-          batch_arena(GiB(4), "BatchArena"),
-          model(vocab_size, d_model, n_heads, n_layers, max_seq_len, dropout_p,
-                on_gpu, &perm_arena),
-          optim(model.parameters(), lr, 0.9f, 0.999f, 1e-8f, weight_decay,
-                &perm_arena),
+        : model(vocab_size, d_model, n_heads, n_layers, max_seq_len, dropout_p, on_gpu),
+          optim(model.parameters(), lr, 0.9f, 0.999f, 1e-8f, weight_decay),
           vocab_size_(vocab_size), max_seq_len_(max_seq_len), on_gpu_(on_gpu) {}
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
-    // Build inp [B,T] and tgt_buf [B*T] from a numpy [B, T+1] array.
-    std::pair<TensorU32, std::vector<u32>>
+    // Build inp [B,T] and tgt [B*T] from a numpy [B, T+1] array.
+    std::pair<TensorU32, TensorU32>
     make_inp_tgt(py::array_t<uint32_t, py::array::c_style | py::array::forcecast> tokens_np) {
         auto buf = tokens_np.request();
         if (buf.ndim != 2)
@@ -119,39 +111,27 @@ struct GPTTrainer {
         const uint32_t *src = static_cast<const uint32_t *>(buf.ptr);
 
         u32 seq_shape[2] = {B, T};
+        u32 tgt_shape[1] = {B * T};
         TensorU32 inp_cpu = Tensor<u32>::make(2, seq_shape, false);
-        std::vector<u32> tgt(B * T);
+        TensorU32 tgt_cpu = Tensor<u32>::make(1, tgt_shape, false);
 
         for (u32 b = 0; b < B; b++) {
-            memcpy(inp_cpu->data() + b * T, src + b * Tp1, T * sizeof(u32));
-            memcpy(tgt.data() + b * T, src + b * Tp1 + 1, T * sizeof(u32));
+            memcpy(inp_cpu->data() + b * T, src + b * Tp1,     T * sizeof(u32));
+            memcpy(tgt_cpu->data() + b * T, src + b * Tp1 + 1, T * sizeof(u32));
         }
 
-        TensorU32 inp = on_gpu_ ? tensor_to_gpu(inp_cpu, &batch_arena) : inp_cpu;
+        TensorU32 inp = on_gpu_ ? tensor_to_gpu(inp_cpu) : inp_cpu;
+        TensorU32 tgt = on_gpu_ ? tensor_to_gpu(tgt_cpu) : tgt_cpu;
         return {inp, tgt};
     }
 
-    // One-hot encode tgt [B*T] → Var [B*T, vocab].
-    Var make_targets(const std::vector<u32> &tgt) {
-        u32 N = (u32)tgt.size();
-        u32 shape[2] = {N, vocab_size_};
-        Tensor<f32> oh = tensor_zeros<f32>(2, shape, false, nullptr);
-        f32 *p = oh->data();
-        for (u32 i = 0; i < N; i++)
-            p[i * vocab_size_ + tgt[i]] = 1.0f;
-        if (on_gpu_)
-            oh = tensor_to_gpu(oh, &batch_arena);
-        return Var(oh, FV_FLAG_NONE);
-    }
-
     // Forward → flat logits + loss.
-    std::pair<Var, float> forward_loss(TensorU32 inp, const std::vector<u32> &tgt) {
+    std::pair<Var, float> forward_loss(TensorU32 inp, TensorU32 tgt) {
         u32 B = inp->shape[0], T = inp->shape[1];
-        Var logits = model.forward(inp, &batch_arena);    // [B, T, vocab]
+        Var logits = model.forward(inp);    // [B, T, vocab]
         u32 flat_shape[2] = {B * T, vocab_size_};
-        Var logits_flat = reshape(logits, flat_shape, 2, &batch_arena);
-        Var targets = make_targets(tgt);
-        Var loss = cross_entropy_with_logits(logits_flat, targets, &batch_arena);
+        Var logits_flat = reshape(logits, flat_shape, 2);
+        Var loss = cross_entropy_with_logits(logits_flat, tgt);
         float loss_val = tensor_to_cpu(loss->data)->data()[0];
         return {loss, loss_val};
     }
@@ -159,17 +139,15 @@ struct GPTTrainer {
     // ── Public API ────────────────────────────────────────────────────────────
 
     float train_step(py::array_t<uint32_t> tokens_np) {
-        cuda_arena_clear(&batch_arena);
         auto [inp, tgt] = make_inp_tgt(tokens_np);
         auto [loss, loss_val] = forward_loss(inp, tgt);
-        backward(loss, &batch_arena);
-        optim.step(&batch_arena);
+        backward(loss);
+        optim.step();
         optim.zero_grad();
         return loss_val;
     }
 
     float eval_loss(py::array_t<uint32_t> tokens_np) {
-        cuda_arena_clear(&batch_arena);
         auto [inp, tgt] = make_inp_tgt(tokens_np);
         auto [loss, loss_val] = forward_loss(inp, tgt);
         return loss_val;
@@ -191,8 +169,6 @@ struct GPTTrainer {
         model.eval();
 
         for (int step = 0; step < max_new_tokens; step++) {
-            cuda_arena_clear(&batch_arena);
-
             // Truncate to max_seq_len if needed
             u32 start = (cur_len > max_seq_len_) ? (cur_len - max_seq_len_) : 0;
             u32 T = cur_len - start;
@@ -202,8 +178,8 @@ struct GPTTrainer {
                 memcpy(inp_cpu->data() + b * T, ctx.data() + b * (T0 + max_new_tokens) + start,
                        T * sizeof(u32));
 
-            TensorU32 inp = on_gpu_ ? tensor_to_gpu(inp_cpu, &batch_arena) : inp_cpu;
-            Var logits = model.forward(inp, &batch_arena);  // [B, T, vocab]
+            TensorU32 inp = on_gpu_ ? tensor_to_gpu(inp_cpu) : inp_cpu;
+            Var logits = model.forward(inp);  // [B, T, vocab]
 
             // Extract last-position logits [B, vocab] → CPU
             Tensor<f32> logits_cpu = tensor_to_cpu(logits->data);
@@ -250,7 +226,7 @@ struct GPTTrainer {
         char path[512];
         for (u32 i = 0; i < (u32)params.size(); i++) {
             snprintf(path, sizeof(path), "%s/param_%u.bin", directory.c_str(), i);
-            Tensor<f32> loaded = param_load(path, on_gpu_, &perm_arena);
+            Tensor<f32> loaded = param_load(path, on_gpu_);
             tensor_copy(params[i]->data, loaded);
         }
         printf("Loaded %zu parameters from %s\n", params.size(), directory.c_str());

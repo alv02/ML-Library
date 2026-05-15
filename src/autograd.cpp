@@ -3,7 +3,7 @@
 #include <functional>
 #include <unordered_set>
 
-void backward(Var loss, CudaMemArena *arena) {
+void backward(Var loss) {
     std::vector<Var> order;
     std::unordered_set<VarImpl *> visited;
 
@@ -20,7 +20,7 @@ void backward(Var loss, CudaMemArena *arena) {
     std::reverse(order.begin(), order.end());
 
     u32 one_shape[] = {1};
-    loss->grad = Tensor<f32>::make(1, one_shape, loss->data->on_gpu(), arena);
+    loss->grad = Tensor<f32>::make(1, one_shape, loss->data->on_gpu());
     tensor_fill(loss->grad, 1.0f);
 
     for (auto &v : order)

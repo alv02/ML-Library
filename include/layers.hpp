@@ -12,13 +12,11 @@
 struct Layer {
     bool training = true;
 
-    virtual Var forward(Var input, CudaMemArena *arena = nullptr) = 0;
+    virtual Var forward(Var input) = 0;
     virtual std::vector<Var> parameters() { return {}; }
     virtual void train(bool mode = true) { training = mode; }
     void eval() { train(false); }
-    Var operator()(Var input, CudaMemArena *arena = nullptr) {
-        return forward(input, arena);
-    }
+    Var operator()(Var input) { return forward(input); }
     virtual ~Layer() = default;
 };
 
@@ -28,9 +26,8 @@ struct Layer {
 struct Linear : Layer {
     Var W, b;
 
-    Linear(u32 in_features, u32 out_features, bool on_gpu,
-           CudaMemArena *perm_arena = nullptr, float init_std = 0.0f);
-    Var forward(Var input, CudaMemArena *arena = nullptr) override;
+    Linear(u32 in_features, u32 out_features, bool on_gpu, float init_std = 0.0f);
+    Var forward(Var input) override;
     std::vector<Var> parameters() override { return {W, b}; }
 };
 
@@ -38,9 +35,7 @@ struct Linear : Layer {
 // ──────────────────────────────────────────────────────────────────────
 
 struct ReLU : Layer {
-    Var forward(Var input, CudaMemArena *arena = nullptr) override {
-        return relu(input, arena);
-    }
+    Var forward(Var input) override { return relu(input); }
 };
 
 // ── Reshape
@@ -55,11 +50,11 @@ struct Reshape : Layer {
         memcpy(this->shape, shape, ndim * sizeof(u32));
     }
 
-    Var forward(Var input, CudaMemArena *arena = nullptr) override {
+    Var forward(Var input) override {
         u32 resolved[MAX_NDIM];
         for (u32 i = 0; i < ndim; i++)
             resolved[i] = shape[i] ? shape[i] : input->data->shape[i];
-        return reshape(input, resolved, ndim, arena);
+        return reshape(input, resolved, ndim);
     }
 };
 
@@ -70,9 +65,8 @@ struct Conv2d : Layer {
     Var W, b;
     Unfold2dParams params;
 
-    Conv2d(u32 C_in, u32 C_out, Unfold2dParams params, bool on_gpu,
-           CudaMemArena *perm_arena = nullptr);
-    Var forward(Var input, CudaMemArena *arena = nullptr) override;
+    Conv2d(u32 C_in, u32 C_out, Unfold2dParams params, bool on_gpu);
+    Var forward(Var input) override;
     std::vector<Var> parameters() override { return {W, b}; }
 };
 
@@ -83,9 +77,7 @@ struct MaxPool2d : Layer {
     Unfold2dParams params;
 
     MaxPool2d(Unfold2dParams params) : params(params) {}
-    Var forward(Var input, CudaMemArena *arena = nullptr) override {
-        return max_pool2d(input, params, arena);
-    }
+    Var forward(Var input) override { return max_pool2d(input, params); }
 };
 
 // ── BatchNorm2d
@@ -96,9 +88,8 @@ struct BatchNorm2d : Layer {
     Tensor<f32> running_mean, running_var;
     f32 momentum, eps;
 
-    BatchNorm2d(u32 C, bool on_gpu, CudaMemArena *perm_arena = nullptr,
-                f32 momentum = 0.1f, f32 eps = 1e-5f);
-    Var forward(Var input, CudaMemArena *arena = nullptr) override;
+    BatchNorm2d(u32 C, bool on_gpu, f32 momentum = 0.1f, f32 eps = 1e-5f);
+    Var forward(Var input) override;
     std::vector<Var> parameters() override { return {gamma, beta}; }
 };
 
@@ -109,8 +100,8 @@ struct BatchNorm2d : Layer {
 struct LayerNorm : Layer {
     Var gamma, beta;
 
-    LayerNorm(u32 d_model, bool on_gpu, CudaMemArena *perm_arena = nullptr);
-    Var forward(Var input, CudaMemArena *arena = nullptr) override;
+    LayerNorm(u32 d_model, bool on_gpu);
+    Var forward(Var input) override;
     std::vector<Var> parameters() override { return {gamma, beta}; }
 };
 
@@ -121,9 +112,8 @@ struct LayerNorm : Layer {
 struct EmbeddingLayer {
     Var weight;
 
-    EmbeddingLayer(u32 vocab_size, u32 d_model, bool on_gpu,
-                   CudaMemArena *perm_arena = nullptr, float init_std = 0.0f);
-    Var forward(TensorU32 indices, CudaMemArena *arena = nullptr);
+    EmbeddingLayer(u32 vocab_size, u32 d_model, bool on_gpu, float init_std = 0.0f);
+    Var forward(TensorU32 indices);
     std::vector<Var> parameters() { return {weight}; }
 };
 
@@ -136,9 +126,8 @@ struct PositionalEmbeddingLayer {
     TensorU32 positions;
 
     PositionalEmbeddingLayer(u32 max_seq_len, u32 d_model, bool on_gpu,
-                             CudaMemArena *perm_arena = nullptr,
                              float init_std = 0.0f);
-    Var forward(u32 T, CudaMemArena *arena = nullptr);
+    Var forward(u32 T);
     std::vector<Var> parameters() { return {weight}; }
 };
 
@@ -153,9 +142,8 @@ struct InputEmbedding {
     bool training = true;
 
     InputEmbedding(u32 vocab_size, u32 max_seq_len, u32 d_model, f32 dropout_p,
-                   bool on_gpu, CudaMemArena *perm_arena = nullptr,
-                   float init_std = 0.0f);
-    Var forward(TensorU32 tokens, CudaMemArena *arena = nullptr);
+                   bool on_gpu, float init_std = 0.0f);
+    Var forward(TensorU32 tokens);
     std::vector<Var> parameters();
     void train(bool mode = true) { training = mode; }
     void eval() { train(false); }
@@ -181,10 +169,10 @@ struct Sequential : Layer {
         return *this;
     }
 
-    Var forward(Var input, CudaMemArena *arena = nullptr) override {
+    Var forward(Var input) override {
         Var cur = input;
         for (auto &l : layers)
-            cur = l->forward(cur, arena);
+            cur = l->forward(cur);
         return cur;
     }
 
@@ -217,9 +205,8 @@ struct MultiHeadAttention {
     bool training = true;
 
     MultiHeadAttention(u32 d_model, u32 n_heads, u32 max_seq_len, f32 dropout_p,
-                       bool on_gpu, CudaMemArena *perm_arena = nullptr,
-                       float init_std = 0.0f);
-    Var forward(Var x, CudaMemArena *arena = nullptr);
+                       bool on_gpu, float init_std = 0.0f);
+    Var forward(Var x);
     std::vector<Var> parameters();
     void train(bool mode = true) { training = mode; }
     void eval() { train(false); }
@@ -237,9 +224,8 @@ struct TransformerBlock : Layer {
     f32 dropout_p;
 
     TransformerBlock(u32 d_model, u32 n_heads, u32 max_seq_len, f32 dropout_p,
-                     bool on_gpu, CudaMemArena *perm_arena = nullptr,
-                     float init_std = 0.0f);
-    Var forward(Var x, CudaMemArena *arena = nullptr) override;
+                     bool on_gpu, float init_std = 0.0f);
+    Var forward(Var x) override;
     std::vector<Var> parameters() override;
     void train(bool mode = true) override;
 };
@@ -252,10 +238,9 @@ struct ResBlock : Layer {
     Sequential proj;
     bool has_proj;
 
-    ResBlock(u32 C_in, u32 C_out, u32 stride, bool on_gpu,
-             CudaMemArena *perm_arena = nullptr);
+    ResBlock(u32 C_in, u32 C_out, u32 stride, bool on_gpu);
 
-    Var forward(Var input, CudaMemArena *arena = nullptr) override;
+    Var forward(Var input) override;
     std::vector<Var> parameters() override;
     void train(bool mode = true) override;
 };

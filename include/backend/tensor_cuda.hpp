@@ -51,7 +51,7 @@ struct TensorMeta {
 template <typename T>
 void tensor_cuda_copy(TensorImpl<T> &dst, const TensorImpl<T> &src);
 template <typename T>
-void tensor_cuda_contiguous(TensorImpl<T> &t, CudaMemArena *arena = nullptr);
+void tensor_cuda_contiguous(TensorImpl<T> &t);
 
 // ---- fill / clear / arange -----------------------------------------------
 
@@ -115,11 +115,19 @@ void tensor_cuda_mat_mul_batched(TensorImpl<f32> &out, const TensorImpl<f32> &a,
 // ---- reduction -----------------------------------------------------------
 
 template <typename T>
-void tensor_cuda_sum(TensorImpl<T> &out, const TensorImpl<T> &tensor,
-                     const u32 *axes, u32 n_axes);
-void tensor_cuda_welford_mean_var(TensorImpl<f32> &mean, TensorImpl<f32> &var,
-                                  const TensorImpl<f32> &src, const u32 *axes,
-                                  u32 n_axes);
+void tensor_cuda_sum_global(TensorImpl<T> &out, const TensorImpl<T> &tensor);
+template <typename T>
+void tensor_cuda_sum_dim(TensorImpl<T> &out, const TensorImpl<T> &tensor,
+                         u32 dim);
+void tensor_cuda_sum_skip(TensorImpl<f32> &out, const TensorImpl<f32> &src,
+                          u32 dim);
+
+void tensor_cuda_welford_global(TensorImpl<f32> &mean, TensorImpl<f32> &M2,
+                                const TensorImpl<f32> &src);
+void tensor_cuda_welford_dim(TensorImpl<f32> &mean, TensorImpl<f32> &M2,
+                             const TensorImpl<f32> &src, u32 dim);
+void tensor_cuda_welford_skip(TensorImpl<f32> &mean, TensorImpl<f32> &M2,
+                               const TensorImpl<f32> &src, u32 dim);
 template <typename T>
 void tensor_cuda_max(TensorImpl<T> &out, const TensorImpl<T> &tensor);
 template <typename T>
@@ -158,6 +166,23 @@ void tensor_cuda_fold2d(TensorImpl<T> &dst, const TensorImpl<T> &col,
 
 b32 tensor_cuda_equals(const TensorImpl<f32> &a, const TensorImpl<f32> &b,
                        f32 tol);
+
+// ---- fused softmax — f32 only -------------------------------------------
+
+void tensor_cuda_softmax_fwd(TensorImpl<f32> &out, const TensorImpl<f32> &inp);
+void tensor_cuda_softmax_bwd(TensorImpl<f32> &dx, const TensorImpl<f32> &s,
+                              const TensorImpl<f32> &grad);
+
+// ---- fused layer norm — f32 only ----------------------------------------
+
+void tensor_cuda_ln_fwd(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
+                         TensorImpl<f32> &inv_std, const TensorImpl<f32> &inp,
+                         const TensorImpl<f32> &gamma,
+                         const TensorImpl<f32> &beta, f32 eps);
+void tensor_cuda_ln_bwd(TensorImpl<f32> &dx, const TensorImpl<f32> &grad,
+                         const TensorImpl<f32> &xhat,
+                         const TensorImpl<f32> &inv_std,
+                         const TensorImpl<f32> &gamma);
 
 // ---- fused batch norm — f32 only ----------------------------------------
 
