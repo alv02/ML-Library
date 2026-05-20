@@ -295,4 +295,4 @@ __marimo__/
 *.nsys-rep
 *.sqlite
 
-./checkpoints
+checkpoints/
