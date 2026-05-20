@@ -39,6 +39,10 @@ parser.add_argument("--max-seq-len", type=int,   default=256)
 parser.add_argument("--dropout",     type=float, default=0.1)
 # optimiser
 parser.add_argument("--lr",           type=float, default=3e-4)
+parser.add_argument("--min-lr",       type=float, default=None,
+                    help="Cosine decay floor (default: lr/10). Set to 0 to disable schedule.")
+parser.add_argument("--warmup-steps", type=int,   default=None,
+                    help="Linear warmup steps (default: steps//10)")
 parser.add_argument("--weight-decay", type=float, default=0.1)
 parser.add_argument("--batch-size",   type=int,   default=8)
 args = parser.parse_args()
@@ -177,14 +181,25 @@ if not args.generate:
         # Cast to uint32 — memmap gives uint16, model expects uint32
         return np.stack([tokens[s : s + MAX_SEQ_LEN + 1] for s in starts]).astype(np.uint32)
 
+    # ── LR schedule ───────────────────────────────────────────────────────────
+    warmup_steps = args.warmup_steps if args.warmup_steps is not None else args.steps // 10
+    min_lr       = args.min_lr       if args.min_lr       is not None else LR / 10.0
+
+    sched = gpt_lib.CosineAnnealingLR(model,
+                                       warmup_steps=warmup_steps,
+                                       total_steps=args.steps,
+                                       min_lr=min_lr)
+    print(f"LR schedule: warmup={warmup_steps} steps, max={LR:.2e}, min={min_lr:.2e}")
+
     model.train_mode()
     t0 = time.time()
     for step in range(1, args.steps + 1):
+        sched.step(step)
         batch = random_batch()
         loss = model.train_step(batch)
         if step % 50 == 0:
             elapsed = time.time() - t0
-            print(f"step {step:4d}/{args.steps}  loss {loss:.4f}  {elapsed:.1f}s")
+            print(f"step {step:4d}/{args.steps}  loss {loss:.4f}  lr {model.lr:.2e}  {elapsed:.1f}s")
             t0 = time.time()
 
     os.makedirs(args.save_dir, exist_ok=True)

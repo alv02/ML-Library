@@ -1,5 +1,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
+#include <pybind11/stl.h>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -233,6 +234,36 @@ struct GPTTrainer {
     }
 };
 
+// ── Scheduler bindings ────────────────────────────────────────────────────────
+// Thin wrappers so the C++ schedulers (which take Optimizer&) can be
+// constructed from a GPTTrainer in Python.
+
+struct CosineAnnealingLRBinding {
+    GPTTrainer *trainer;
+    CosineAnnealingLR sched;
+    CosineAnnealingLRBinding(GPTTrainer &t, u32 warmup, u32 total, f32 min_lr)
+        : trainer(&t), sched(t.optim, warmup, total, min_lr) {}
+    f32  get_lr(u32 step) const { return sched.get_lr(step); }
+    void step(u32 step)         { sched.step(step); }
+};
+
+struct MultiStepLRBinding {
+    GPTTrainer *trainer;
+    MultiStepLR sched;
+    MultiStepLRBinding(GPTTrainer &t, std::vector<int> milestones, f32 gamma)
+        : trainer(&t), sched(t.optim, std::move(milestones), gamma) {}
+    void step(int epoch) { sched.step(epoch); }
+};
+
+struct ReduceLROnPlateauBinding {
+    GPTTrainer *trainer;
+    ReduceLROnPlateau sched;
+    ReduceLROnPlateauBinding(GPTTrainer &t, f32 factor, int patience,
+                             f32 min_lr, f32 min_delta)
+        : trainer(&t), sched(t.optim, factor, patience, min_lr, min_delta) {}
+    void step(f32 loss, int epoch) { sched.step(loss, epoch); }
+};
+
 // ── Module definition ─────────────────────────────────────────────────────────
 
 PYBIND11_MODULE(gpt_lib, m) {
@@ -257,6 +288,36 @@ PYBIND11_MODULE(gpt_lib, m) {
         .def("train_mode", &GPTTrainer::train_mode)
         .def("eval_mode",  &GPTTrainer::eval_mode)
         .def("set_lr",     &GPTTrainer::set_lr)
+        .def_property("lr",
+             [](const GPTTrainer &t) { return t.optim.lr; },
+             [](GPTTrainer &t, f32 v) { t.optim.lr = v; })
         .def("save",       &GPTTrainer::save,   "Save weights to directory.")
         .def("load",       &GPTTrainer::load,   "Load weights from directory.");
+
+    // keep_alive<1,2>: scheduler (self) keeps the trainer (arg) alive
+    py::class_<CosineAnnealingLRBinding>(m, "CosineAnnealingLR")
+        .def(py::init<GPTTrainer &, u32, u32, f32>(),
+             py::arg("model"), py::arg("warmup_steps"), py::arg("total_steps"),
+             py::arg("min_lr") = 0.0f,
+             py::keep_alive<1, 2>(),
+             "Linear warmup then cosine decay. Call step(current_step) each iteration.")
+        .def("step",   &CosineAnnealingLRBinding::step,   py::arg("current_step"))
+        .def("get_lr", &CosineAnnealingLRBinding::get_lr, py::arg("step"));
+
+    py::class_<MultiStepLRBinding>(m, "MultiStepLR")
+        .def(py::init<GPTTrainer &, std::vector<int>, f32>(),
+             py::arg("model"), py::arg("milestones"), py::arg("gamma") = 0.1f,
+             py::keep_alive<1, 2>(),
+             "Multiply lr by gamma at each milestone epoch.")
+        .def("step", &MultiStepLRBinding::step, py::arg("epoch"));
+
+    py::class_<ReduceLROnPlateauBinding>(m, "ReduceLROnPlateau")
+        .def(py::init<GPTTrainer &, f32, int, f32, f32>(),
+             py::arg("model"), py::arg("factor") = 0.1f,
+             py::arg("patience") = 10, py::arg("min_lr") = 1e-6f,
+             py::arg("min_delta") = 1e-4f,
+             py::keep_alive<1, 2>(),
+             "Reduce lr by factor when loss stops improving.")
+        .def("step", &ReduceLROnPlateauBinding::step,
+             py::arg("loss"), py::arg("epoch"));
 }

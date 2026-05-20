@@ -71,10 +71,7 @@ bool DataLoader::next(Tensor<f32> &X_batch, Tensor<f32> &y_batch) {
 // ─────────────────────────────────────────────────────────────────
 
 Optimizer::Optimizer(std::vector<Var> params, f32 lr)
-    : lr(lr), params(std::move(params)) {
-    for (auto &p : this->params)
-        p->grad = tensor_zeros_like(p->data);
-}
+    : lr(lr), params(std::move(params)) {}
 
 // ── sgd
 // ───────────────────────────────────────────────────────────────────────
@@ -130,16 +127,7 @@ AdamW::AdamW(Layer &model, f32 lr, f32 beta1, f32 beta2, f32 eps, f32 lambda)
 AdamW::AdamW(std::vector<Var> params, f32 lr, f32 beta1, f32 beta2, f32 eps,
              f32 lambda)
     : Optimizer(std::move(params), lr), beta1(beta1), beta2(beta2),
-      eps(eps), lambda(lambda), t(0) {
-    for (auto &p : this->params) {
-        Tensor<f32> mt = tensor_create_like(p->data);
-        tensor_clear(mt);
-        Tensor<f32> vt = tensor_create_like(p->data);
-        tensor_clear(vt);
-        m[p.impl_.get()] = mt;
-        v[p.impl_.get()] = vt;
-    }
-}
+      eps(eps), lambda(lambda), t(0) {}
 
 void AdamW::step() {
     t++;
@@ -153,6 +141,8 @@ void AdamW::step() {
 
         Tensor<f32> &mt = m[p.impl_.get()];
         Tensor<f32> &vt = v[p.impl_.get()];
+        if (!mt.defined()) { mt = tensor_create_like(p->data); tensor_clear(mt); }
+        if (!vt.defined()) { vt = tensor_create_like(p->data); tensor_clear(vt); }
 
         // mt = beta1*mt + (1-beta1)*grad
         tensor_mul(mt, mt, beta1);
@@ -185,6 +175,28 @@ void AdamW::zero_grad() {
         if (p->grad.defined())
             tensor_clear(p->grad);
     }
+}
+
+// ── CosineAnnealingLR
+// ─────────────────────────────────────────────────────────
+
+CosineAnnealingLR::CosineAnnealingLR(Optimizer &optimizer, u32 warmup_steps,
+                                     u32 total_steps, f32 min_lr)
+    : optimizer(optimizer), warmup_steps(warmup_steps),
+      total_steps(total_steps), max_lr(optimizer.lr), min_lr(min_lr) {}
+
+f32 CosineAnnealingLR::get_lr(u32 step) const {
+    if (step == 0)
+        return 0.0f;
+    if (step <= warmup_steps)
+        return max_lr * (f32)step / (f32)warmup_steps;
+    f32 progress = (f32)(step - warmup_steps) / (f32)(total_steps - warmup_steps);
+    progress = std::min(progress, 1.0f);
+    return min_lr + 0.5f * (max_lr - min_lr) * (1.0f + cosf(M_PI * progress));
+}
+
+void CosineAnnealingLR::step(u32 current_step) {
+    optimizer.set_lr(get_lr(current_step));
 }
 
 // ── MultiStepLR

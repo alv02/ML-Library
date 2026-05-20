@@ -71,6 +71,24 @@ struct AdamW : Optimizer {
     void zero_grad() override;
 };
 
+// ── CosineAnnealingLR
+// ──────────────────────────────────────────────────────── Linear warmup for
+// warmup_steps, then cosine decay from max_lr down to min_lr over total_steps.
+// Call step(current_step) once per optimizer step (1-indexed).
+
+struct CosineAnnealingLR {
+    Optimizer &optimizer;
+    u32 warmup_steps;
+    u32 total_steps;
+    f32 max_lr;
+    f32 min_lr;
+
+    CosineAnnealingLR(Optimizer &optimizer, u32 warmup_steps, u32 total_steps,
+                      f32 min_lr = 0.0f);
+    f32 get_lr(u32 current_step) const;
+    void step(u32 current_step);
+};
+
 // ── MultiStepLR
 // ─────────────────────────────────────────────────────────────── Multiplies lr
 // by gamma each time epoch (0-indexed) hits a milestone.
