@@ -9,10 +9,10 @@ Built as a learning project to understand how ML frameworks work at the systems 
 ## Features
 
 - **Tensor module** with two backends (CPU and CUDA): arbitrary strides, zero-copy broadcasting, CPU↔GPU transfers, `.npy` file I/O
-- **CUDA kernels written by hand**: shared-memory tiled matmul, parallel tree reductions, unfold2d/fold2d (im2col), scatter-add, atomic operations, batched matmul (strided and pointer-array variants)
-- **Autograd engine**: computational graph (DAG), 15+ differentiable ops — MatMul, Conv2d, MaxPool2d, BatchNorm (1d/2d), ReLU, GELU, Softmax, LayerNorm, Dropout, Gather, Scatter, Reshape, Transpose, Broadcast, CrossEntropy
+- **CUDA kernels written by hand**: parallel tree reductions, unfold2d/fold2d (im2col), scatter-add, atomic operations; matmul and batched matmul route through cuBLAS (a hand-written tiled kernel exists but is not used in production)
+- **Autograd engine**: computational graph (DAG), 15+ differentiable ops — MatMul, Conv2d, MaxPool2d, BatchNorm, ReLU, GELU, Softmax, LayerNorm, Dropout, Gather, Reshape, Transpose, Broadcast, CrossEntropy
 - **Layer abstraction**: `Layer` base class with `forward()`, `parameters()`, `train()`/`eval()`; `Sequential` container; `ResBlock` with identity/projection shortcuts; `MultiHeadAttention`, `TransformerBlock`, `InputEmbedding`, `GPTModel`
-- **Optimizers**: SGD (momentum + L2), AdamW; MultiStepLR and ReduceLROnPlateau schedulers; EarlyStopping
+- **Optimizers**: SGD (momentum + L2), AdamW; MultiStepLR, ReduceLROnPlateau and CosineAnnealingLR (with linear warmup) schedulers; EarlyStopping
 - **Models**: linear regression, fully-connected network, CNN with strided convolutions, CNN with max pooling, VGG-style CNN with BatchNorm, ResNet-18, GPT
 - **Python bindings** via pybind11: `gpt_lib.GPTTrainer` exposes training, evaluation, autoregressive generation, and checkpoint save/load to Python/NumPy
 - **Data augmentation**: CPU preprocessing pipeline (`Augmenter`) with `RandomCrop` and `RandomHorizontalFlip`, applied per batch before GPU upload
@@ -81,7 +81,7 @@ python3 train_gpt_pytorch.py --steps 5000 --text data/shakespeare/input.txt
 ### `main_nn` — Fully-Connected Network (CIFAR-10)
 
 ```
-3072 → Linear → ReLU → Linear(1024) → ReLU → Linear(512) → ReLU → Linear(256) → ReLU → Linear(10) → CrossEntropyLoss
+3072 → Linear(1024) → ReLU → Linear(512) → ReLU → Linear(256) → ReLU → Linear(10) → CrossEntropyLoss
 ```
 
 | Hyperparameter | Value |
@@ -225,6 +225,7 @@ Tokenizer: character-level via HuggingFace `tokenizers` (default, ~65 tokens for
 │   ├── metrics.hpp          # Accuracy
 │   ├── visualize.hpp        # Terminal ANSI rendering
 │   ├── tensor_iterator.hpp  # Strided multi-dim iterator
+│   ├── base.hpp             # Primitive type aliases (f32, u32, i32, …)
 │   └── backend/
 │       ├── tensor_cpu.hpp
 │       └── tensor_cuda.hpp
@@ -277,7 +278,7 @@ Tokenizer: character-level via HuggingFace `tokenizers` (default, ~65 tokens for
 
 **BatchNorm** normalizes each channel over all other dimensions during training, then applies learnable per-channel γ and β. Works for any input rank — `[N,C]` (dense) or `[N,C,H,W]` (conv). Forward uses biased variance; running statistics use unbiased variance via EMA.
 
-**Batched matmul** for 4D tensors (e.g. `[B,H,T,d]` after attention transpose) handles non-contiguous strides by decomposing the batch index into per-dimension coordinates rather than using a single batch stride. Falls back to `cublasSgemmBatched` on CUDA when batch dimensions are non-contiguous.
+**Batched matmul** for 4D tensors (e.g. `[B,H,T,d]` after attention transpose) uses `cublasSgemmStridedBatched`. For non-contiguous batch dimensions, tensors are first made contiguous via D2D copies before calling cuBLAS.
 
 **Transformer** uses pre-norm (LayerNorm before each sub-layer), causal attention mask applied as an additive `-1e9` bias, GELU with tanh approximation for the MLP, and GPT-2 weight initialization (`Normal(0, 0.02)`) for all linear and embedding weights.
 
