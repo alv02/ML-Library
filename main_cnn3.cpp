@@ -13,7 +13,7 @@
 //   Block 4: Conv(256→512)+BN+ReLU, Conv(512→512)+BN+ReLU, MaxPool → [N,512,2,2]
 //   Flatten → [N,2048]  Dense: 2048 → 512 → 10
 
-int main() {
+i32 main() {
     Tensor<f32> val_X = tensor_load("data/X_train.npy", true);
     Tensor<f32> val_y = tensor_load("data/y_train.npy", true);
     Tensor<f32> test_val_X = tensor_load("data/X_test.npy", true);
@@ -43,18 +43,18 @@ int main() {
     ReduceLROnPlateau scheduler(optim, 0.1f, 5);
     EarlyStopping early_stop(10);
 
-    const int epochs = 100;
-    const int batch_size = 64;
+    const i32 epochs = 100;
+    const i32 batch_size = 64;
     DataLoader loader(val_X, val_y, batch_size);
 
     u32 scalar_shape[1] = {1};
     Tensor<f32> loss_accum = Tensor<f32>::make(1, scalar_shape, true);
 
-    for (int epoch = 0; epoch < epochs; epoch++) {
+    for (i32 epoch = 0; epoch < epochs; epoch++) {
         tensor_fill(loss_accum, 0.0f);
         loader.shuffle();
         Tensor<f32> Xb, yb;
-        int batch = 0;
+        i32 batch = 0;
         while (true) {
             if (!loader.next(Xb, yb))
                 break;

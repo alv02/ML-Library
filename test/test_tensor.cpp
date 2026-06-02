@@ -8,7 +8,7 @@
 #define RESET "\033[0m"
 
 static b32 g_on_gpu = false;
-static int passed = 0, failed = 0;
+static i32 passed = 0, failed = 0;
 
 static void sync() {
     if (g_on_gpu)
@@ -307,8 +307,8 @@ static void test_unfold2d(const char *name, const char *dir,
     check_tensors(name, out_cpu, exp);
 }
 
-int main(int argc, char **argv) {
-    for (int i = 1; i < argc; i++) {
+i32 main(i32 argc, char **argv) {
+    for (i32 i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--gpu") == 0)
             g_on_gpu = true;
         else if (strcmp(argv[i], "--cpu") == 0)

@@ -33,7 +33,7 @@ static void print_predictions(const f32 *prob_row, u32 pred, u32 truth,
                               u32 n_classes) {
     printf("--- Predictions ---\n");
     for (u32 c = 0; c < n_classes; c++) {
-        float prob = prob_row[c];
+        f32 prob = prob_row[c];
         u32 filled = (u32)(prob * BAR_W);
         printf("[%u] %5.1f%% [", c, prob * 100.0f);
         for (u32 i = 0; i < BAR_W; i++)

@@ -127,19 +127,19 @@ struct GPTTrainer {
     }
 
     // Forward → flat logits + loss.
-    std::pair<Var, float> forward_loss(TensorU32 inp, TensorU32 tgt) {
+    std::pair<Var, f32> forward_loss(TensorU32 inp, TensorU32 tgt) {
         u32 B = inp->shape[0], T = inp->shape[1];
         Var logits = model.forward(inp);    // [B, T, vocab]
         u32 flat_shape[2] = {B * T, vocab_size_};
         Var logits_flat = reshape(logits, flat_shape, 2);
         Var loss = cross_entropy_with_logits(logits_flat, tgt);
-        float loss_val = tensor_to_cpu(loss->data)->data()[0];
+        f32 loss_val = tensor_to_cpu(loss->data)->data()[0];
         return {loss, loss_val};
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    float train_step(py::array_t<uint32_t> tokens_np) {
+    f32 train_step(py::array_t<uint32_t> tokens_np) {
         auto [inp, tgt] = make_inp_tgt(tokens_np);
         auto [loss, loss_val] = forward_loss(inp, tgt);
         backward(loss);
@@ -148,15 +148,15 @@ struct GPTTrainer {
         return loss_val;
     }
 
-    float eval_loss(py::array_t<uint32_t> tokens_np) {
+    f32 eval_loss(py::array_t<uint32_t> tokens_np) {
         auto [inp, tgt] = make_inp_tgt(tokens_np);
         auto [loss, loss_val] = forward_loss(inp, tgt);
         return loss_val;
     }
 
     py::array_t<uint32_t> generate(py::array_t<uint32_t> context_np,
-                                   int max_new_tokens,
-                                   float temperature = 1.0f) {
+                                   i32 max_new_tokens,
+                                   f32 temperature = 1.0f) {
         auto buf = context_np.request();
         if (buf.ndim != 2)
             throw std::runtime_error("context must be 2-D [B, T]");
@@ -169,7 +169,7 @@ struct GPTTrainer {
         u32 cur_len = T0;
         model.eval();
 
-        for (int step = 0; step < max_new_tokens; step++) {
+        for (i32 step = 0; step < max_new_tokens; step++) {
             // Truncate to max_seq_len if needed
             u32 start = (cur_len > max_seq_len_) ? (cur_len - max_seq_len_) : 0;
             u32 T = cur_len - start;
@@ -210,7 +210,7 @@ struct GPTTrainer {
     void train_mode() { model.train(true); }
     void eval_mode()  { model.eval(); }
 
-    void set_lr(float lr) { optim.lr = lr; }
+    void set_lr(f32 lr) { optim.lr = lr; }
 
     void save(const std::string &directory) {
         auto params = model.parameters();
@@ -250,18 +250,18 @@ struct CosineAnnealingLRBinding {
 struct MultiStepLRBinding {
     GPTTrainer *trainer;
     MultiStepLR sched;
-    MultiStepLRBinding(GPTTrainer &t, std::vector<int> milestones, f32 gamma)
+    MultiStepLRBinding(GPTTrainer &t, std::vector<i32> milestones, f32 gamma)
         : trainer(&t), sched(t.optim, std::move(milestones), gamma) {}
-    void step(int epoch) { sched.step(epoch); }
+    void step(i32 epoch) { sched.step(epoch); }
 };
 
 struct ReduceLROnPlateauBinding {
     GPTTrainer *trainer;
     ReduceLROnPlateau sched;
-    ReduceLROnPlateauBinding(GPTTrainer &t, f32 factor, int patience,
+    ReduceLROnPlateauBinding(GPTTrainer &t, f32 factor, i32 patience,
                              f32 min_lr, f32 min_delta)
         : trainer(&t), sched(t.optim, factor, patience, min_lr, min_delta) {}
-    void step(f32 loss, int epoch) { sched.step(loss, epoch); }
+    void step(f32 loss, i32 epoch) { sched.step(loss, epoch); }
 };
 
 // ── Module definition ─────────────────────────────────────────────────────────
@@ -305,14 +305,14 @@ PYBIND11_MODULE(gpt_lib, m) {
         .def("get_lr", &CosineAnnealingLRBinding::get_lr, py::arg("step"));
 
     py::class_<MultiStepLRBinding>(m, "MultiStepLR")
-        .def(py::init<GPTTrainer &, std::vector<int>, f32>(),
+        .def(py::init<GPTTrainer &, std::vector<i32>, f32>(),
              py::arg("model"), py::arg("milestones"), py::arg("gamma") = 0.1f,
              py::keep_alive<1, 2>(),
              "Multiply lr by gamma at each milestone epoch.")
         .def("step", &MultiStepLRBinding::step, py::arg("epoch"));
 
     py::class_<ReduceLROnPlateauBinding>(m, "ReduceLROnPlateau")
-        .def(py::init<GPTTrainer &, f32, int, f32, f32>(),
+        .def(py::init<GPTTrainer &, f32, i32, f32, f32>(),
              py::arg("model"), py::arg("factor") = 0.1f,
              py::arg("patience") = 10, py::arg("min_lr") = 1e-6f,
              py::arg("min_delta") = 1e-4f,

@@ -9,7 +9,7 @@ Tensor<f32> RandomHorizontalFlip::apply(const Tensor<f32> &batch) {
     TensorImpl<f32> &dst = *out.impl_;
 
     for (u32 n = 0; n < N; n++) {
-        bool flip = ((float)rand() / RAND_MAX) < p;
+        bool flip = ((f32)rand() / RAND_MAX) < p;
         for (u32 c = 0; c < C; c++)
             for (u32 h = 0; h < H; h++)
                 for (u32 w = 0; w < W; w++)
@@ -39,7 +39,7 @@ Tensor<f32> RandomCrop::apply(const Tensor<f32> &batch) {
                     i32 h_src = (i32)(h + top)  - (i32)padding;
                     i32 w_src = (i32)(w + left) - (i32)padding;
 
-                    float val = 0.0f;
+                    f32 val = 0.0f;
                     if (h_src >= 0 && (u32)h_src < H && w_src >= 0 && (u32)w_src < W)
                         val = src(n, c, (u32)h_src, (u32)w_src);
                     dst(n, c, h, w) = val;

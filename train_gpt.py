@@ -20,31 +20,53 @@ import numpy as np
 
 parser = argparse.ArgumentParser()
 # data / run
-parser.add_argument("--cpu",       action="store_true")
-parser.add_argument("--steps",     type=int,   default=500)
-parser.add_argument("--text",      type=str,   default="data/input.txt")
-parser.add_argument("--data-bin",  type=str,   default=None,
-                    help="Pre-tokenized binary file (uint16). Overrides --text.")
-parser.add_argument("--save-dir",  type=str,   default="checkpoints/gpt")
-parser.add_argument("--generate",  action="store_true",
-                    help="Skip training, load checkpoint and generate")
-parser.add_argument("--tokenizer", choices=["char", "bpe", "pretrained"], default="char")
-parser.add_argument("--tokenizer-path", type=str, default=None,
-                    help="Path to a pre-built HF tokenizer JSON (required with --tokenizer pretrained)")
+parser.add_argument("--cpu", action="store_true")
+parser.add_argument("--steps", type=int, default=500)
+parser.add_argument("--text", type=str, default="data/input.txt")
+parser.add_argument(
+    "--data-bin",
+    type=str,
+    default=None,
+    help="Pre-tokenized binary file (uint16). Overrides --text.",
+)
+parser.add_argument("--save-dir", type=str, default="checkpoints/gpt")
+parser.add_argument(
+    "--generate",
+    action="store_true",
+    help="Skip training, load checkpoint and generate",
+)
+parser.add_argument(
+    "--tokenizer", choices=["char", "bpe", "pretrained"], default="char"
+)
+parser.add_argument(
+    "--tokenizer-path",
+    type=str,
+    default=None,
+    help="Path to a pre-built HF tokenizer JSON (required with --tokenizer pretrained)",
+)
 # model
-parser.add_argument("--d-model",     type=int,   default=256)
-parser.add_argument("--n-heads",     type=int,   default=4)
-parser.add_argument("--n-layers",    type=int,   default=4)
-parser.add_argument("--max-seq-len", type=int,   default=256)
-parser.add_argument("--dropout",     type=float, default=0.1)
+parser.add_argument("--d-model", type=int, default=256)
+parser.add_argument("--n-heads", type=int, default=4)
+parser.add_argument("--n-layers", type=int, default=4)
+parser.add_argument("--max-seq-len", type=int, default=256)
+parser.add_argument("--dropout", type=float, default=0.1)
 # optimiser
-parser.add_argument("--lr",           type=float, default=3e-4)
-parser.add_argument("--min-lr",       type=float, default=None,
-                    help="Cosine decay floor (default: lr/10). Set to 0 to disable schedule.")
-parser.add_argument("--warmup-steps", type=int,   default=None,
-                    help="Linear warmup steps (default: steps//10)")
+parser.add_argument("--lr", type=float, default=3e-4)
+parser.add_argument(
+    "--min-lr",
+    type=float,
+    default=None,
+    help="Cosine decay floor (default: lr/10). Set to 0 to disable schedule.",
+)
+parser.add_argument(
+    "--warmup-steps",
+    type=int,
+    default=None,
+    help="Linear warmup steps (default: steps//10)",
+)
 parser.add_argument("--weight-decay", type=float, default=0.1)
-parser.add_argument("--batch-size",   type=int,   default=8)
+parser.add_argument("--batch-size", type=int, default=8)
+parser.add_argument("--temperature", type=float, default=0.8)
 args = parser.parse_args()
 
 # ── import ────────────────────────────────────────────────────────────────────
@@ -58,6 +80,7 @@ tok_path = os.path.join(args.save_dir, "tokenizer.json")
 
 if args.tokenizer == "bpe":
     import tiktoken
+
     _enc = tiktoken.get_encoding("gpt2")
     VOCAB_SIZE = _enc.n_vocab  # 50257
 
@@ -119,24 +142,24 @@ else:  # char
 
 # ── model ─────────────────────────────────────────────────────────────────────
 
-D_MODEL     = args.d_model
-N_HEADS     = args.n_heads
-N_LAYERS    = args.n_layers
+D_MODEL = args.d_model
+N_HEADS = args.n_heads
+N_LAYERS = args.n_layers
 MAX_SEQ_LEN = args.max_seq_len
-DROPOUT_P   = args.dropout
-LR          = args.lr
+DROPOUT_P = args.dropout
+LR = args.lr
 WEIGHT_DECAY = args.weight_decay
-BATCH_SIZE  = args.batch_size
-on_gpu      = not args.cpu
+BATCH_SIZE = args.batch_size
+on_gpu = not args.cpu
 
 # If loading a checkpoint, read config from it so we don't need to re-specify
 cfg_path = os.path.join(args.save_dir, "config.json")
 if args.generate and os.path.exists(cfg_path):
     with open(cfg_path) as f:
         cfg = json.load(f)
-    D_MODEL     = cfg["d_model"]
-    N_HEADS     = cfg["n_heads"]
-    N_LAYERS    = cfg["n_layers"]
+    D_MODEL = cfg["d_model"]
+    N_HEADS = cfg["n_heads"]
+    N_LAYERS = cfg["n_layers"]
     MAX_SEQ_LEN = cfg["max_seq_len"]
     print(f"Loaded config from {cfg_path}")
 
@@ -179,16 +202,19 @@ if not args.generate:
     def random_batch():
         starts = np.random.randint(0, len(tokens) - MAX_SEQ_LEN - 1, size=BATCH_SIZE)
         # Cast to uint32 — memmap gives uint16, model expects uint32
-        return np.stack([tokens[s : s + MAX_SEQ_LEN + 1] for s in starts]).astype(np.uint32)
+        return np.stack([tokens[s : s + MAX_SEQ_LEN + 1] for s in starts]).astype(
+            np.uint32
+        )
 
     # ── LR schedule ───────────────────────────────────────────────────────────
-    warmup_steps = args.warmup_steps if args.warmup_steps is not None else args.steps // 10
-    min_lr       = args.min_lr       if args.min_lr       is not None else LR / 10.0
+    warmup_steps = (
+        args.warmup_steps if args.warmup_steps is not None else args.steps // 10
+    )
+    min_lr = args.min_lr if args.min_lr is not None else LR / 10.0
 
-    sched = gpt_lib.CosineAnnealingLR(model,
-                                       warmup_steps=warmup_steps,
-                                       total_steps=args.steps,
-                                       min_lr=min_lr)
+    sched = gpt_lib.CosineAnnealingLR(
+        model, warmup_steps=warmup_steps, total_steps=args.steps, min_lr=min_lr
+    )
     print(f"LR schedule: warmup={warmup_steps} steps, max={LR:.2e}, min={min_lr:.2e}")
 
     model.train_mode()
@@ -197,9 +223,11 @@ if not args.generate:
         sched.step(step)
         batch = random_batch()
         loss = model.train_step(batch)
-        if step % 50 == 0:
+        if step % 1000 == 0:
             elapsed = time.time() - t0
-            print(f"step {step:4d}/{args.steps}  loss {loss:.4f}  lr {model.lr:.2e}  {elapsed:.1f}s")
+            print(
+                f"step {step:4d}/{args.steps}  loss {loss:.4f}  lr {model.lr:.2e}  {elapsed:.1f}s"
+            )
             t0 = time.time()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -208,18 +236,23 @@ if not args.generate:
         tok.save(tok_path)
     elif args.tokenizer == "pretrained":
         import shutil
+
         shutil.copy2(args.tokenizer_path, tok_path)
 
     # Save model config so gpt.py can load it without extra flags
     with open(cfg_path, "w") as f:
-        json.dump({
-            "d_model":     D_MODEL,
-            "n_heads":     N_HEADS,
-            "n_layers":    N_LAYERS,
-            "max_seq_len": MAX_SEQ_LEN,
-            "vocab_size":  VOCAB_SIZE,
-            "tokenizer":   args.tokenizer,
-        }, f, indent=2)
+        json.dump(
+            {
+                "d_model": D_MODEL,
+                "n_heads": N_HEADS,
+                "n_layers": N_LAYERS,
+                "max_seq_len": MAX_SEQ_LEN,
+                "vocab_size": VOCAB_SIZE,
+                "tokenizer": args.tokenizer,
+            },
+            f,
+            indent=2,
+        )
     print(f"Config saved to {cfg_path}")
 
 # ── generation ────────────────────────────────────────────────────────────────
@@ -230,7 +263,7 @@ model.eval_mode()
 prompts = ["HAMLET:", "To be or not to be"]
 for prompt in prompts:
     ctx = np.array([encode(prompt)], dtype=np.uint32)
-    out = model.generate(ctx, max_new_tokens=200, temperature=0.8)
+    out = model.generate(ctx, max_new_tokens=200, temperature=args.temperature)
     model.eval_mode()
     print(f"\nPrompt: {prompt!r}")
     print(decode(out[0].tolist()))

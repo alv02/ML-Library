@@ -11,7 +11,7 @@
 // Architecture: Conv→BN→ReLU → 4×{2 ResBlocks} → GlobalAvgPool → Linear(512,10)
 // Each ResBlock: Conv→BN→ReLU→Conv→BN + skip (identity or 1×1 projection)
 
-int main() {
+i32 main() {
     Tensor<f32> train_X =
         tensor_load("data/X_train.npy", false); // CPU — augmented per batch
     Tensor<f32> train_y = tensor_load("data/y_train.npy", false);
@@ -28,8 +28,8 @@ int main() {
     MultiStepLR scheduler(optim, {50, 75}, 0.1f);
     EarlyStopping early_stop(15);
 
-    const int epochs = 1;
-    const int batch_size = 128;
+    const i32 epochs = 100;
+    const i32 batch_size = 128;
     DataLoader loader(train_X, train_y, batch_size);
     Augmenter aug(loader);
     aug.add<RandomCrop>(32, 4);
@@ -38,11 +38,11 @@ int main() {
     u32 scalar_shape[1] = {1};
     Tensor<f32> loss_accum = Tensor<f32>::make(1, scalar_shape, true);
 
-    for (int epoch = 0; epoch < epochs; epoch++) {
+    for (i32 epoch = 0; epoch < epochs; epoch++) {
         tensor_fill(loss_accum, 0.0f);
         aug.shuffle();
         Tensor<f32> Xb, yb;
-        int batch = 0;
+        i32 batch = 0;
         while (true) {
             if (!aug.next(Xb, yb))
                 break;
@@ -56,7 +56,8 @@ int main() {
         }
         Tensor<f32> lc = tensor_to_cpu(loss_accum);
         f32 avg_loss = lc->data()[0] / batch;
-        printf("Epoch %d/%d — avg loss %.4f\n", epoch + 1, epochs, avg_loss);
+        if ((epoch + 1) % 15 == 0 || epoch == 0)
+            printf("Epoch %d/%d — avg loss %.4f\n", epoch + 1, epochs, avg_loss);
 
         scheduler.step(epoch);
         if (early_stop.step(avg_loss, epoch))

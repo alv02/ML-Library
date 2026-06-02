@@ -130,7 +130,7 @@ void tensor_cpu_scatter_add(TensorImpl<T> &out, const TensorImpl<T> &src,
 
 // ---- initializing — f32 only --------------------------------------------
 
-void tensor_cpu_he_init(TensorImpl<f32> &tensor, float std = 0.0f);
+void tensor_cpu_he_init(TensorImpl<f32> &tensor, f32 std = 0.0f);
 void tensor_cpu_causal_mask(
     TensorImpl<f32> &t); // fills [..., n, n] with causal mask
 

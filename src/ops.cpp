@@ -4,7 +4,10 @@
 // ── mat_mul ──────────────────────────────────────────────────────────────────
 
 Var mat_mul(Var a, Var b) {
-    if (!a || !b) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!a || !b) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     if (!tensor_matmul_compat(a->data, b->data)) {
         printf("mat_mul: incompatible shapes\n");
         return Var{};
@@ -19,6 +22,7 @@ Var mat_mul(Var a, Var b) {
         Tensor<f32> saved_a, saved_b;
         void backward(Tensor<f32> grad) override {
             Var a = inputs[0], b = inputs[1];
+            // dA = grad @ B^T
             if (a->flags & FV_FLAG_REQUIERES_GRAD) {
                 Tensor<f32> bt = tensor_view(saved_b);
                 tensor_transpose(bt, saved_b->ndim - 2, saved_b->ndim - 1);
@@ -27,6 +31,7 @@ Var mat_mul(Var a, Var b) {
                     a->grad = tensor_zeros_like(a->data);
                 tensor_add(a->grad, a->grad, dA);
             }
+            // dB = A^T @ grad
             if (b->flags & FV_FLAG_REQUIERES_GRAD) {
                 Tensor<f32> at = tensor_view(saved_a);
                 tensor_transpose(at, saved_a->ndim - 2, saved_a->ndim - 1);
@@ -48,12 +53,16 @@ Var mat_mul(Var a, Var b) {
 // ── reshape ──────────────────────────────────────────────────────────────────
 
 Var reshape(Var a, const u32 *shape, u32 ndim) {
-    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!a) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     Tensor<f32> out_data;
     if (tensor_is_contiguous(a->data)) {
         out_data = tensor_view(a->data);
     } else {
-        out_data = Tensor<f32>::make(a->data->ndim, a->data->shape, a->data->on_gpu());
+        out_data =
+            Tensor<f32>::make(a->data->ndim, a->data->shape, a->data->on_gpu());
         tensor_copy(out_data, a->data);
     }
     tensor_reshape(out_data, shape, ndim);
@@ -93,7 +102,10 @@ Var reshape(Var a, const u32 *shape, u32 ndim) {
 // ── transpose ────────────────────────────────────────────────────────────────
 
 Var transpose(Var a, u32 d0, u32 d1) {
-    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!a) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     Tensor<f32> out_data = tensor_view(a->data);
     tensor_transpose(out_data, d0, d1);
 
@@ -125,7 +137,10 @@ Var transpose(Var a, u32 d0, u32 d1) {
 // ── unsqueeze ────────────────────────────────────────────────────────────────
 
 Var unsqueeze(Var a, u32 dim) {
-    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!a) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     Tensor<f32> out_data = tensor_view(a->data);
     tensor_unsqueeze(out_data.impl(), dim);
 
@@ -156,7 +171,10 @@ Var unsqueeze(Var a, u32 dim) {
 // ── broadcast_to ─────────────────────────────────────────────────────────────
 
 Var broadcast_to(Var a, const u32 *target_shape, u32 target_ndim) {
-    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!a) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     if (a->data->ndim > target_ndim) {
         printf("broadcast_to: target_ndim < input ndim\n");
         return Var{};
@@ -203,7 +221,10 @@ Var broadcast_to(Var a, const u32 *target_shape, u32 target_ndim) {
 // ── gather (differentiable) ──────────────────────────────────────────────────
 
 Var gather(Var src, TensorU32 indices, u32 dim) {
-    if (!src) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!src) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     Var out(::tensor_gather(src->data, indices, dim));
 
     if (!(src->flags & FV_FLAG_REQUIERES_GRAD))
@@ -232,7 +253,10 @@ Var gather(Var src, TensorU32 indices, u32 dim) {
 // ── add ──────────────────────────────────────────────────────────────────────
 
 Var add(Var a, Var b) {
-    if (!a || !b) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!a || !b) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     if (!tensor_shape_eq(a->data, b->data)) {
         printf("add: shape mismatch\n");
         return Var{};
@@ -266,7 +290,10 @@ Var add(Var a, Var b) {
 // ── relu ─────────────────────────────────────────────────────────────────────
 
 Var relu(Var a) {
-    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!a) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     Var out(tensor_relu(a->data));
 
     if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
@@ -292,7 +319,10 @@ Var relu(Var a) {
 // ── gelu ─────────────────────────────────────────────────────────────────────
 
 Var gelu(Var a) {
-    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!a) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     Var out(tensor_gelu(a->data));
 
     if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
@@ -318,7 +348,10 @@ Var gelu(Var a) {
 // ── mul (scalar) ─────────────────────────────────────────────────────────────
 
 Var mul(Var a, f32 scalar) {
-    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!a) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     Var out(tensor_mul(a->data, scalar));
 
     if (!(a->flags & FV_FLAG_REQUIERES_GRAD))
@@ -346,7 +379,10 @@ Var mul(Var a, f32 scalar) {
 // ── mul (elementwise Var×Var) ────────────────────────────────────────────────
 
 Var mul(Var a, Var b) {
-    if (!a || !b) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!a || !b) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     if (!tensor_shape_eq(a->data, b->data)) {
         printf("mul: shape mismatch\n");
         return Var{};
@@ -380,10 +416,14 @@ Var mul(Var a, Var b) {
     return out;
 }
 
-// ── softmax ───────────────────────────────────────────────────────────────────
+// ── softmax
+// ───────────────────────────────────────────────────────────────────
 
 Var softmax(Var a, i32 dim) {
-    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!a) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     Tensor<f32> s = tensor_softmax(a->data, dim);
     Var out(s);
 
@@ -413,7 +453,10 @@ Var softmax(Var a, i32 dim) {
 // ── dropout ──────────────────────────────────────────────────────────────────
 
 Var dropout(Var a, f32 p, bool training) {
-    if (!a) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!a) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     if (!training || p == 0.0f)
         return a;
 
@@ -446,7 +489,10 @@ Var dropout(Var a, f32 p, bool training) {
 // ── conv2d ───────────────────────────────────────────────────────────────────
 
 Var conv2d(Var input, Var weight, Unfold2dParams params) {
-    if (!input || !weight) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!input || !weight) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     const Tensor<f32> &inp = input->data;
     params.compute_output_size(inp->shape[2], inp->shape[3]);
     u32 N = inp->shape[0];
@@ -514,10 +560,14 @@ Var conv2d(Var input, Var weight, Unfold2dParams params) {
     return out;
 }
 
-// ── max_pool2d ────────────────────────────────────────────────────────────────
+// ── max_pool2d
+// ────────────────────────────────────────────────────────────────
 
 Var max_pool2d(Var input, Unfold2dParams params) {
-    if (!input) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!input) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     const Tensor<f32> &inp = input->data;
     params.compute_output_size(inp->shape[2], inp->shape[3]);
     u32 N = inp->shape[0];
@@ -563,8 +613,7 @@ Var max_pool2d(Var input, Unfold2dParams params) {
             tensor_reshape(g, s_nlc1, 4);
 
             u32 s_nlck[4] = {N, L, C, K};
-            Tensor<f32> scattered =
-                tensor_zeros<f32>(4, s_nlck, g->on_gpu());
+            Tensor<f32> scattered = tensor_zeros<f32>(4, s_nlck, g->on_gpu());
             tensor_scatter_add(scattered, g, saved_max_idx, 3);
 
             u32 s3[3] = {N, L, C * K};
@@ -589,7 +638,10 @@ Var max_pool2d(Var input, Unfold2dParams params) {
 
 Var batch_norm(Var input, Var gamma, Var beta, Tensor<f32> running_mean,
                Tensor<f32> running_var, bool training, f32 momentum, f32 eps) {
-    if (!input || !gamma || !beta) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!input || !gamma || !beta) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     const Tensor<f32> &inp = input->data;
     bool on_gpu = inp->on_gpu();
     u32 ndim = inp->ndim;
@@ -614,7 +666,8 @@ Var batch_norm(Var input, Var gamma, Var beta, Tensor<f32> running_mean,
         tensor_mul(running_mean, running_mean, 1.0f - momentum);
         tensor_add(running_mean, running_mean, tensor_mul(mean, momentum));
         tensor_mul(running_var, running_var, 1.0f - momentum);
-        tensor_add(running_var, running_var, tensor_mul(unbiased_var, momentum));
+        tensor_add(running_var, running_var,
+                   tensor_mul(unbiased_var, momentum));
 
         xhat = Tensor<f32>::make(ndim, inp->shape, on_gpu);
         out_data = Tensor<f32>::make(ndim, inp->shape, on_gpu);
@@ -687,7 +740,10 @@ Var batch_norm(Var input, Var gamma, Var beta, Tensor<f32> running_mean,
 // ── layer_norm ───────────────────────────────────────────────────────────────
 
 Var layer_norm(Var input, Var gamma, Var beta, f32 eps) {
-    if (!input || !gamma || !beta) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!input || !gamma || !beta) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     const Tensor<f32> &inp = input->data;
     u32 last_dim = inp->ndim - 1;
     u32 D = inp->shape[last_dim];
@@ -697,8 +753,8 @@ Var layer_norm(Var input, Var gamma, Var beta, f32 eps) {
     memcpy(stat_shape, inp->shape, inp->ndim * sizeof(u32));
     stat_shape[last_dim] = 1;
 
-    Tensor<f32> xhat     = tensor_create_like(inp);
-    Tensor<f32> inv_std  = Tensor<f32>::make(inp->ndim, stat_shape, on_gpu);
+    Tensor<f32> xhat = tensor_create_like(inp);
+    Tensor<f32> inv_std = Tensor<f32>::make(inp->ndim, stat_shape, on_gpu);
     Tensor<f32> out_data = tensor_create_like(inp);
     tensor_ln_fwd(out_data, xhat, inv_std, inp, gamma->data, beta->data, eps);
 
@@ -725,7 +781,8 @@ Var layer_norm(Var input, Var gamma, Var beta, f32 eps) {
                 Tensor<f32> g = tensor_mul(grad, saved_xhat);
                 for (i32 d = (i32)grad->ndim - 2; d >= 0; d--)
                     g = tensor_sum(g, (u32)d, true);
-                tensor_reshape(g, inputs[1]->data->shape, inputs[1]->data->ndim);
+                tensor_reshape(g, inputs[1]->data->shape,
+                               inputs[1]->data->ndim);
                 if (!inputs[1]->grad.defined())
                     inputs[1]->grad = tensor_zeros_like(inputs[1]->data);
                 tensor_add(inputs[1]->grad, inputs[1]->grad, g);
@@ -735,7 +792,8 @@ Var layer_norm(Var input, Var gamma, Var beta, f32 eps) {
                 Tensor<f32> g = tensor_view(grad);
                 for (i32 d = (i32)grad->ndim - 2; d >= 0; d--)
                     g = tensor_sum(g, (u32)d, true);
-                tensor_reshape(g, inputs[2]->data->shape, inputs[2]->data->ndim);
+                tensor_reshape(g, inputs[2]->data->shape,
+                               inputs[2]->data->ndim);
                 if (!inputs[2]->grad.defined())
                     inputs[2]->grad = tensor_zeros_like(inputs[2]->data);
                 tensor_add(inputs[2]->grad, inputs[2]->grad, g);
@@ -754,7 +812,10 @@ Var layer_norm(Var input, Var gamma, Var beta, f32 eps) {
 // ── mse_loss ─────────────────────────────────────────────────────────────────
 
 Var mse_loss(Var pred, Var target) {
-    if (!pred || !target) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!pred || !target) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     const Tensor<f32> &p = pred->data;
     const Tensor<f32> &t = target->data;
     u64 N = p->numel();
@@ -801,10 +862,14 @@ Var mse_loss(Var pred, Var target) {
     return out;
 }
 
-// ── cross_entropy_with_logits ─────────────────────────────────────────────────
+// ── cross_entropy_with_logits
+// ─────────────────────────────────────────────────
 
 Var cross_entropy_with_logits(Var logits, Var targets) {
-    if (!logits || !targets) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!logits || !targets) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     const Tensor<f32> &log_t = logits->data;
     const Tensor<f32> &tar = targets->data;
     u64 N_batch = log_t->ndim >= 2 ? log_t->shape[0] : 1;
@@ -852,10 +917,14 @@ Var cross_entropy_with_logits(Var logits, Var targets) {
     return out;
 }
 
-// ── cross_entropy_with_logits (integer targets) ───────────────────────────────
+// ── cross_entropy_with_logits (integer targets)
+// ───────────────────────────────
 
 Var cross_entropy_with_logits(Var logits, TensorU32 targets) {
-    if (!logits || !targets) { printf("%s: null input\n", __func__); return Var{}; }
+    if (!logits || !targets) {
+        printf("%s: null input\n", __func__);
+        return Var{};
+    }
     const Tensor<f32> &log_t = logits->data;
     u64 N_batch = log_t->ndim >= 2 ? log_t->shape[0] : 1;
 
@@ -888,7 +957,8 @@ Var cross_entropy_with_logits(Var logits, TensorU32 targets) {
             if (!inputs[0]->grad.defined())
                 inputs[0]->grad = tensor_zeros_like(inputs[0]->data);
 
-            // d = softmax / N_batch, then subtract 1/N_batch at target positions
+            // d = softmax / N_batch, then subtract 1/N_batch at target
+            // positions
             Tensor<f32> d = tensor_mul(saved_softmax, 1.0f / (f32)N_batch);
 
             TensorU32 idx = tensor_view(targets);

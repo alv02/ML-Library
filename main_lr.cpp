@@ -3,7 +3,7 @@
 #include "include/optimizers.hpp"
 #include "include/tensor.hpp"
 
-int main() {
+i32 main() {
     Tensor<f32> val_X = tensor_load("data/X.npy", true);
     Tensor<f32> val_y = tensor_load("data/y.npy", true);
 
@@ -12,7 +12,7 @@ int main() {
 
     DataLoader loader(val_X, val_y, val_X->shape[0]);
 
-    for (int epoch = 0; epoch < 1000; epoch++) {
+    for (i32 epoch = 0; epoch < 1000; epoch++) {
         loader.shuffle();
         Tensor<f32> Xb, yb;
         while (true) {

@@ -6,7 +6,7 @@
 #include "include/visualize.hpp"
 #include <cstdio>
 
-int main() {
+i32 main() {
     Tensor<f32> val_X = tensor_load("data/X_train.npy", true);
     Tensor<f32> val_y = tensor_load("data/y_train.npy", true);
     Tensor<f32> test_val_X = tensor_load("data/X_test.npy", true);
@@ -31,7 +31,7 @@ int main() {
     sgd optim(model, 0.005f, 5e-4f, 0.9f);
     DataLoader loader(val_X, val_y, 64);
 
-    for (int epoch = 0; epoch < 60; epoch++) {
+    for (i32 epoch = 0; epoch < 60; epoch++) {
         loader.shuffle();
         Tensor<f32> Xb, yb;
         while (true) {

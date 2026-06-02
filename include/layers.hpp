@@ -26,7 +26,7 @@ struct Layer {
 struct Linear : Layer {
     Var W, b;
 
-    Linear(u32 in_features, u32 out_features, bool on_gpu, float init_std = 0.0f);
+    Linear(u32 in_features, u32 out_features, bool on_gpu, f32 init_std = 0.0f);
     Var forward(Var input) override;
     std::vector<Var> parameters() override { return {W, b}; }
 };
@@ -112,7 +112,7 @@ struct LayerNorm : Layer {
 struct EmbeddingLayer {
     Var weight;
 
-    EmbeddingLayer(u32 vocab_size, u32 d_model, bool on_gpu, float init_std = 0.0f);
+    EmbeddingLayer(u32 vocab_size, u32 d_model, bool on_gpu, f32 init_std = 0.0f);
     Var forward(TensorU32 indices);
     std::vector<Var> parameters() { return {weight}; }
 };
@@ -126,7 +126,7 @@ struct PositionalEmbeddingLayer {
     TensorU32 positions;
 
     PositionalEmbeddingLayer(u32 max_seq_len, u32 d_model, bool on_gpu,
-                             float init_std = 0.0f);
+                             f32 init_std = 0.0f);
     Var forward(u32 T);
     std::vector<Var> parameters() { return {weight}; }
 };
@@ -142,7 +142,7 @@ struct InputEmbedding {
     bool training = true;
 
     InputEmbedding(u32 vocab_size, u32 max_seq_len, u32 d_model, f32 dropout_p,
-                   bool on_gpu, float init_std = 0.0f);
+                   bool on_gpu, f32 init_std = 0.0f);
     Var forward(TensorU32 tokens);
     std::vector<Var> parameters();
     void train(bool mode = true) { training = mode; }
@@ -205,7 +205,7 @@ struct MultiHeadAttention {
     bool training = true;
 
     MultiHeadAttention(u32 d_model, u32 n_heads, u32 max_seq_len, f32 dropout_p,
-                       bool on_gpu, float init_std = 0.0f);
+                       bool on_gpu, f32 init_std = 0.0f);
     Var forward(Var x);
     std::vector<Var> parameters();
     void train(bool mode = true) { training = mode; }
@@ -224,7 +224,7 @@ struct TransformerBlock : Layer {
     f32 dropout_p;
 
     TransformerBlock(u32 d_model, u32 n_heads, u32 max_seq_len, f32 dropout_p,
-                     bool on_gpu, float init_std = 0.0f);
+                     bool on_gpu, f32 init_std = 0.0f);
     Var forward(Var x) override;
     std::vector<Var> parameters() override;
     void train(bool mode = true) override;

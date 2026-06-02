@@ -2,11 +2,11 @@
 #include <cstdio>
 #include <cmath>
 
-static bool approx(float a, float b, float tol = 1e-4f) {
+static bool approx(f32 a, f32 b, f32 tol = 1e-4f) {
     return fabsf(a - b) <= tol;
 }
 
-static int failures = 0;
+static i32 failures = 0;
 
 static void check(bool ok, const char *msg) {
     if (!ok) {
@@ -119,7 +119,7 @@ static void test_single_dim() {
     Tensor<f32> cpu = tensor_to_cpu(out);
 
     bool ok = (cpu->ndim == 1 && cpu->shape[0] == 4);
-    float expected[] = {15.f, 51.f, 87.f, 123.f};
+    f32 expected[] = {15.f, 51.f, 87.f, 123.f};
     for (u32 i = 0; i < 4; i++)
         ok &= approx(cpu->data()[i], expected[i]);
     check(ok, "single-dim: (4,6) reduce axis=1 → (4,)");
@@ -155,7 +155,7 @@ static void test_skip_correctness() {
     check(ok, "skip dim=1: (2,3,4) → shape (3,), values 60+32c");
 }
 
-int main() {
+i32 main() {
     test_2d_reduce_axis0();
     test_2d_reduce_axis1();
     test_2d_reduce_all();

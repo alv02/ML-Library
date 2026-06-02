@@ -15,7 +15,7 @@ static const u32 N_HEADS = 4;
 static const u32 N_LAYERS = 4;
 static const u32 MAX_SEQ_LEN = 128;
 static const u32 BATCH_SIZE = 16;
-static const u32 MAX_STEPS = 50;
+static const u32 MAX_STEPS = 300;
 static const u32 LOG_EVERY = 100;
 static const f32 LR = 3e-4f;
 static const f32 WEIGHT_DECAY = 0.1f;
@@ -44,9 +44,9 @@ static void make_batch(const u32 *all_tokens, u32 n_tokens, TensorU32 &inp,
 // ── main
 // ──────────────────────────────────────────────────────────────────────
 
-int main(int argc, char **argv) {
+i32 main(i32 argc, char **argv) {
     bool on_gpu = true;
-    for (int i = 1; i < argc; i++)
+    for (i32 i = 1; i < argc; i++)
         if (strcmp(argv[i], "--cpu") == 0)
             on_gpu = false;
 

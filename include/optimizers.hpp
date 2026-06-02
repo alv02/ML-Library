@@ -95,13 +95,13 @@ struct CosineAnnealingLR {
 
 struct MultiStepLR {
     Optimizer &optimizer;
-    std::vector<int> milestones;
+    std::vector<i32> milestones;
     f32 gamma;
     f32 base_lr;
 
-    MultiStepLR(Optimizer &optimizer, std::vector<int> milestones,
+    MultiStepLR(Optimizer &optimizer, std::vector<i32> milestones,
                 f32 gamma = 0.1f);
-    void step(int epoch);
+    void step(i32 epoch);
 };
 
 // ── ReduceLROnPlateau
@@ -112,17 +112,17 @@ struct MultiStepLR {
 struct ReduceLROnPlateau {
     Optimizer &optimizer;
     f32 factor;
-    int patience;
+    i32 patience;
     f32 min_lr;
     f32 min_delta;
 
     f32 best_loss = 1e9f;
-    int no_improve = 0;
+    i32 no_improve = 0;
 
     ReduceLROnPlateau(Optimizer &optimizer, f32 factor = 0.1f,
-                      int patience = 10, f32 min_lr = 1e-6f,
+                      i32 patience = 10, f32 min_lr = 1e-6f,
                       f32 min_delta = 1e-4f);
-    void step(f32 loss, int epoch);
+    void step(f32 loss, i32 epoch);
 };
 
 // ── EarlyStopping
@@ -131,14 +131,14 @@ struct ReduceLROnPlateau {
 // consecutive epochs.
 
 struct EarlyStopping {
-    int patience;
+    i32 patience;
     f32 min_delta;
 
     f32 best_loss = 1e9f;
-    int no_improve = 0;
+    i32 no_improve = 0;
 
-    EarlyStopping(int patience, f32 min_delta = 1e-4f);
-    bool step(f32 loss, int epoch);
+    EarlyStopping(i32 patience, f32 min_delta = 1e-4f);
+    bool step(f32 loss, i32 epoch);
 };
 
 #endif

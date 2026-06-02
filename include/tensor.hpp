@@ -295,7 +295,7 @@ Tensor<T> scatter_add(const Tensor<T> &src, const TensorU32 &indices, u32 dim);
 
 // ---- f32 init ---------------------------------------------------------------
 
-void tensor_he_init(Tensor<f32> &t, float std = 0.0f);
+void tensor_he_init(Tensor<f32> &t, f32 std = 0.0f);
 void tensor_causal_mask(Tensor<f32> &t);
 
 // ---- indexing ---------------------------------------------------------------

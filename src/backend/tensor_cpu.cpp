@@ -294,8 +294,9 @@ void tensor_cpu_mat_mul_batched(TensorImpl<f32> &out, const TensorImpl<f32> &a,
     if (clear_out)
         tensor_cpu_clear(out);
     for (u64 bat = 0; bat < batch_total; bat++) {
-        // Compute per-input offsets using multi-dim batch indices so non-contiguous
-        // layouts (e.g. after transpose) and stride-0 broadcast dims both work.
+        // Compute per-input offsets using multi-dim batch indices so
+        // non-contiguous layouts (e.g. after transpose) and stride-0 broadcast
+        // dims both work.
         u64 off_a = 0, off_b = 0, off_c = 0;
         u64 idx = bat;
         for (i32 d = (i32)batch_ndim - 1; d >= 0; d--) {
@@ -336,12 +337,12 @@ static void cpu_sum_dim(TensorImpl<T> &out, const TensorImpl<T> &tensor,
 
 template <typename T>
 void tensor_cpu_sum_global(TensorImpl<T> &out, const TensorImpl<T> &tensor) {
-    double sum = 0.0, c = 0.0;
+    f64 sum = 0.0, c = 0.0;
     tensorIterator it(tensor.ndim, tensor.shape, tensor.stride);
     while (it.has_next()) {
-        double y = (double)tensor.data()[it.next()] - c;
-        double t = sum + y;
-        c   = (t - sum) - y;
+        f64 y = (f64)tensor.data()[it.next()] - c;
+        f64 t = sum + y;
+        c = (t - sum) - y;
         sum = t;
     }
     out.data()[0] = (T)sum;
@@ -429,17 +430,17 @@ void tensor_cpu_argmax(TensorImpl<u32> &out, const TensorImpl<T> &tensor,
 
 void tensor_cpu_welford_global(TensorImpl<f32> &mean, TensorImpl<f32> &M2,
                                const TensorImpl<f32> &src) {
-    double mu = 0.0, m2 = 0.0;
+    f64 mu = 0.0, m2 = 0.0;
     u64 n = 0;
     for (u64 i = 0; i < src.numel(); i++) {
-        double x = (double)src.data()[i];
+        f64 x = (f64)src.data()[i];
         n++;
-        double delta = x - mu;
-        mu += delta / (double)n;
+        f64 delta = x - mu;
+        mu += delta / (f64)n;
         m2 += delta * (x - mu);
     }
     mean.data()[0] = (f32)mu;
-    M2.data()[0]   = (f32)m2;
+    M2.data()[0] = (f32)m2;
 }
 
 void tensor_cpu_welford_dim(TensorImpl<f32> &mean, TensorImpl<f32> &M2,
@@ -449,39 +450,40 @@ void tensor_cpu_welford_dim(TensorImpl<f32> &mean, TensorImpl<f32> &M2,
         return;
     }
     u64 dim_stride = src.stride[dim];
-    u64 dim_size   = src.shape[dim];
+    u64 dim_size = src.shape[dim];
     u64 n_out = mean.numel();
 
     // Use mean.shape (shape[dim]=1) with src strides (stride[dim]=0) so the
-    // iterator visits exactly n_out unique base offsets in src — one per output.
+    // iterator visits exactly n_out unique base offsets in src — one per
+    // output.
     u64 base_strides[MAX_NDIM];
     memcpy(base_strides, src.stride, src.ndim * sizeof(u64));
     base_strides[dim] = 0;
     tensorIterator base_it(mean.ndim, mean.shape, base_strides);
 
-    std::vector<double> mu(n_out, 0.0), m2(n_out, 0.0);
+    std::vector<f64> mu(n_out, 0.0), m2(n_out, 0.0);
 
     for (u64 o = 0; o < n_out; o++) {
         u64 base = base_it.next();
         u32 n = 0;
         for (u64 i = 0; i < dim_size; i++) {
-            double x = (double)src.data()[base + i * dim_stride];
+            f64 x = (f64)src.data()[base + i * dim_stride];
             n++;
-            double delta = x - mu[o];
-            mu[o] += delta / (double)n;
+            f64 delta = x - mu[o];
+            mu[o] += delta / (f64)n;
             m2[o] += delta * (x - mu[o]);
         }
     }
     for (u64 o = 0; o < n_out; o++) {
         mean.data()[o] = (f32)mu[o];
-        M2.data()[o]   = (f32)m2[o];
+        M2.data()[o] = (f32)m2[o];
     }
 }
 
 void tensor_cpu_welford_skip(TensorImpl<f32> &mean, TensorImpl<f32> &M2,
                              const TensorImpl<f32> &src, u32 dim) {
     u64 n_kept = src.shape[dim];
-    std::vector<double> mu(n_kept, 0.0), m2(n_kept, 0.0);
+    std::vector<f64> mu(n_kept, 0.0), m2(n_kept, 0.0);
     std::vector<u64> cnt(n_kept, 0);
 
     u64 dim_strides[MAX_NDIM] = {};
@@ -490,23 +492,23 @@ void tensor_cpu_welford_skip(TensorImpl<f32> &mean, TensorImpl<f32> &M2,
     tensorIterator idx_it(src.ndim, src.shape, dim_strides);
 
     while (in_it.has_next()) {
-        u64 k   = idx_it.next();
-        double x = (double)src.data()[in_it.next()];
+        u64 k = idx_it.next();
+        f64 x = (f64)src.data()[in_it.next()];
         cnt[k]++;
-        double delta = x - mu[k];
-        mu[k] += delta / (double)cnt[k];
+        f64 delta = x - mu[k];
+        mu[k] += delta / (f64)cnt[k];
         m2[k] += delta * (x - mu[k]);
     }
     for (u64 k = 0; k < n_kept; k++) {
         mean.data()[k] = (f32)mu[k];
-        M2.data()[k]   = (f32)m2[k];
+        M2.data()[k] = (f32)m2[k];
     }
 }
 
 // ---- fused softmax backward — f32 only ----------------------------------
 
 void tensor_cpu_softmax_bwd(TensorImpl<f32> &dx, const TensorImpl<f32> &s,
-                             const TensorImpl<f32> &grad, i32 dim) {
+                            const TensorImpl<f32> &grad, i32 dim) {
     u32 axis = (dim < 0) ? (u32)((i32)s.ndim + dim) : (u32)dim;
     u64 D = s.shape[axis];
     u64 stride = s.stride[axis];
@@ -520,10 +522,10 @@ void tensor_cpu_softmax_bwd(TensorImpl<f32> &dx, const TensorImpl<f32> &s,
     tensorIterator it(s.ndim, row_shape, base_strides);
     for (u64 r = 0; r < n_rows; r++) {
         u64 base = it.next();
-        double dot = 0.0;
+        f64 dot = 0.0;
         for (u64 i = 0; i < D; i++)
-            dot += (double)s.data()[base + i * stride] *
-                   (double)grad.data()[base + i * stride];
+            dot += (f64)s.data()[base + i * stride] *
+                   (f64)grad.data()[base + i * stride];
         for (u64 i = 0; i < D; i++) {
             u64 off = base + i * stride;
             dx.data()[off] += s.data()[off] * (grad.data()[off] - (f32)dot);
@@ -535,33 +537,34 @@ void tensor_cpu_softmax_bwd(TensorImpl<f32> &dx, const TensorImpl<f32> &s,
 
 void tensor_cpu_ln_fwd(TensorImpl<f32> &out, TensorImpl<f32> &xhat,
                        TensorImpl<f32> &inv_std, const TensorImpl<f32> &inp,
-                       const TensorImpl<f32> &gamma, const TensorImpl<f32> &beta,
-                       f32 eps) {
+                       const TensorImpl<f32> &gamma,
+                       const TensorImpl<f32> &beta, f32 eps) {
     u32 last = inp.ndim - 1;
     u64 D = inp.shape[last];
     u64 stride = inp.stride[last];
     u64 base_strides[MAX_NDIM];
     memcpy(base_strides, inp.stride, inp.ndim * sizeof(u64));
     base_strides[last] = 0;
-    // use inv_std.shape (last dim = 1) so iterator visits exactly n_rows row bases
+    // use inv_std.shape (last dim = 1) so iterator visits exactly n_rows row
+    // bases
     u64 n_rows = inp.numel() / D;
     tensorIterator it(inv_std.ndim, inv_std.shape, base_strides);
     for (u64 r = 0; r < n_rows; r++) {
         u64 base = it.next();
-        double mu = 0.0, m2 = 0.0;
+        f64 mu = 0.0, m2 = 0.0;
         u64 n = 0;
         for (u64 i = 0; i < D; i++) {
-            double x = inp.data()[base + i * stride];
+            f64 x = inp.data()[base + i * stride];
             n++;
-            double delta = x - mu;
-            mu += delta / (double)n;
+            f64 delta = x - mu;
+            mu += delta / (f64)n;
             m2 += delta * (x - mu);
         }
-        float inv_s = (float)(1.0 / sqrt(m2 / (double)D + (double)eps));
+        f32 inv_s = (f32)(1.0 / sqrt(m2 / (f64)D + (f64)eps));
         inv_std.data()[r] = inv_s;
         for (u64 i = 0; i < D; i++) {
             u64 off = base + i * stride;
-            float xh = ((float)inp.data()[off] - (float)mu) * inv_s;
+            f32 xh = ((f32)inp.data()[off] - (f32)mu) * inv_s;
             xhat.data()[off] = xh;
             out.data()[off] = gamma.data()[i] * xh + beta.data()[i];
         }
@@ -578,26 +581,27 @@ void tensor_cpu_ln_bwd(TensorImpl<f32> &dx, const TensorImpl<f32> &grad,
     u64 base_strides[MAX_NDIM];
     memcpy(base_strides, grad.stride, grad.ndim * sizeof(u64));
     base_strides[last] = 0;
-    // use inv_std.shape (last dim = 1) so iterator visits exactly n_rows row bases
+    // use inv_std.shape (last dim = 1) so iterator visits exactly n_rows row
+    // bases
     u64 n_rows = grad.numel() / D;
     tensorIterator it(inv_std.ndim, inv_std.shape, base_strides);
     for (u64 r = 0; r < n_rows; r++) {
         u64 base = it.next();
-        float isd = inv_std.data()[r];
-        double sum_gn = 0.0, sum_gnx = 0.0;
+        f32 isd = inv_std.data()[r];
+        f64 sum_gn = 0.0, sum_gnx = 0.0;
         for (u64 i = 0; i < D; i++) {
             u64 off = base + i * stride;
-            double gn = (double)grad.data()[off] * (double)gamma.data()[i];
-            double xh = xhat.data()[off];
-            sum_gn  += gn;
+            f64 gn = (f64)grad.data()[off] * (f64)gamma.data()[i];
+            f64 xh = xhat.data()[off];
+            sum_gn += gn;
             sum_gnx += gn * xh;
         }
-        float mean_gn  = (float)(sum_gn  / (double)D);
-        float mean_gnx = (float)(sum_gnx / (double)D);
+        f32 mean_gn = (f32)(sum_gn / (f64)D);
+        f32 mean_gnx = (f32)(sum_gnx / (f64)D);
         for (u64 i = 0; i < D; i++) {
             u64 off = base + i * stride;
-            float gn = grad.data()[off] * gamma.data()[i];
-            float xh = xhat.data()[off];
+            f32 gn = grad.data()[off] * gamma.data()[i];
+            f32 xh = xhat.data()[off];
             dx.data()[off] += (gn - mean_gn - xh * mean_gnx) * isd;
         }
     }
@@ -704,12 +708,12 @@ void tensor_cpu_scatter_add(TensorImpl<T> &out, const TensorImpl<T> &src,
 
 // ---- initializing — f32 only --------------------------------------------
 
-void tensor_cpu_he_init(TensorImpl<f32> &tensor, float std) {
+void tensor_cpu_he_init(TensorImpl<f32> &tensor, f32 std) {
     std::random_device rd;
     std::mt19937 gen(rd());
     u32 in_features = tensor.shape[COL_DIM(tensor)];
-    float stddev = (std > 0.0f) ? std : std::sqrt(2.0f / in_features);
-    std::normal_distribution<float> dist(0.0f, stddev);
+    f32 stddev = (std > 0.0f) ? std : std::sqrt(2.0f / in_features);
+    std::normal_distribution<f32> dist(0.0f, stddev);
     for (u64 i = 0; i < tensor.numel(); i++)
         tensor.data()[i] = dist(gen);
 }
@@ -871,7 +875,7 @@ void tensor_cpu_fold2d(TensorImpl<T> &dst, const TensorImpl<T> &col,
     template void tensor_cpu_sub(TensorImpl<T> &, const TensorImpl<T> &, T);   \
     template void tensor_cpu_mul(TensorImpl<T> &, const TensorImpl<T> &, T);   \
     template void tensor_cpu_div(TensorImpl<T> &, const TensorImpl<T> &, T);   \
-    template void tensor_cpu_sum_global(TensorImpl<T> &,                        \
+    template void tensor_cpu_sum_global(TensorImpl<T> &,                       \
                                         const TensorImpl<T> &);                \
     template void tensor_cpu_sum_dim(TensorImpl<T> &, const TensorImpl<T> &,   \
                                      u32);                                     \

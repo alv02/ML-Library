@@ -16,8 +16,8 @@ struct Transform {
 
 // Flip each image horizontally with probability p.
 struct RandomHorizontalFlip : Transform {
-    float p;
-    RandomHorizontalFlip(float p = 0.5f) : p(p) {}
+    f32 p;
+    RandomHorizontalFlip(f32 p = 0.5f) : p(p) {}
     Tensor<f32> apply(const Tensor<f32> &batch) override;
 };
 

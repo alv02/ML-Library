@@ -202,15 +202,15 @@ void CosineAnnealingLR::step(u32 current_step) {
 // ── MultiStepLR
 // ───────────────────────────────────────────────────────────────
 
-MultiStepLR::MultiStepLR(Optimizer &optimizer, std::vector<int> milestones,
+MultiStepLR::MultiStepLR(Optimizer &optimizer, std::vector<i32> milestones,
                          f32 gamma)
     : optimizer(optimizer), milestones(std::move(milestones)), gamma(gamma),
       base_lr(optimizer.lr) {
     std::sort(this->milestones.begin(), this->milestones.end());
 }
 
-void MultiStepLR::step(int epoch) {
-    for (int m : milestones) {
+void MultiStepLR::step(i32 epoch) {
+    for (i32 m : milestones) {
         if (epoch == m) {
             f32 old_lr = optimizer.lr;
             f32 new_lr = old_lr * gamma;
@@ -226,11 +226,11 @@ void MultiStepLR::step(int epoch) {
 // ─────────────────────────────────────────────────────────
 
 ReduceLROnPlateau::ReduceLROnPlateau(Optimizer &optimizer, f32 factor,
-                                     int patience, f32 min_lr, f32 min_delta)
+                                     i32 patience, f32 min_lr, f32 min_delta)
     : optimizer(optimizer), factor(factor), patience(patience), min_lr(min_lr),
       min_delta(min_delta) {}
 
-void ReduceLROnPlateau::step(f32 loss, int epoch) {
+void ReduceLROnPlateau::step(f32 loss, i32 epoch) {
     if (best_loss - loss > min_delta) {
         best_loss = loss;
         no_improve = 0;
@@ -250,10 +250,10 @@ void ReduceLROnPlateau::step(f32 loss, int epoch) {
 // ── EarlyStopping
 // ─────────────────────────────────────────────────────────────
 
-EarlyStopping::EarlyStopping(int patience, f32 min_delta)
+EarlyStopping::EarlyStopping(i32 patience, f32 min_delta)
     : patience(patience), min_delta(min_delta) {}
 
-bool EarlyStopping::step(f32 loss, int epoch) {
+bool EarlyStopping::step(f32 loss, i32 epoch) {
     if (best_loss - loss > min_delta) {
         best_loss = loss;
         no_improve = 0;

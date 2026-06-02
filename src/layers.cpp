@@ -3,7 +3,7 @@
 // ── Linear
 // ────────────────────────────────────────────────────────────────────
 
-Linear::Linear(u32 in_features, u32 out_features, bool on_gpu, float init_std) {
+Linear::Linear(u32 in_features, u32 out_features, bool on_gpu, f32 init_std) {
     u32 w_shape[2] = {out_features, in_features};
     W = Var(Tensor<f32>::make(2, w_shape, on_gpu),
             FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
@@ -97,7 +97,7 @@ Var LayerNorm::forward(Var input) {
 // ────────────────────────────────────────────────────────────
 
 EmbeddingLayer::EmbeddingLayer(u32 vocab_size, u32 d_model, bool on_gpu,
-                               float init_std) {
+                               f32 init_std) {
     u32 w_shape[2] = {vocab_size, d_model};
     weight = Var(Tensor<f32>::make(2, w_shape, on_gpu),
                  FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
@@ -129,7 +129,7 @@ Var EmbeddingLayer::forward(TensorU32 indices) {
 // ──────────────────────────────────────────────────
 
 PositionalEmbeddingLayer::PositionalEmbeddingLayer(u32 max_seq_len, u32 d_model,
-                                                   bool on_gpu, float init_std) {
+                                                   bool on_gpu, f32 init_std) {
     u32 w_shape[2] = {max_seq_len, d_model};
     weight = Var(Tensor<f32>::make(2, w_shape, on_gpu),
                  FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
@@ -159,7 +159,7 @@ Var PositionalEmbeddingLayer::forward(u32 T) {
 // ────────────────────────────────────────────────────────────
 
 InputEmbedding::InputEmbedding(u32 vocab_size, u32 max_seq_len, u32 d_model,
-                               f32 dropout_p, bool on_gpu, float init_std)
+                               f32 dropout_p, bool on_gpu, f32 init_std)
     : tok_emb(vocab_size, d_model, on_gpu, init_std),
       pos_emb(max_seq_len, d_model, on_gpu, init_std), dropout_p(dropout_p) {}
 
@@ -185,7 +185,7 @@ std::vector<Var> InputEmbedding::parameters() {
 
 MultiHeadAttention::MultiHeadAttention(u32 d_model, u32 n_heads,
                                        u32 max_seq_len, f32 dropout_p,
-                                       bool on_gpu, float init_std)
+                                       bool on_gpu, f32 init_std)
     : n_heads(n_heads), d_head(d_model / n_heads), dropout_p(dropout_p) {
     u32 w_shape[2] = {d_model, d_model};
     W_q = Var(Tensor<f32>::make(2, w_shape, on_gpu), FV_FLAG_REQUIERES_GRAD | FV_FLAG_PARAMETER);
@@ -246,7 +246,7 @@ std::vector<Var> MultiHeadAttention::parameters() {
 // ── TransformerBlock ─────────────────────────────────────────────────────────
 
 TransformerBlock::TransformerBlock(u32 d_model, u32 n_heads, u32 max_seq_len,
-                                   f32 dropout_p, bool on_gpu, float init_std)
+                                   f32 dropout_p, bool on_gpu, f32 init_std)
     : ln1(d_model, on_gpu), ln2(d_model, on_gpu),
       mha(d_model, n_heads, max_seq_len, dropout_p, on_gpu, init_std),
       mlp_fc(d_model, 4 * d_model, on_gpu, init_std),

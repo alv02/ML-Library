@@ -905,17 +905,17 @@ static cublasHandle_t cublas_handle() {
 
 void tensor_cuda_mat_mul_cublas(TensorImpl<f32> &out, const TensorImpl<f32> &a,
                                 const TensorImpl<f32> &b, b32 clear_out) {
-    int M = (int)a.shape[0], K = (int)a.shape[1], N = (int)b.shape[1];
-    float alpha = 1.0f;
-    float beta = clear_out ? 0.0f : 1.0f;
+    i32 M = (i32)a.shape[0], K = (i32)a.shape[1], N = (i32)b.shape[1];
+    f32 alpha = 1.0f;
+    f32 beta = clear_out ? 0.0f : 1.0f;
 
     cublasOperation_t op_b = (b.stride[1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
-    int ld_b = (b.stride[1] == 1) ? (int)b.stride[0] : (int)b.stride[1];
+    i32 ld_b = (i32)((b.stride[1] == 1) ? b.stride[0] : b.stride[1]);
 
     cublasOperation_t op_a = (a.stride[1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
-    int ld_a = (a.stride[1] == 1) ? (int)a.stride[0] : (int)a.stride[1];
+    i32 ld_a = (i32)((a.stride[1] == 1) ? a.stride[0] : a.stride[1]);
 
-    int ldc = (int)out.stride[0];
+    i32 ldc = (i32)out.stride[0];
 
     cublasSgemm(cublas_handle(), op_b, op_a, N, M, K, &alpha, b.data(), ld_b,
                 a.data(), ld_a, &beta, out.data(), ldc);
@@ -924,23 +924,23 @@ void tensor_cuda_mat_mul_cublas(TensorImpl<f32> &out, const TensorImpl<f32> &a,
 void tensor_cuda_mat_mul_batched(TensorImpl<f32> &out, const TensorImpl<f32> &a,
                                  const TensorImpl<f32> &b, b32 clear_out) {
     u32 nd = a.ndim;
-    int M = (int)a.shape[nd - 2], K = (int)a.shape[nd - 1],
-        N = (int)b.shape[nd - 1];
+    i32 M = (i32)a.shape[nd - 2], K = (i32)a.shape[nd - 1],
+        N = (i32)b.shape[nd - 1];
     u32 batch_ndim = nd - 2;
-    int batch = 1;
+    i32 batch = 1;
     for (u32 i = 0; i < batch_ndim; i++)
-        batch *= (int)a.shape[i];
-    float alpha = 1.0f, beta = clear_out ? 0.0f : 1.0f;
+        batch *= (i32)a.shape[i];
+    f32 alpha = 1.0f, beta = clear_out ? 0.0f : 1.0f;
 
     cublasOperation_t op_b =
         (b.stride[nd - 1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
-    int ld_b =
-        (int)((b.stride[nd - 1] == 1) ? b.stride[nd - 2] : b.stride[nd - 1]);
+    i32 ld_b =
+        (i32)((b.stride[nd - 1] == 1) ? b.stride[nd - 2] : b.stride[nd - 1]);
     cublasOperation_t op_a =
         (a.stride[nd - 1] == 1) ? CUBLAS_OP_N : CUBLAS_OP_T;
-    int ld_a =
-        (int)((a.stride[nd - 1] == 1) ? a.stride[nd - 2] : a.stride[nd - 1]);
-    int ld_c = (int)out.stride[nd - 2];
+    i32 ld_a =
+        (i32)((a.stride[nd - 1] == 1) ? a.stride[nd - 2] : a.stride[nd - 1]);
+    i32 ld_c = (i32)out.stride[nd - 2];
 
     // Check if the batch dims are contiguous (stride[d] == stride[d+1]*shape[d+1])
     // so we can use the fast StridedBatched path. Otherwise use per-pointer path.
@@ -975,9 +975,9 @@ void tensor_cuda_mat_mul_batched(TensorImpl<f32> &out, const TensorImpl<f32> &a,
         tensor_cuda_copy(*tb, b);
 
         // After making contiguous, stride[nd-1] == 1 for both — always CUBLAS_OP_N.
-        int ld_a_c = (int)ta->stride[nd - 2];
-        int ld_b_c = (int)tb->stride[nd - 2];
-        int ld_c_c = (int)out.stride[nd - 2];
+        i32 ld_a_c = (i32)ta->stride[nd - 2];
+        i32 ld_b_c = (i32)tb->stride[nd - 2];
+        i32 ld_c_c = (i32)out.stride[nd - 2];
         long long sa = (long long)ta->stride[nd - 3];
         long long sb = (long long)tb->stride[nd - 3];
         long long sc = (long long)out.stride[nd - 3];
@@ -1222,14 +1222,14 @@ void tensor_cuda_causal_mask(TensorImpl<f32> &t) {
                                               rows, cols);
 }
 
-void tensor_cuda_he_init(TensorImpl<f32> &tensor, float std) {
+void tensor_cuda_he_init(TensorImpl<f32> &tensor, f32 std) {
     curandGenerator_t gen;
     curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
     static u64 seed_counter = 0;
     curandSetPseudoRandomGeneratorSeed(
         gen, (u64)time(nullptr) ^ (seed_counter++ * 6364136223846793005ULL));
     u32 in_features = tensor.shape[COL_DIM(tensor)];
-    float stddev = (std > 0.0f) ? std : sqrtf(2.0f / in_features);
+    f32 stddev = (std > 0.0f) ? std : sqrtf(2.0f / in_features);
     curandGenerateNormal(gen, tensor.data(), tensor.numel(), 0.0f, stddev);
     curandDestroyGenerator(gen);
 }

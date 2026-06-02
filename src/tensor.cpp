@@ -10,8 +10,7 @@ using namespace std;
 
 // ---- File I/O ------------------------------------------------------------
 
-template <typename T>
-Tensor<T> tensor_load(const char *filename, b32 on_gpu) {
+template <typename T> Tensor<T> tensor_load(const char *filename, b32 on_gpu) {
     FILE *file = fopen(filename, "rb");
     if (!file) {
         printf("Failed to open file: %s\n", filename);
@@ -104,8 +103,7 @@ template <typename T> b32 tensor_copy(Tensor<T> &dst, const Tensor<T> &src) {
     }
 }
 
-template <typename T>
-static void tensor_contiguous_impl(TensorImpl<T> &t) {
+template <typename T> static void tensor_contiguous_impl(TensorImpl<T> &t) {
     if (tensor_is_contiguous(t))
         return;
     if (t.on_gpu())
@@ -613,7 +611,8 @@ b32 tensor_relu_backward(Tensor<f32> &out, const Tensor<f32> &grad,
         tensor_cuda_relu_backward(out.impl(), grad.impl(), in.impl());
         return true;
     default:
-        printf("tensor_relu_backward: all tensors must be on the same device\n");
+        printf(
+            "tensor_relu_backward: all tensors must be on the same device\n");
         return false;
     }
 }
@@ -804,9 +803,15 @@ Tensor<f32> tensor_mat_mul(const Tensor<f32> &a, const Tensor<f32> &b) {
 template <typename T>
 b32 tensor_sum(Tensor<T> &out, const Tensor<T> &t, b32 clear_out) {
     switch ((out->on_gpu() << 1) | t->on_gpu()) {
-    case 0b00: tensor_cpu_sum_global(out.impl(), t.impl()); break;
-    case 0b11: tensor_cuda_sum_global(out.impl(), t.impl()); break;
-    default: printf("tensor_sum: tensors must be on the same device\n"); return false;
+    case 0b00:
+        tensor_cpu_sum_global(out.impl(), t.impl());
+        break;
+    case 0b11:
+        tensor_cuda_sum_global(out.impl(), t.impl());
+        break;
+    default:
+        printf("tensor_sum: tensors must be on the same device\n");
+        return false;
     }
     return true;
 }
@@ -814,7 +819,8 @@ b32 tensor_sum(Tensor<T> &out, const Tensor<T> &t, b32 clear_out) {
 template <typename T> Tensor<T> tensor_sum(const Tensor<T> &t) {
     u32 shape[] = {1};
     Tensor<T> out = Tensor<T>::make(1, shape, t->on_gpu());
-    if (!tensor_sum(out, t)) return Tensor<T>{};
+    if (!tensor_sum(out, t))
+        return Tensor<T>{};
     out->ndim = 0;
     return out;
 }
@@ -827,9 +833,15 @@ b32 tensor_sum(Tensor<T> &out, const Tensor<T> &t, u32 dim, b32 keep_dim,
         return false;
     }
     switch ((out->on_gpu() << 1) | t->on_gpu()) {
-    case 0b00: tensor_cpu_sum_dim(out.impl(), t.impl(), dim); break;
-    case 0b11: tensor_cuda_sum_dim(out.impl(), t.impl(), dim); break;
-    default: printf("tensor_sum: tensors must be on the same device\n"); return false;
+    case 0b00:
+        tensor_cpu_sum_dim(out.impl(), t.impl(), dim);
+        break;
+    case 0b11:
+        tensor_cuda_sum_dim(out.impl(), t.impl(), dim);
+        break;
+    default:
+        printf("tensor_sum: tensors must be on the same device\n");
+        return false;
     }
     if (!keep_dim) {
         for (u32 j = dim; j + 1 < out->ndim; j++) {
@@ -854,13 +866,20 @@ Tensor<T> tensor_sum(const Tensor<T> &t, u32 dim, b32 keep_dim) {
 
 b32 tensor_sum_skip(Tensor<f32> &out, const Tensor<f32> &t, u32 dim) {
     if (dim >= t->ndim) {
-        printf("tensor_sum_skip: dim %u out of range (ndim=%u)\n", dim, t->ndim);
+        printf("tensor_sum_skip: dim %u out of range (ndim=%u)\n", dim,
+               t->ndim);
         return false;
     }
     switch ((out->on_gpu() << 1) | t->on_gpu()) {
-    case 0b00: tensor_cpu_sum_skip(out.impl(), t.impl(), dim); break;
-    case 0b11: tensor_cuda_sum_skip(out.impl(), t.impl(), dim); break;
-    default: printf("tensor_sum_skip: tensors must be on the same device\n"); return false;
+    case 0b00:
+        tensor_cpu_sum_skip(out.impl(), t.impl(), dim);
+        break;
+    case 0b11:
+        tensor_cuda_sum_skip(out.impl(), t.impl(), dim);
+        break;
+    default:
+        printf("tensor_sum_skip: tensors must be on the same device\n");
+        return false;
     }
     return true;
 }
@@ -868,7 +887,8 @@ b32 tensor_sum_skip(Tensor<f32> &out, const Tensor<f32> &t, u32 dim) {
 Tensor<f32> tensor_sum_skip(const Tensor<f32> &t, u32 dim) {
     u32 shape[] = {t->shape[dim]};
     Tensor<f32> out = Tensor<f32>::make(1, shape, t->on_gpu());
-    if (!tensor_sum_skip(out, t, dim)) return Tensor<f32>{};
+    if (!tensor_sum_skip(out, t, dim))
+        return Tensor<f32>{};
     return out;
 }
 
@@ -981,37 +1001,58 @@ TensorU32 tensor_argmax(const Tensor<T> &t, u32 dim, b32 keep_dim) {
 // ---- welford mean+M2 — f32 only ----------------------------------------
 
 b32 tensor_welford_mean_M2(Tensor<f32> &mean, Tensor<f32> &M2,
-                            const Tensor<f32> &src) {
+                           const Tensor<f32> &src) {
     switch ((mean->on_gpu() << 1) | src->on_gpu()) {
-    case 0b00: tensor_cpu_welford_global(mean.impl(), M2.impl(), src.impl()); return true;
-    case 0b11: tensor_cuda_welford_global(mean.impl(), M2.impl(), src.impl()); return true;
-    default: printf("tensor_welford_mean_M2: tensors must be on the same device\n"); return false;
+    case 0b00:
+        tensor_cpu_welford_global(mean.impl(), M2.impl(), src.impl());
+        return true;
+    case 0b11:
+        tensor_cuda_welford_global(mean.impl(), M2.impl(), src.impl());
+        return true;
+    default:
+        printf("tensor_welford_mean_M2: tensors must be on the same device\n");
+        return false;
     }
 }
 
 b32 tensor_welford_mean_M2(Tensor<f32> &mean, Tensor<f32> &M2,
-                            const Tensor<f32> &src, u32 dim) {
+                           const Tensor<f32> &src, u32 dim) {
     if (dim >= src->ndim) {
-        printf("tensor_welford_mean_M2: dim %u out of range (ndim=%u)\n", dim, src->ndim);
+        printf("tensor_welford_mean_M2: dim %u out of range (ndim=%u)\n", dim,
+               src->ndim);
         return false;
     }
     switch ((mean->on_gpu() << 1) | src->on_gpu()) {
-    case 0b00: tensor_cpu_welford_dim(mean.impl(), M2.impl(), src.impl(), dim); return true;
-    case 0b11: tensor_cuda_welford_dim(mean.impl(), M2.impl(), src.impl(), dim); return true;
-    default: printf("tensor_welford_mean_M2: tensors must be on the same device\n"); return false;
+    case 0b00:
+        tensor_cpu_welford_dim(mean.impl(), M2.impl(), src.impl(), dim);
+        return true;
+    case 0b11:
+        tensor_cuda_welford_dim(mean.impl(), M2.impl(), src.impl(), dim);
+        return true;
+    default:
+        printf("tensor_welford_mean_M2: tensors must be on the same device\n");
+        return false;
     }
 }
 
 b32 tensor_welford_mean_M2_skip(Tensor<f32> &mean, Tensor<f32> &M2,
-                                 const Tensor<f32> &src, u32 dim) {
+                                const Tensor<f32> &src, u32 dim) {
     if (dim >= src->ndim) {
-        printf("tensor_welford_mean_M2_skip: dim %u out of range (ndim=%u)\n", dim, src->ndim);
+        printf("tensor_welford_mean_M2_skip: dim %u out of range (ndim=%u)\n",
+               dim, src->ndim);
         return false;
     }
     switch ((mean->on_gpu() << 1) | src->on_gpu()) {
-    case 0b00: tensor_cpu_welford_skip(mean.impl(), M2.impl(), src.impl(), dim); return true;
-    case 0b11: tensor_cuda_welford_skip(mean.impl(), M2.impl(), src.impl(), dim); return true;
-    default: printf("tensor_welford_mean_M2_skip: tensors must be on the same device\n"); return false;
+    case 0b00:
+        tensor_cpu_welford_skip(mean.impl(), M2.impl(), src.impl(), dim);
+        return true;
+    case 0b11:
+        tensor_cuda_welford_skip(mean.impl(), M2.impl(), src.impl(), dim);
+        return true;
+    default:
+        printf("tensor_welford_mean_M2_skip: tensors must be on the same "
+               "device\n");
+        return false;
     }
 }
 
@@ -1029,7 +1070,8 @@ b32 tensor_softmax(Tensor<f32> &out, const Tensor<f32> &in, i32 dim) {
 
     u32 axis = (dim < 0) ? (u32)((i32)in->ndim + dim) : (u32)dim;
 
-    if (in->on_gpu() && tensor_is_contiguous(in.impl()) && axis == in->ndim - 1) {
+    if (in->on_gpu() && tensor_is_contiguous(in.impl()) &&
+        axis == in->ndim - 1) {
         tensor_cuda_softmax_fwd(out.impl(), in.impl());
         return true;
     }
@@ -1163,7 +1205,7 @@ Tensor<T> tensor_gather(const Tensor<T> &src, const TensorU32 &indices,
 
 // ---- initializing — f32 only --------------------------------------------
 
-void tensor_he_init(Tensor<f32> &t, float std) {
+void tensor_he_init(Tensor<f32> &t, f32 std) {
     if (t->on_gpu())
         tensor_cuda_he_init(t.impl(), std);
     else
@@ -1357,15 +1399,20 @@ void tensor_ln_bwd(Tensor<f32> &dx, const Tensor<f32> &grad,
     template void tensor_print(const TensorImpl<T> &);                         \
     template void tensor_fill(Tensor<T> &, T);                                 \
     template void tensor_arange(Tensor<T> &);                                  \
-    template b32 tensor_add(Tensor<T> &, const Tensor<T> &, const Tensor<T> &); \
+    template b32 tensor_add(Tensor<T> &, const Tensor<T> &,                    \
+                            const Tensor<T> &);                                \
     template Tensor<T> tensor_add(const Tensor<T> &, const Tensor<T> &);       \
-    template b32 tensor_sub(Tensor<T> &, const Tensor<T> &, const Tensor<T> &); \
+    template b32 tensor_sub(Tensor<T> &, const Tensor<T> &,                    \
+                            const Tensor<T> &);                                \
     template Tensor<T> tensor_sub(const Tensor<T> &, const Tensor<T> &);       \
-    template b32 tensor_mul(Tensor<T> &, const Tensor<T> &, const Tensor<T> &); \
+    template b32 tensor_mul(Tensor<T> &, const Tensor<T> &,                    \
+                            const Tensor<T> &);                                \
     template Tensor<T> tensor_mul(const Tensor<T> &, const Tensor<T> &);       \
-    template b32 tensor_div(Tensor<T> &, const Tensor<T> &, const Tensor<T> &); \
+    template b32 tensor_div(Tensor<T> &, const Tensor<T> &,                    \
+                            const Tensor<T> &);                                \
     template Tensor<T> tensor_div(const Tensor<T> &, const Tensor<T> &);       \
-    template b32 tensor_equal(Tensor<T> &, const Tensor<T> &, const Tensor<T> &); \
+    template b32 tensor_equal(Tensor<T> &, const Tensor<T> &,                  \
+                              const Tensor<T> &);                              \
     template Tensor<T> tensor_equal(const Tensor<T> &, const Tensor<T> &);     \
     template b32 tensor_add(Tensor<T> &, const Tensor<T> &, T);                \
     template Tensor<T> tensor_add(const Tensor<T> &, T);                       \
