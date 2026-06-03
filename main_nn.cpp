@@ -7,10 +7,10 @@
 #include <cstdio>
 
 i32 main() {
-    Tensor<f32> val_X = tensor_load("./data/cifar_X_train.npy", true);
-    Tensor<f32> val_y = tensor_load("./data/cifar_y_train.npy", true);
-    Tensor<f32> test_val_X = tensor_load("./data/cifar_X_test.npy", true);
-    Tensor<f32> test_val_y = tensor_load("./data/cifar_y_test.npy", true);
+    Tensor<f32> val_X = tensor_load("data/cifar_X_train.npy", true);
+    Tensor<f32> val_y = tensor_load("data/cifar_y_train.npy", true);
+    Tensor<f32> test_val_X = tensor_load("data/cifar_X_test.npy", true);
+    Tensor<f32> test_val_y = tensor_load("data/cifar_y_test.npy", true);
 
     u32 flat_dim = val_X->shape[1] * val_X->shape[2] * val_X->shape[3];
     u32 flat_train[2] = {val_X->shape[0], flat_dim};

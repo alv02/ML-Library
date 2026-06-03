@@ -13,11 +13,11 @@
 
 i32 main() {
     Tensor<f32> train_X =
-        tensor_load("data/X_train.npy", false); // CPU — augmented per batch
-    Tensor<f32> train_y = tensor_load("data/y_train.npy", false);
+        tensor_load("data/cifar_X_train.npy", false); // CPU — augmented per batch
+    Tensor<f32> train_y = tensor_load("data/cifar_y_train.npy", false);
     Tensor<f32> test_X =
-        tensor_load("data/X_test.npy", true); // GPU — no augmentation
-    Tensor<f32> test_y = tensor_load("data/y_test.npy", true);
+        tensor_load("data/cifar_X_test.npy", true); // GPU — no augmentation
+    Tensor<f32> test_y = tensor_load("data/cifar_y_test.npy", true);
 
     tensor_print(train_X.impl());
 
