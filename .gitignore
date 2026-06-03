@@ -289,7 +289,7 @@ __marimo__/
 # Data
 *.npy
 *.bin
-*.txt
+data/*.txt
 
 # Nsight Systems profiling reports
 *.nsys-rep
